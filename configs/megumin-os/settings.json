@@ -1,0 +1,18 @@
+{
+    "bluetooth_enabled": true,
+    "dark_theme": true,
+    "dock_border": true,
+    "dock_border_opacity": 100,
+    "dock_border_style": "subtle",
+    "dock_whitelist": "nautilus, kitty, wezterm, ignis, code, modrinth-app, steam, spotify",
+    "hyprland_blur": true,
+    "night_light": false,
+    "power_profile": "performance",
+    "topbar_border": true,
+    "topbar_lang": "text",
+    "topbar_opacity": 80,
+    "topbar_style": "dots",
+    "video_optimization": false,
+    "wifi_enabled": false,
+    "wp_anime4k": false
+}

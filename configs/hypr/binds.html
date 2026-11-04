@@ -1,0 +1,891 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Caelestia Hyprland | Manual</title>
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://kit.fontawesome.com/715cf3d409.js" crossorigin="anonymous"></script>
+    
+    <style>
+        :root {
+            --primary: #10B981;
+            --primary-dark: #059669;
+            --secondary: #34D399;
+            --accent: #6EE7B7;
+            --bg-main: #0a0a21;
+            --bg-nav: rgba(10, 10, 33, 0.97);
+            --bg-secondary: #111132;
+            --bg-card: #16163a;
+            --bg-card-hover: #1c1c44;
+            --text-primary: #E2E8F0;
+            --text-secondary: #7A85A0;
+            --border: rgba(16, 185, 129, 0.15);
+            --border-bright: rgba(16, 185, 129, 0.4);
+            --danger: #F87171;
+            --warning: #FBBF24;
+            --info: #60A5FA;
+            --purple: #A78BFA;
+            --glow: rgba(16, 185, 129, 0.12);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Syne', sans-serif;
+            background: var(--bg-main);
+            color: var(--text-primary);
+            line-height: 1.6;
+            display: flex;
+            min-height: 100vh;
+        }
+
+        /* ─── NAV ─────────────────────────────────────── */
+        nav {
+            width: 260px;
+            background: var(--bg-nav);
+            border-right: 1px solid var(--border);
+            padding: 2rem 1.5rem;
+            position: fixed;
+            height: 100vh;
+            overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: var(--primary) transparent;
+        }
+
+        .nav-logo {
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--primary);
+            font-size: 1rem;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.4rem;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .nav-sub {
+            font-size: 0.7rem;
+            color: var(--text-secondary);
+            font-family: 'JetBrains Mono', monospace;
+            margin-bottom: 2rem;
+            padding-left: 28px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        nav ul { list-style: none; }
+        
+        nav a {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 0.65rem 1rem;
+            color: var(--text-secondary);
+            text-decoration: none;
+            border-radius: 8px;
+            margin-bottom: 0.3rem;
+            transition: all 0.2s;
+            font-size: 0.88rem;
+            font-weight: 500;
+            border: 1px solid transparent;
+        }
+
+        nav a i { width: 16px; text-align: center; font-size: 0.85rem; }
+
+        nav a:hover {
+            background: var(--glow);
+            color: var(--primary);
+            border-color: var(--border);
+        }
+
+        nav a.active {
+            background: var(--glow);
+            color: var(--primary);
+            border-color: var(--border-bright);
+        }
+
+        .nav-divider {
+            height: 1px;
+            background: var(--border);
+            margin: 1.2rem 0;
+        }
+
+        .nav-section-label {
+            font-size: 0.65rem;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            padding: 0 1rem;
+            margin-bottom: 0.5rem;
+            opacity: 0.6;
+        }
+
+        /* ─── MAIN ────────────────────────────────────── */
+        main {
+            margin-left: 260px;
+            padding: 3rem 4rem 6rem;
+            width: 100%;
+            max-width: 1100px;
+        }
+
+        .page-header {
+            margin-bottom: 3rem;
+            padding-bottom: 2rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .page-title {
+            font-size: 2.4rem;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+            line-height: 1.1;
+            margin-bottom: 0.8rem;
+        }
+
+        .page-title span.mono {
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--primary);
+            font-size: 0.9em;
+        }
+
+        .page-desc {
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+        }
+
+        .page-desc code {
+            font-family: 'JetBrains Mono', monospace;
+            background: var(--bg-card);
+            padding: 1px 6px;
+            border-radius: 4px;
+            color: var(--secondary);
+            font-size: 0.85em;
+        }
+
+        .badges {
+            display: flex;
+            gap: 8px;
+            margin-top: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .badge {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.68rem;
+            padding: 3px 10px;
+            border-radius: 20px;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+
+        .badge-green { background: rgba(16, 185, 129, 0.15); color: var(--primary); border: 1px solid rgba(16,185,129,0.3); }
+        .badge-blue  { background: rgba(96, 165, 250, 0.15); color: var(--info);    border: 1px solid rgba(96,165,250,0.3); }
+        .badge-purple{ background: rgba(167, 139, 250, 0.15); color: var(--purple); border: 1px solid rgba(167,139,250,0.3); }
+
+        /* ─── SECTIONS ────────────────────────────────── */
+        .section {
+            margin-bottom: 4rem;
+        }
+
+        h2 {
+            font-size: 1.05rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            color: var(--primary);
+            font-family: 'JetBrains Mono', monospace;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 1.2rem;
+            padding-bottom: 0.8rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        h2 i { font-size: 0.9rem; }
+
+        h2 .section-num {
+            color: var(--text-secondary);
+            font-size: 0.75rem;
+            margin-left: auto;
+        }
+
+        /* ─── BIND TABLE ──────────────────────────────── */
+        .bind-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .bind-table tr {
+            border-bottom: 1px solid var(--border);
+            transition: background 0.15s;
+        }
+
+        .bind-table tr:last-child { border-bottom: none; }
+
+        .bind-table tr:hover {
+            background: rgba(16, 185, 129, 0.04);
+        }
+
+        .bind-table td {
+            padding: 0.7rem 0.8rem;
+            vertical-align: middle;
+        }
+
+        .bind-table td:first-child {
+            white-space: nowrap;
+            width: 1%;
+        }
+
+        .bind-desc {
+            color: var(--text-primary);
+            font-size: 0.9rem;
+        }
+
+        .bind-desc small {
+            display: block;
+            color: var(--text-secondary);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.72rem;
+            margin-top: 2px;
+        }
+
+        /* ─── KBD ─────────────────────────────────────── */
+        .keys {
+            display: flex;
+            gap: 4px;
+            align-items: center;
+            flex-wrap: nowrap;
+        }
+
+        .kbd {
+            background: var(--bg-card);
+            border: 1px solid rgba(255,255,255,0.12);
+            border-bottom: 2px solid rgba(0,0,0,0.4);
+            border-radius: 5px;
+            padding: 2px 9px;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--text-primary);
+            font-size: 0.78rem;
+            font-weight: 600;
+            white-space: nowrap;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.07);
+        }
+
+        .kbd-sep {
+            color: var(--text-secondary);
+            font-size: 0.7rem;
+        }
+
+        /* ─── CARDS GRID ──────────────────────────────── */
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .info-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1.2rem 1.4rem;
+            transition: border-color 0.2s, background 0.2s;
+        }
+
+        .info-card:hover {
+            border-color: var(--border-bright);
+            background: var(--bg-card-hover);
+        }
+
+        .info-card-label {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--text-secondary);
+            font-family: 'JetBrains Mono', monospace;
+            margin-bottom: 0.4rem;
+        }
+
+        .info-card-value {
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--secondary);
+            font-size: 0.95rem;
+            font-weight: 600;
+        }
+
+        /* ─── ALERT ───────────────────────────────────── */
+        .alert {
+            padding: 1rem 1.3rem;
+            border-radius: 8px;
+            margin: 1rem 0;
+            border-left: 3px solid;
+            font-size: 0.88rem;
+        }
+
+        .alert-info    { background: rgba(96,165,250,0.06); border-color: var(--info); }
+        .alert-warning { background: rgba(251,191,36,0.06); border-color: var(--warning); }
+        .alert-green   { background: rgba(16,185,129,0.06); border-color: var(--primary); }
+
+        .alert strong { font-weight: 700; }
+
+        /* ─── MOUSE BINDS ─────────────────────────────── */
+        .mouse-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 0.8rem;
+        }
+
+        .mouse-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem 1.2rem;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 0.88rem;
+        }
+
+        .mouse-card i { color: var(--primary); font-size: 1.1rem; flex-shrink: 0; }
+
+        /* ─── WS TABLE ────────────────────────────────── */
+        .ws-grid {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 0.6rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .ws-item {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.8rem;
+            text-align: center;
+            transition: all 0.2s;
+        }
+
+        .ws-item:hover { border-color: var(--border-bright); }
+
+        .ws-num {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: var(--primary);
+        }
+
+        .ws-apps {
+            font-size: 0.72rem;
+            color: var(--text-secondary);
+            margin-top: 4px;
+            line-height: 1.4;
+        }
+
+        /* ─── SCROLLBAR ───────────────────────────────── */
+        ::-webkit-scrollbar { width: 5px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--primary); border-radius: 10px; }
+
+        /* ─── SECTION ANCHOR OFFSET ───────────────────── */
+        .anchor { display: block; height: 80px; margin-top: -80px; visibility: hidden; }
+    </style>
+</head>
+<body>
+
+<nav>
+    <div class="nav-logo"><i class="fa-solid fa-ghost"></i> Caelestia OS</div>
+    <div class="nav-sub">hyprland binds</div>
+
+    <div class="nav-section-label">Навігація</div>
+    <ul>
+        <li><a href="#apps"><i class="fa-solid fa-rocket"></i> Додатки</a></li>
+        <li><a href="#ignis"><i class="fa-solid fa-wand-magic-sparkles"></i> Ignis / UI</a></li>
+        <li><a href="#windows"><i class="fa-solid fa-window-restore"></i> Вікна</a></li>
+        <li><a href="#focus"><i class="fa-solid fa-arrows-to-dot"></i> Фокус & Переміщення</a></li>
+        <li><a href="#resize"><i class="fa-solid fa-maximize"></i> Розмір вікон</a></li>
+        <li><a href="#groups"><i class="fa-solid fa-object-group"></i> Групи</a></li>
+        <li><a href="#workspaces"><i class="fa-solid fa-layer-group"></i> Робочі столи</a></li>
+        <li><a href="#media"><i class="fa-solid fa-music"></i> Медіа & Звук</a></li>
+        <li><a href="#brightness"><i class="fa-solid fa-sun"></i> Яскравість</a></li>
+        <li><a href="#screenshot"><i class="fa-solid fa-camera"></i> Скріншоти</a></li>
+        <li><a href="#mouse"><i class="fa-solid fa-computer-mouse"></i> Миша</a></li>
+        <li><a href="#system"><i class="fa-solid fa-microchip"></i> Система</a></li>
+    </ul>
+
+    <div class="nav-divider"></div>
+    <div class="nav-section-label">Autostart (WS)</div>
+    <ul>
+        <li><a href="#autostart"><i class="fa-solid fa-bolt"></i> Автозапуск</a></li>
+    </ul>
+</nav>
+
+<main>
+    <div class="page-header">
+        <div class="page-title">
+            Hyprland <span class="mono">Binds</span>
+        </div>
+        <p class="page-desc">Повна документація гарячих клавіш з <code>hyprland.hl</code></p>
+        <div class="badges">
+            <span class="badge badge-green">Caelestia OS</span>
+            <span class="badge badge-blue">SUPER = Win/Meta</span>
+            <span class="badge badge-purple">Hyprland</span>
+        </div>
+    </div>
+
+    <div class="info-grid">
+        <div class="info-card">
+            <div class="info-card-label">Термінал (основний)</div>
+            <div class="info-card-value">wezterm</div>
+        </div>
+        <div class="info-card">
+            <div class="info-card-label">Браузер</div>
+            <div class="info-card-value">firefox</div>
+        </div>
+        <div class="info-card">
+            <div class="info-card-label">Файловий менеджер (TUI)</div>
+            <div class="info-card-value">yazi (у wezterm)</div>
+        </div>
+        <div class="info-card">
+            <div class="info-card-label">Layout</div>
+            <div class="info-card-value">dwindle</div>
+        </div>
+        <div class="info-card">
+            <div class="info-card-label">Розкладка клавіатури</div>
+            <div class="info-card-value">us, ua (ALT+SHIFT)</div>
+        </div>
+        <div class="info-card">
+            <div class="info-card-label">Launcher</div>
+            <div class="info-card-value">Ignis / wofi / walker</div>
+        </div>
+    </div>
+
+    <!-- ── 1. APPS ── -->
+    <div class="section">
+        <span class="anchor" id="apps"></span>
+        <h2><i class="fa-solid fa-rocket"></i> Запуск додатків <span class="section-num">01</span></h2>
+        <table class="bind-table">
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">B</span></div></td>
+                <td class="bind-desc">Запустити Firefox</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">K</span></div></td>
+                <td class="bind-desc">Запустити WezTerm</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">T</span></div></td>
+                <td class="bind-desc">Kitty з fastfetch<small>kitty --hold -e fastfetch</small></td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">SHIFT</span><span class="kbd-sep">+</span><span class="kbd">K</span></div></td>
+                <td class="bind-desc">Cool Retro Term</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">E</span></div></td>
+                <td class="bind-desc">Файловий менеджер Yazi (у wezterm)<small>wezterm -e fish -c yy</small></td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">SHIFT</span><span class="kbd-sep">+</span><span class="kbd">E</span></div></td>
+                <td class="bind-desc">Файловий менеджер Yazi (дублікат)</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">Tab</span></div></td>
+                <td class="bind-desc">Провідник Nautilus</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">CTRL</span><span class="kbd-sep">+</span><span class="kbd">SHIFT</span><span class="kbd-sep">+</span><span class="kbd">ESC</span></div></td>
+                <td class="bind-desc">btop (системний монітор)<small>kitty -e btop</small></td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">CTRL</span><span class="kbd-sep">+</span><span class="kbd">ALT</span><span class="kbd-sep">+</span><span class="kbd">SPACE</span></div></td>
+                <td class="bind-desc">Wofi (альтернативний launcher)</td>
+            </tr>
+        </table>
+    </div>
+
+    <!-- ── 2. IGNIS UI ── -->
+    <div class="section">
+        <span class="anchor" id="ignis"></span>
+        <h2><i class="fa-solid fa-wand-magic-sparkles"></i> Ignis / UI панелі <span class="section-num">02</span></h2>
+        <table class="bind-table">
+            <tr>
+                <td><div class="keys"><span class="kbd">ALT</span><span class="kbd-sep">+</span><span class="kbd">SPACE</span></div></td>
+                <td class="bind-desc">Ignis Launcher (пошук)</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">ALT</span><span class="kbd-sep">+</span><span class="kbd">Tab</span></div></td>
+                <td class="bind-desc">Ignis Window Switcher (наступне вікно)</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">ALT</span><span class="kbd-sep">(release)</span></div></td>
+                <td class="bind-desc">Ignis Window Switcher — підтвердити вибір<small>bindrt: відпустити Alt_L</small></td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">V</span></div></td>
+                <td class="bind-desc">Менеджер буфера (Ignis Clipboard)</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">Z</span></div></td>
+                <td class="bind-desc">Control Center</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">O</span></div></td>
+                <td class="bind-desc">Power Menu</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">I</span></div></td>
+                <td class="bind-desc">About (інформація про систему)</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">W</span></div></td>
+                <td class="bind-desc">Перемикач шпалер (Ignis Wallpapers)</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">D</span></div></td>
+                <td class="bind-desc">Закрити всі сповіщення Dunst<small>dunstctl close-all</small></td>
+            </tr>
+        </table>
+    </div>
+
+    <!-- ── 3. WINDOWS ── -->
+    <div class="section">
+        <span class="anchor" id="windows"></span>
+        <h2><i class="fa-solid fa-window-restore"></i> Керування вікнами <span class="section-num">03</span></h2>
+        <table class="bind-table">
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">Q</span></div></td>
+                <td class="bind-desc">Закрити активне вікно</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">SHIFT</span><span class="kbd-sep">+</span><span class="kbd">Q</span></div></td>
+                <td class="bind-desc">Kill process (hyprctl kill)</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">F</span></div></td>
+                <td class="bind-desc">Fullscreen</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">Space</span></div></td>
+                <td class="bind-desc">Floating mode (1000×600)<small>togglefloating + resizeactive exact 1000 600</small></td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">S</span></div></td>
+                <td class="bind-desc">Toggle split (dwindle layout)</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">SHIFT</span><span class="kbd-sep">+</span><span class="kbd">Space</span></div></td>
+                <td class="bind-desc">All Float Mode для поточного workspace<small>workspaceopt allfloat + сповіщення</small></td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">P</span></div></td>
+                <td class="bind-desc">Вийти з Hyprland<small>hyprctl dispatch exit</small></td>
+            </tr>
+        </table>
+    </div>
+
+    <!-- ── 4. FOCUS & MOVE ── -->
+    <div class="section">
+        <span class="anchor" id="focus"></span>
+        <h2><i class="fa-solid fa-arrows-to-dot"></i> Фокус & Переміщення вікон <span class="section-num">04</span></h2>
+        <div class="alert alert-info">
+            <strong>Фокус</strong> — SUPER + стрілки. <strong>Переміщення вікна</strong> — SUPER+SHIFT + стрілки.
+        </div>
+        <table class="bind-table">
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">←</span></div></td>
+                <td class="bind-desc">Фокус вліво</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">→</span></div></td>
+                <td class="bind-desc">Фокус вправо</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">↑</span></div></td>
+                <td class="bind-desc">Фокус вгору</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">↓</span></div></td>
+                <td class="bind-desc">Фокус вниз</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">SHIFT</span><span class="kbd-sep">+</span><span class="kbd">←</span></div></td>
+                <td class="bind-desc">Перемістити вікно вліво</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">SHIFT</span><span class="kbd-sep">+</span><span class="kbd">→</span></div></td>
+                <td class="bind-desc">Перемістити вікно вправо</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">SHIFT</span><span class="kbd-sep">+</span><span class="kbd">↑</span></div></td>
+                <td class="bind-desc">Перемістити вікно вгору</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">SHIFT</span><span class="kbd-sep">+</span><span class="kbd">↓</span></div></td>
+                <td class="bind-desc">Перемістити вікно вниз</td>
+            </tr>
+        </table>
+    </div>
+
+    <!-- ── 5. RESIZE ── -->
+    <div class="section">
+        <span class="anchor" id="resize"></span>
+        <h2><i class="fa-solid fa-maximize"></i> Розмір вікон <span class="section-num">05</span></h2>
+        <div class="alert alert-green">
+            <strong>binde</strong> — утримуй клавіші для плавного ресайзу (+40px / -40px за крок).
+        </div>
+        <table class="bind-table">
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">CTRL</span><span class="kbd-sep">+</span><span class="kbd">←</span></div></td>
+                <td class="bind-desc">Зменшити ширину (-40px)</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">CTRL</span><span class="kbd-sep">+</span><span class="kbd">→</span></div></td>
+                <td class="bind-desc">Збільшити ширину (+40px)</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">CTRL</span><span class="kbd-sep">+</span><span class="kbd">↑</span></div></td>
+                <td class="bind-desc">Зменшити висоту (-40px)</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">CTRL</span><span class="kbd-sep">+</span><span class="kbd">↓</span></div></td>
+                <td class="bind-desc">Збільшити висоту (+40px)</td>
+            </tr>
+        </table>
+    </div>
+
+    <!-- ── 6. GROUPS ── -->
+    <div class="section">
+        <span class="anchor" id="groups"></span>
+        <h2><i class="fa-solid fa-object-group"></i> Групи вікон <span class="section-num">06</span></h2>
+        <table class="bind-table">
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">G</span></div></td>
+                <td class="bind-desc">Toggle group (створити/розпустити групу)</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">C</span></div></td>
+                <td class="bind-desc">Вийняти вікно з групи</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">X</span></div></td>
+                <td class="bind-desc">Переключити активне вікно в групі</td>
+            </tr>
+        </table>
+    </div>
+
+    <!-- ── 7. WORKSPACES ── -->
+    <div class="section">
+        <span class="anchor" id="workspaces"></span>
+        <h2><i class="fa-solid fa-layer-group"></i> Робочі столи <span class="section-num">07</span></h2>
+
+        <div class="ws-grid">
+            <div class="ws-item"><div class="ws-num">WS 1</div><div class="ws-apps">Spotify</div></div>
+            <div class="ws-item"><div class="ws-num">WS 2</div><div class="ws-apps">Vesktop<br>Telegram<br>Obsidian</div></div>
+            <div class="ws-item"><div class="ws-num">WS 3</div><div class="ws-apps">—</div></div>
+            <div class="ws-item"><div class="ws-num">WS 4</div><div class="ws-apps">VS Code<br>IntelliJ IDEA</div></div>
+            <div class="ws-item"><div class="ws-num">WS 5</div><div class="ws-apps">OBS</div></div>
+            <div class="ws-item"><div class="ws-num">WS 6</div><div class="ws-apps">—</div></div>
+            <div class="ws-item"><div class="ws-num">WS 7</div><div class="ws-apps">—</div></div>
+            <div class="ws-item"><div class="ws-num">WS 8</div><div class="ws-apps">—</div></div>
+            <div class="ws-item"><div class="ws-num">WS 9</div><div class="ws-apps">QwikShell (kitty-service)</div></div>
+            <div class="ws-item"><div class="ws-num">WS 10</div><div class="ws-apps">KeePassXC</div></div>
+        </div>
+
+        <table class="bind-table">
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">1–0</span></div></td>
+                <td class="bind-desc">Перейти на workspace 1–10</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">SHIFT</span><span class="kbd-sep">+</span><span class="kbd">1–0</span></div></td>
+                <td class="bind-desc">Перемістити вікно на workspace 1–10 (тихо)<small>movetoworkspacesilent</small></td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">ALT</span><span class="kbd-sep">+</span><span class="kbd">↑</span></div></td>
+                <td class="bind-desc">Наступний workspace (monitor+1)</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">ALT</span><span class="kbd-sep">+</span><span class="kbd">↓</span></div></td>
+                <td class="bind-desc">Попередній workspace (monitor-1)</td>
+            </tr>
+        </table>
+    </div>
+
+    <!-- ── 8. MEDIA ── -->
+    <div class="section">
+        <span class="anchor" id="media"></span>
+        <h2><i class="fa-solid fa-music"></i> Медіа & Звук <span class="section-num">08</span></h2>
+        <table class="bind-table">
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">F8</span></div></td>
+                <td class="bind-desc">Гучність +5%<small>wpctl + volume_notify.sh</small></td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">F7</span></div></td>
+                <td class="bind-desc">Гучність -5%</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">SHIFT</span><span class="kbd-sep">+</span><span class="kbd">F7</span></div></td>
+                <td class="bind-desc">Вимкнути звук (0%)</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">F10</span></div></td>
+                <td class="bind-desc">Play / Pause<small>playerctl + music_notify.sh</small></td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SHIFT</span><span class="kbd-sep">+</span><span class="kbd">F8</span></div></td>
+                <td class="bind-desc">Наступний трек</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SHIFT</span><span class="kbd-sep">+</span><span class="kbd">F7</span></div></td>
+                <td class="bind-desc">Попередній трек</td>
+            </tr>
+        </table>
+    </div>
+
+    <!-- ── 9. BRIGHTNESS ── -->
+    <div class="section">
+        <span class="anchor" id="brightness"></span>
+        <h2><i class="fa-solid fa-sun"></i> Яскравість <span class="section-num">09</span></h2>
+        <table class="bind-table">
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">F3</span></div></td>
+                <td class="bind-desc">Яскравість +5%<small>brightnessctl + ddcutil (зовнішній монітор) + notify</small></td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">F2</span></div></td>
+                <td class="bind-desc">Яскравість -5%</td>
+            </tr>
+        </table>
+    </div>
+
+    <!-- ── 10. SCREENSHOTS ── -->
+    <div class="section">
+        <span class="anchor" id="screenshot"></span>
+        <h2><i class="fa-solid fa-camera"></i> Скріншоти & Утиліти <span class="section-num">10</span></h2>
+        <table class="bind-table">
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">SHIFT</span><span class="kbd-sep">+</span><span class="kbd">S</span></div></td>
+                <td class="bind-desc">Скріншот виділеної зони → буфер<small>hyprpicker -r -z + grim + slurp + wl-copy</small></td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">ALT</span><span class="kbd-sep">+</span><span class="kbd">F12</span></div></td>
+                <td class="bind-desc">Повний скріншот → ~/Pictures/screenshots/<small>grim + timestamp filename</small></td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SHIFT</span><span class="kbd-sep">+</span><span class="kbd">Print</span></div></td>
+                <td class="bind-desc">Повний скріншот → буфер<small>grim - | wl-copy -t image/png</small></td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">ALT</span><span class="kbd-sep">+</span><span class="kbd">fn</span></div></td>
+                <td class="bind-desc">Flameshot GUI</td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">SHIFT</span><span class="kbd-sep">+</span><span class="kbd">X</span></div></td>
+                <td class="bind-desc">Піпетка — скопіювати HEX колір<small>hyprpicker -a</small></td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">SHIFT</span><span class="kbd-sep">+</span><span class="kbd">I</span></div></td>
+                <td class="bind-desc">Bluetooth TUI<small>wezterm -e bluetuith</small></td>
+            </tr>
+        </table>
+    </div>
+
+    <!-- ── 11. MOUSE ── -->
+    <div class="section">
+        <span class="anchor" id="mouse"></span>
+        <h2><i class="fa-solid fa-computer-mouse"></i> Мишка <span class="section-num">11</span></h2>
+        <div class="mouse-grid">
+            <div class="mouse-card">
+                <i class="fa-solid fa-arrows-up-down-left-right"></i>
+                <div><strong>SUPER + ЛКМ</strong><br><span style="color:var(--text-secondary);font-size:0.8rem;">Переміщення вікна</span></div>
+            </div>
+            <div class="mouse-card">
+                <i class="fa-solid fa-maximize"></i>
+                <div><strong>SUPER + ПКМ</strong><br><span style="color:var(--text-secondary);font-size:0.8rem;">Ресайз вікна</span></div>
+            </div>
+            <div class="mouse-card">
+                <i class="fa-solid fa-xmark"></i>
+                <div><strong>SUPER + СКМ</strong><br><span style="color:var(--text-secondary);font-size:0.8rem;">Закрити вікно</span></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── 12. SYSTEM ── -->
+    <div class="section">
+        <span class="anchor" id="system"></span>
+        <h2><i class="fa-solid fa-gears"></i> Система & Waybar <span class="section-num">12</span></h2>
+        <table class="bind-table">
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">SHIFT</span><span class="kbd-sep">+</span><span class="kbd">W</span></div></td>
+                <td class="bind-desc">Перезапустити Waybar<small>killall waybar && waybar</small></td>
+            </tr>
+            <tr>
+                <td><div class="keys"><span class="kbd">SUPER</span><span class="kbd-sep">+</span><span class="kbd">SHIFT</span><span class="kbd-sep">+</span><span class="kbd">Tab</span></div></td>
+                <td class="bind-desc">Перезапустити timeWALL (динамічні шпалери)<small>~/wallpers/timeWALL.sh</small></td>
+            </tr>
+        </table>
+    </div>
+
+    <!-- ── 13. AUTOSTART ── -->
+    <div class="section">
+        <span class="anchor" id="autostart"></span>
+        <h2><i class="fa-solid fa-bolt"></i> Автозапуск (exec-once) <span class="section-num">13</span></h2>
+        <div class="alert alert-warning">
+            Ці програми запускаються автоматично при старті Hyprland — бінди не потрібні.
+        </div>
+        <table class="bind-table">
+            <tr><td style="white-space:nowrap"><span style="font-family:JetBrains Mono,monospace;font-size:0.8rem;color:var(--secondary)">ignis init</span></td><td class="bind-desc">Ignis shell (панель, launcher, clipboard...)</td></tr>
+            <tr><td><span style="font-family:JetBrains Mono,monospace;font-size:0.8rem;color:var(--secondary)">swww-daemon</span></td><td class="bind-desc">Daemon для шпалер</td></tr>
+            <tr><td><span style="font-family:JetBrains Mono,monospace;font-size:0.8rem;color:var(--secondary)">dunst</span></td><td class="bind-desc">Сповіщення</td></tr>
+            <tr><td><span style="font-family:JetBrains Mono,monospace;font-size:0.8rem;color:var(--secondary)">wlsunset</span></td><td class="bind-desc">Night light (Kyiv coords)</td></tr>
+            <tr><td><span style="font-family:JetBrains Mono,monospace;font-size:0.8rem;color:var(--secondary)">cliphist</span></td><td class="bind-desc">Clipboard history (текст + зображення)</td></tr>
+            <tr><td><span style="font-family:JetBrains Mono,monospace;font-size:0.8rem;color:var(--secondary)">timeWALL.sh</span></td><td class="bind-desc">Динамічні шпалери за часом доби</td></tr>
+            <tr><td><span style="font-family:JetBrains Mono,monospace;font-size:0.8rem;color:var(--secondary)">rclone</span></td><td class="bind-desc">Google Drive mount → ~/GoogleDrive</td></tr>
+            <tr><td><span style="font-family:JetBrains Mono,monospace;font-size:0.8rem;color:var(--secondary)">zen-browser</span></td><td class="bind-desc">WS авто (без прив'язки)</td></tr>
+            <tr><td><span style="font-family:JetBrains Mono,monospace;font-size:0.8rem;color:var(--secondary)">spotify</span></td><td class="bind-desc">→ WS 1</td></tr>
+            <tr><td><span style="font-family:JetBrains Mono,monospace;font-size:0.8rem;color:var(--secondary)">vesktop</span></td><td class="bind-desc">→ WS 2</td></tr>
+            <tr><td><span style="font-family:JetBrains Mono,monospace;font-size:0.8rem;color:var(--secondary)">telegram-desktop</span></td><td class="bind-desc">→ WS 2</td></tr>
+            <tr><td><span style="font-family:JetBrains Mono,monospace;font-size:0.8rem;color:var(--secondary)">QwikShell</span></td><td class="bind-desc">→ WS 9 (kitty-service, python3 start.py)</td></tr>
+        </table>
+    </div>
+
+</main>
+
+<script>
+    // Active nav link on scroll
+    const sections = document.querySelectorAll('.anchor');
+    const navLinks = document.querySelectorAll('nav a');
+
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                const id = entry.target.id;
+                navLinks.forEach(a => {
+                    a.classList.toggle('active', a.getAttribute('href') === '#' + id);
+                });
+            }
+        });
+    }, { rootMargin: '-20% 0px -75% 0px' });
+
+    sections.forEach(s => observer.observe(s));
+
+    // Smooth scroll
+    navLinks.forEach(anchor => {
+        anchor.addEventListener('click', function (e) {
+            e.preventDefault();
+            const target = document.querySelector(this.getAttribute('href'));
+            if (target) target.scrollIntoView({ behavior: 'smooth' });
+        });
+    });
+</script>
+
+</body>
+</html>
