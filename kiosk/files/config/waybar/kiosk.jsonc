@@ -1,0 +1,61 @@
+{
+    "layer": "top",
+    "position": "top",
+    "height": 30,
+    "modules-left": ["hyprland/workspaces", "cpu", "memory"],
+    "modules-center": ["clock"],
+    "modules-right": ["custom/volume", "backlight", "battery", "power-profiles-daemon"],
+    
+    "hyprland/workspaces": {
+        "disable-scroll": true,
+        "all-outputs": true,
+        "on-click": "activate",
+        "format": "",
+        "persistent-workspaces": {
+            "*": [1, 2, 3]
+        }
+    },
+
+    "power-profiles-daemon": {
+        "format": " ",
+        "tooltip": true,
+        "tooltip-format": "Режим: {profile}\nДрайвер: {driver}"
+    },
+
+    "cpu": {
+        "format": " CPU: {usage}%",
+        "interval": 10
+    },
+    "memory": {
+        "format": " RAM: {}%",
+        "interval": 15
+    },
+    "clock": {
+        "format": "{:%H:%M}",
+        "interval": 60,
+        "tooltip-format": "{:%Y-%m-%d | %H:%M}"
+    },
+    "custom/volume": {
+        "format": "{}",
+        "return-type": "json",
+        "exec": "/home/doki/.config/waybar/volume.py",
+        "on-click": "/home/doki/.config/waybar/volume.py mute",
+        "on-scroll-up": "/home/doki/.config/waybar/volume.py up",
+        "on-scroll-down": "/home/doki/.config/waybar/volume.py down"
+    },
+    "backlight": {
+        "format": "{icon} {percent}%",
+        "format-icons": ["󰃞", "󰃟", "󰃠"]
+    },
+    "battery": {
+        "states": {
+            "warning": 30,
+            "critical": 15
+        },
+        "interval": 30,
+        "format": "{icon} {capacity}%",
+        "format-charging": "⚡ {capacity}%",
+        "format-plugged": " {capacity}%",
+        "format-icons": ["", "", "", "", ""]
+    }
+}

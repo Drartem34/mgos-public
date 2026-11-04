@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+
+dir="$HOME/Pictures/screenshots"
+mkdir -p "$dir"
+file="$dir/$(date +'%Y-%m-%d_%H-%M-%S').png"
+
+grim "$file" || exit 1
+
+notify-send -u low -h string:x-dunst-stack-tag:screenshot -i "$file" \
+"🖼 Скріншот створено" "$file"

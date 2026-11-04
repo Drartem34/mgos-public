@@ -1,0 +1,12 @@
+org.gnome.desktop.interface color-scheme 'prefer-dark'
+org.gnome.desktop.interface accent-color 'slate'
+org.gnome.desktop.interface gtk-theme 'Adwaita-dark'
+org.gnome.desktop.interface icon-theme 'MacTahoe'
+org.gnome.desktop.interface cursor-theme 'default'
+org.gnome.desktop.interface cursor-size 24
+org.gnome.desktop.interface font-name 'SF Compact Display Light 11'
+org.gnome.nautilus.preferences fts-enabled false
+org.gnome.nautilus.preferences show-directory-item-counts 'never'
+org.gnome.nautilus.preferences recursive-search 'never'
+org.gnome.nautilus.preferences show-image-thumbnails 'local-only'
+org.gnome.nautilus.preferences thumbnail-limit 10

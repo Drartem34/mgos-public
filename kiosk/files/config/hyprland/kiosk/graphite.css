@@ -1,0 +1,442 @@
+/* ==========================================================================
+   kioskOS — FLAT MINIMALIST GRAPHITE THEME FOR NAUTILUS (GNOME FILES 49)
+   - 100% Flat design: NO gradients, NO 3D box-shadows, NO glow blur.
+   - Ultra-slim topbar (вузький адресний рядок / headerbar).
+   - YouTube-style red accent line at the very top.
+   - High-contrast flat progress bars & clean typography.
+   ========================================================================== */
+
+/* ── 1. Color Palette (Clean Flat Matte Dark) ── */
+@define-color accent_color #708294;
+@define-color accent_bg_color #3d4652;
+@define-color accent_fg_color #ffffff;
+
+@define-color destructive_color #e06c75;
+@define-color destructive_bg_color #be5046;
+@define-color destructive_fg_color #ffffff;
+
+@define-color success_color #98c379;
+@define-color success_bg_color #688a4c;
+@define-color success_fg_color #ffffff;
+
+@define-color warning_color #e5c07b;
+@define-color warning_bg_color #b89345;
+@define-color warning_fg_color #141619;
+
+@define-color error_color #e06c75;
+@define-color error_bg_color #be5046;
+@define-color error_fg_color #ffffff;
+
+/* Core Surface Colors (Pure Flat Dark) */
+@define-color window_bg_color #141517;
+@define-color window_fg_color #e2e4e8;
+
+@define-color view_bg_color #16171a;
+@define-color view_fg_color #e2e4e8;
+
+@define-color headerbar_bg_color #121315;
+@define-color headerbar_fg_color #f0f2f5;
+@define-color headerbar_border_color #22252a;
+@define-color headerbar_backdrop_color #121315;
+
+@define-color card_bg_color #1a1c20;
+@define-color card_fg_color #e2e4e8;
+@define-color card_border_color #25282e;
+
+@define-color dialog_bg_color #181a1d;
+@define-color dialog_fg_color #e2e4e8;
+
+@define-color popover_bg_color #181a1e;
+@define-color popover_fg_color #e2e4e8;
+@define-color popover_border_color #2a2e36;
+
+@define-color sidebar_bg_color #101113;
+@define-color sidebar_fg_color #c8ccd2;
+@define-color sidebar_backdrop_color #101113;
+@define-color sidebar_border_color #1e2024;
+
+@define-color thumbnail_bg_color #1a1c20;
+
+/* ── 2. Universal Base & Typography ── */
+window,
+dialog {
+  background-color: @window_bg_color;
+  color: @window_fg_color;
+}
+
+/* ── 3. Ultra-Slim Topbar (Вузький рядок) + YouTube Red Top Line ── */
+headerbar,
+headerbar windowhandle,
+headerbar > box,
+headerbar > centerbox,
+.top-bar,
+AdwHeaderBar,
+NautilusToolbar {
+  background-color: @headerbar_bg_color;
+  color: @headerbar_fg_color;
+  border-top: none;
+  border-bottom: 1px solid @headerbar_border_color;
+  box-shadow: none;
+  padding: 0px 4px;
+  min-height: 26px;
+  margin: 0;
+}
+
+headerbar:backdrop {
+  background-color: @headerbar_backdrop_color;
+  
+}
+
+/* Ultra-compact Flat Buttons in Headerbar */
+headerbar button,
+headerbar menubutton,
+headerbar menubutton > button,
+headerbar splitbutton,
+headerbar splitbutton > button,
+headerbar windowcontrols button,
+headerbar .linked button {
+  background-color: transparent;
+  color: #c9ccd1;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  box-shadow: none;
+  padding: 1px 5px;
+  min-height: 22px;
+  min-width: 22px;
+  margin: 0 1px;
+  transition: background-color 60ms ease, color 60ms ease;
+}
+
+headerbar button:hover,
+headerbar menubutton > button:hover {
+  background-color: #22252a;
+  color: #ffffff;
+}
+
+headerbar button:active,
+headerbar button:checked,
+headerbar menubutton > button:checked {
+  background-color: #2b3038;
+  color: #ffffff;
+  border-color: #3b424d;
+}
+
+headerbar windowcontrols {
+  min-height: 22px;
+  padding: 0;
+  margin: 0;
+}
+
+headerbar windowcontrols button {
+  padding: 1px 4px;
+  min-width: 20px;
+  min-height: 20px;
+}
+
+/* Slim Pathbar (Адресний рядок) */
+#NautilusPathBar,
+.path-bar {
+  background-color: #181a1d;
+  border: 1px solid #26292f;
+  border-radius: 5px;
+  min-height: 22px;
+  padding: 0 2px;
+  margin: 0 2px;
+  box-shadow: none;
+}
+
+#NautilusPathButton,
+.path-bar button {
+  background-color: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #c8cbd0;
+  margin: 0 1px;
+  padding: 0 5px;
+  min-height: 20px;
+  font-size: 11.5px;
+  font-weight: 500;
+  box-shadow: none;
+}
+
+#NautilusPathButton:hover,
+.path-bar button:hover {
+  background-color: #24272e;
+  color: #ffffff;
+}
+
+#NautilusPathButton.current-dir,
+.path-bar button:checked {
+  background-color: #2c323b;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+/* ── 4. Flat Transfer / Progress Indicator & Progress Bar ── */
+#NautilusProgressIndicator {
+  margin: 2px 4px;
+}
+
+#NautilusProgressIndicator #operations_button {
+  background-color: #1e2229;
+  color: #ffffff;
+  border: 1px solid #3b424d;
+  border-radius: 5px;
+  padding: 2px 8px;
+  min-height: 24px;
+  box-shadow: none;
+}
+
+#NautilusProgressIndicator #operations_button:hover {
+  background-color: #262b34;
+  border-color: #708294;
+}
+
+#NautilusProgressIndicator #progress_icon {
+  -gtk-icon-palette: success #708294, warning #e5c07b, error #e06c75;
+  margin-right: 5px;
+}
+
+#NautilusProgressIndicator label {
+  font-weight: 600;
+  font-size: 11.5px;
+  color: #ffffff;
+}
+
+/* Popover for active operations */
+#operations_popover > contents {
+  background-color: #181a1e;
+  border: 1px solid #2a2d34;
+  border-radius: 6px;
+  padding: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.operations-list {
+  background: transparent;
+}
+
+.operations-list > row {
+  background-color: #1e2126;
+  border: 1px solid #262a32;
+  border-radius: 5px;
+  padding: 8px 10px;
+  margin: 3px 0;
+  box-shadow: none;
+}
+
+.operations-list > row:hover {
+  background-color: #242830;
+}
+
+/* Flat Red Progress Bar (YouTube Style) */
+NautilusProgressInfoWidget progressbar {
+  min-height: 6px;
+  margin-top: 4px;
+  margin-bottom: 4px;
+}
+
+NautilusProgressInfoWidget progressbar trough {
+  background-color: #282c34;
+  border-radius: 3px;
+  min-height: 6px;
+  border: none;
+  box-shadow: none;
+}
+
+NautilusProgressInfoWidget progressbar progress {
+  background-color: #708294;
+  border-radius: 3px;
+  min-height: 6px;
+  border: none;
+  box-shadow: none;
+}
+
+/* Status Title & Details */
+NautilusProgressInfoWidget label#status {
+  font-weight: 600;
+  font-size: 12.5px;
+  color: #ffffff;
+}
+
+NautilusProgressInfoWidget label#details {
+  font-family: monospace;
+  font-size: 11px;
+  color: #9aa0a6;
+}
+
+NautilusProgressInfoWidget button.circular {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+  border-radius: 4px;
+  background-color: #26292f;
+  border: 1px solid #333842;
+  color: #c0c4cc;
+  box-shadow: none;
+}
+
+NautilusProgressInfoWidget button.circular:hover {
+  background-color: #e06c75;
+  color: #ffffff;
+}
+
+/* ── 5. Sidebar (Flat) ── */
+.navigation-sidebar,
+sidebar,
+navigation-sidebar {
+  background-color: @sidebar_bg_color;
+  border-right: 1px solid @sidebar_border_color;
+  padding: 4px 2px;
+}
+
+.navigation-sidebar row,
+sidebar row,
+navigation-sidebar row {
+  border-radius: 4px;
+  margin: 1px 3px;
+  padding: 4px 8px;
+  color: #b8bcc4;
+  transition: background-color 50ms ease;
+}
+
+.navigation-sidebar row:hover,
+sidebar row:hover,
+navigation-sidebar row:hover {
+  background-color: #1a1c20;
+  color: #ffffff;
+}
+
+.navigation-sidebar row:selected,
+sidebar row:selected,
+navigation-sidebar row:selected {
+  background-color: #23272e;
+  
+  color: #ffffff;
+  font-weight: 500;
+}
+
+/* ── 6. Files View (Flat Grid & List) ── */
+.view,
+view,
+scrolledwindow.view,
+scrolledwindow > viewport.frame {
+  background-color: @view_bg_color;
+  color: @view_fg_color;
+}
+
+.view flowboxchild,
+.view gridview > child,
+gridview > child {
+  border-radius: 4px;
+  padding: 4px;
+  border: 1px solid transparent;
+  box-shadow: none;
+}
+
+.view flowboxchild:hover,
+.view gridview > child:hover,
+gridview > child:hover {
+  background-color: #1e2025;
+}
+
+.view flowboxchild:selected,
+.view gridview > child:selected,
+gridview > child:selected {
+  background-color: #262a32;
+  border-color: #3b424e;
+}
+
+.view listview > row,
+listview > row {
+  border-radius: 4px;
+  padding: 3px 6px;
+  margin: 1px 2px;
+  border: 1px solid transparent;
+  box-shadow: none;
+}
+
+.view listview > row:hover,
+listview > row:hover {
+  background-color: #1e2025;
+}
+
+.view listview > row:selected,
+listview > row:selected {
+  background-color: #262a32;
+  border-color: #3b424e;
+}
+
+/* Selection rectangle */
+rubberband,
+.rubberband {
+  background-color: rgba(112, 130, 148, 0.2);
+  border: 1px solid #708294;
+  border-radius: 2px;
+}
+
+/* ── 7. Search & Entry (Flat) ── */
+entry,
+search-bar entry {
+  background-color: #181a1d;
+  color: #ffffff;
+  border: 1px solid #282c33;
+  border-radius: 4px;
+  padding: 2px 8px;
+  min-height: 24px;
+  font-size: 12px;
+  box-shadow: none;
+}
+
+entry:focus,
+search-bar entry:focus {
+  border-color: #708294;
+  box-shadow: none;
+}
+
+/* ── 8. Tabs (Flat) ── */
+tabbar,
+tabbox {
+  background-color: #101113;
+  border-bottom: 1px solid #1e2024;
+  min-height: 26px;
+}
+
+tabbar tab,
+tabbox tab {
+  min-height: 24px;
+  padding: 1px 10px;
+  border-radius: 4px 4px 0 0;
+  border-bottom: 2px solid transparent;
+  font-size: 11.5px;
+  color: #9aa0a6;
+  box-shadow: none;
+}
+
+tabbar tab:selected,
+tabbox tab:selected {
+  background-color: #16171a;
+  color: #ffffff;
+  border-bottom: 2px solid #708294;
+  font-weight: 600;
+}
+
+/* ── 9. Scrollbar & Separators (Flat) ── */
+scrollbar slider {
+  background-color: #2c3038;
+  border-radius: 3px;
+  min-width: 5px;
+  min-height: 5px;
+  border: none;
+  box-shadow: none;
+}
+
+scrollbar slider:hover {
+  background-color: #434955;
+}
+
+paned > separator {
+  background-color: #1e2024;
+  min-width: 1px;
+  min-height: 1px;
+}

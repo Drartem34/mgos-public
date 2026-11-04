@@ -1,0 +1,139 @@
+* {
+    border: none;
+    border-radius: 0;
+    font-family: "CaskaydiaCove Nerd Font", "Symbols Nerd Font", sans-serif;
+    font-size: 13px;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+}
+
+window#waybar {
+    background-color: #000000;
+    color: #ffffff;
+    border-bottom: 1px solid #141414;
+}
+
+/* Робочі столи: білі круглі крапки та активна пігулка */
+#workspaces {
+    margin: 0 8px;
+    padding: 0;
+}
+
+#workspaces button {
+    box-shadow: none;
+    text-shadow: none;
+    border: none;
+    background-image: none;
+    padding: 0;
+    margin: 11px 4px;
+    min-width: 7px;
+    min-height: 7px;
+    border-radius: 50%;
+    background-color: rgba(255, 255, 255, 0.55);
+    color: transparent;
+    transition: all 0.2s cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+#workspaces button label {
+    font-size: 0px;
+    padding: 0;
+    margin: 0;
+}
+
+#workspaces button.active {
+    box-shadow: none;
+    text-shadow: none;
+    border: none;
+    background-image: none;
+    min-width: 22px;
+    min-height: 7px;
+    border-radius: 999px;
+    background-color: #ffffff;
+    color: transparent;
+}
+
+#workspaces button:hover {
+    background-color: #ffffff;
+}
+
+/* Кружечок режиму живлення / продуктивності */
+#power-profiles-daemon {
+    box-shadow: none;
+    text-shadow: none;
+    border: none;
+    background-image: none;
+    font-size: 0px;
+    padding: 0;
+    margin: 11px 8px 11px 4px;
+    min-width: 7px;
+    min-height: 7px;
+    border-radius: 50%;
+    background-color: #757575;
+    transition: all 0.2s cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+#power-profiles-daemon label {
+    font-size: 0px;
+    padding: 0;
+    margin: 0;
+}
+
+#power-profiles-daemon.power-saver {
+    background-color: #757575;
+}
+
+#power-profiles-daemon.balanced {
+    background-color: #ffffff;
+}
+
+#power-profiles-daemon.performance {
+    background-color: #ff3b30;
+}
+
+/* Модулі: чорний фон, чисто білі символи */
+#clock, #battery, #cpu, #memory, #custom-volume, #backlight {
+    padding: 2px 8px;
+    background-color: transparent;
+    color: #ffffff;
+    font-weight: 500;
+}
+
+#clock {
+    font-weight: bold;
+    color: #ffffff;
+}
+
+/* Анімований модуль гучності */
+#custom-volume {
+    min-width: 56px;
+    transition: all 0.2s ease-in-out;
+}
+
+#custom-volume.bar {
+    color: #ffffff;
+    font-weight: bold;
+}
+
+#custom-volume.muted {
+    color: rgba(255, 255, 255, 0.4);
+}
+
+/* Батарея: чисто білий колір */
+#battery.warning, #battery.critical {
+    color: #ffffff;
+}
+
+#battery.critical:not(.charging) {
+    animation-name: blink;
+    animation-duration: 1s;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+    animation-direction: alternate;
+}
+
+@keyframes blink {
+    to {
+        color: rgba(255, 255, 255, 0.2);
+    }
+}
