@@ -1,0 +1,27 @@
+{
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_Los_Santos_GTA5_Game_Dual_Monitor_Live_Wallpaper.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#0C0814",
+        "foreground": "#ced2d8",
+        "cursor": "#ced2d8"
+    },
+    "colors": {
+        "color0": "#0C0814",
+        "color1": "#AD525D",
+        "color2": "#325A92",
+        "color3": "#526799",
+        "color4": "#AD9088",
+        "color5": "#EBAAAF",
+        "color6": "#FCDCB6",
+        "color7": "#ced2d8",
+        "color8": "#909397",
+        "color9": "#AD525D",
+        "color10": "#325A92",
+        "color11": "#526799",
+        "color12": "#AD9088",
+        "color13": "#EBAAAF",
+        "color14": "#FCDCB6",
+        "color15": "#ced2d8"
+    }
+}

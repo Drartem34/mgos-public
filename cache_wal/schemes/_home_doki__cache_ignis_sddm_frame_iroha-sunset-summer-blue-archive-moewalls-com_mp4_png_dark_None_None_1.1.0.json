@@ -1,0 +1,27 @@
+{
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_iroha-sunset-summer-blue-archive-moewalls-com.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#412223",
+        "foreground": "#f4e3c3",
+        "cursor": "#f4e3c3"
+    },
+    "colors": {
+        "color0": "#412223",
+        "color1": "#EDAE74",
+        "color2": "#FBD179",
+        "color3": "#FDE17E",
+        "color4": "#DD7488",
+        "color5": "#F3B498",
+        "color6": "#EBA8A2",
+        "color7": "#f4e3c3",
+        "color8": "#aa9e88",
+        "color9": "#EDAE74",
+        "color10": "#FBD179",
+        "color11": "#FDE17E",
+        "color12": "#DD7488",
+        "color13": "#F3B498",
+        "color14": "#EBA8A2",
+        "color15": "#f4e3c3"
+    }
+}

@@ -1,0 +1,27 @@
+{
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_hanuma-makoto-swimsuit-blue-archive-moewalls-com.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#034D6F",
+        "foreground": "#cde2f2",
+        "cursor": "#cde2f2"
+    },
+    "colors": {
+        "color0": "#034D6F",
+        "color1": "#2AD4F7",
+        "color2": "#15E6FA",
+        "color3": "#2FEAFB",
+        "color4": "#60E4FA",
+        "color5": "#8EB7E3",
+        "color6": "#9AD7F4",
+        "color7": "#cde2f2",
+        "color8": "#8f9ea9",
+        "color9": "#2AD4F7",
+        "color10": "#15E6FA",
+        "color11": "#2FEAFB",
+        "color12": "#60E4FA",
+        "color13": "#8EB7E3",
+        "color14": "#9AD7F4",
+        "color15": "#cde2f2"
+    }
+}

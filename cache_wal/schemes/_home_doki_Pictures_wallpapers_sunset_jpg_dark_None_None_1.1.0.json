@@ -1,0 +1,27 @@
+{
+    "wallpaper": "/home/doki/Pictures/wallpapers/sunset.jpg",
+    "alpha": "100",
+    "special": {
+        "background": "#090d1d",
+        "foreground": "#b1bbce",
+        "cursor": "#b1bbce"
+    },
+    "colors": {
+        "color0": "#090d1d",
+        "color1": "#38456D",
+        "color2": "#5A4D5E",
+        "color3": "#4D5070",
+        "color4": "#3D4F82",
+        "color5": "#596794",
+        "color6": "#867485",
+        "color7": "#b1bbce",
+        "color8": "#7b8290",
+        "color9": "#38456D",
+        "color10": "#5A4D5E",
+        "color11": "#4D5070",
+        "color12": "#3D4F82",
+        "color13": "#596794",
+        "color14": "#867485",
+        "color15": "#b1bbce"
+    }
+}

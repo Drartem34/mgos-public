@@ -1,0 +1,27 @@
+{
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_kV1sBGwNvy-Wallpaperghgh2Prob4.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#1d8519",
+        "foreground": "#d1f4ce",
+        "cursor": "#d1f4ce"
+    },
+    "colors": {
+        "color0": "#1d8519",
+        "color1": "#361A6E",
+        "color2": "#4C0A76",
+        "color3": "#BD3479",
+        "color4": "#53E293",
+        "color5": "#5B0AB2",
+        "color6": "#5F81B7",
+        "color7": "#d1f4ce",
+        "color8": "#92aa90",
+        "color9": "#361A6E",
+        "color10": "#4C0A76",
+        "color11": "#BD3479",
+        "color12": "#53E293",
+        "color13": "#5B0AB2",
+        "color14": "#5F81B7",
+        "color15": "#d1f4ce"
+    }
+}

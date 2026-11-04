@@ -1,0 +1,27 @@
+{
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_xPalUy36W7-FirefliesFieldLiveWallpaper.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#0C1719",
+        "foreground": "#c5afec",
+        "cursor": "#c5afec"
+    },
+    "colors": {
+        "color0": "#0C1719",
+        "color1": "#997450",
+        "color2": "#C1A724",
+        "color3": "#2B478E",
+        "color4": "#4D549A",
+        "color5": "#5D63E6",
+        "color6": "#CE6FBD",
+        "color7": "#c5afec",
+        "color8": "#897aa5",
+        "color9": "#997450",
+        "color10": "#C1A724",
+        "color11": "#2B478E",
+        "color12": "#4D549A",
+        "color13": "#5D63E6",
+        "color14": "#CE6FBD",
+        "color15": "#c5afec"
+    }
+}

@@ -1,0 +1,27 @@
+{
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_megarex-muse-dash-moewalls-com.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#85521b",
+        "foreground": "#e8c2f1",
+        "cursor": "#e8c2f1"
+    },
+    "colors": {
+        "color0": "#85521b",
+        "color1": "#DD14E5",
+        "color2": "#9F5BF4",
+        "color3": "#EB61F1",
+        "color4": "#41C6F9",
+        "color5": "#EDA7BF",
+        "color6": "#948DF9",
+        "color7": "#e8c2f1",
+        "color8": "#a287a8",
+        "color9": "#DD14E5",
+        "color10": "#9F5BF4",
+        "color11": "#EB61F1",
+        "color12": "#41C6F9",
+        "color13": "#EDA7BF",
+        "color14": "#948DF9",
+        "color15": "#e8c2f1"
+    }
+}

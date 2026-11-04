@@ -1,0 +1,27 @@
+{
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_kEXRNA2yuw-WutheringWavesLucyLiveWallpaper.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#04051D",
+        "foreground": "#96ddf3",
+        "cursor": "#96ddf3"
+    },
+    "colors": {
+        "color0": "#04051D",
+        "color1": "#042FEF",
+        "color2": "#1451D8",
+        "color3": "#044EF7",
+        "color4": "#056EFC",
+        "color5": "#444ACF",
+        "color6": "#0999FB",
+        "color7": "#96ddf3",
+        "color8": "#699aaa",
+        "color9": "#042FEF",
+        "color10": "#1451D8",
+        "color11": "#044EF7",
+        "color12": "#056EFC",
+        "color13": "#444ACF",
+        "color14": "#0999FB",
+        "color15": "#96ddf3"
+    }
+}

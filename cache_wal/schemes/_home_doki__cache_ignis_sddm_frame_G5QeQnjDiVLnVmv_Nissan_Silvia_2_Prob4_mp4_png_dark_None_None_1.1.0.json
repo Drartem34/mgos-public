@@ -1,0 +1,27 @@
+{
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_G5QeQnjDiVLnVmv_Nissan_Silvia_2_Prob4.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#0f0c18",
+        "foreground": "#f2e3eb",
+        "cursor": "#f2e3eb"
+    },
+    "colors": {
+        "color0": "#0f0c18",
+        "color1": "#E6C9B9",
+        "color2": "#ACADD0",
+        "color3": "#D1A3C8",
+        "color4": "#C8B3CB",
+        "color5": "#E6D6D5",
+        "color6": "#EDD6D4",
+        "color7": "#f2e3eb",
+        "color8": "#a99ea4",
+        "color9": "#E6C9B9",
+        "color10": "#ACADD0",
+        "color11": "#D1A3C8",
+        "color12": "#C8B3CB",
+        "color13": "#E6D6D5",
+        "color14": "#EDD6D4",
+        "color15": "#f2e3eb"
+    }
+}

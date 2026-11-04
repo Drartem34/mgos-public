@@ -1,0 +1,27 @@
+{
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_miyako-in-hoodie-blue-archive-moewalls-com.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#0B0917",
+        "foreground": "#c3ccf0",
+        "cursor": "#c3ccf0"
+    },
+    "colors": {
+        "color0": "#0B0917",
+        "color1": "#394595",
+        "color2": "#4F50A7",
+        "color3": "#6074D8",
+        "color4": "#817EDF",
+        "color5": "#7882B7",
+        "color6": "#6F89E9",
+        "color7": "#c3ccf0",
+        "color8": "#888ea8",
+        "color9": "#394595",
+        "color10": "#4F50A7",
+        "color11": "#6074D8",
+        "color12": "#817EDF",
+        "color13": "#7882B7",
+        "color14": "#6F89E9",
+        "color15": "#c3ccf0"
+    }
+}

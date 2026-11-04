@@ -1,0 +1,27 @@
+{
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_pigeon-chilling-by-the-pool-moewalls-com.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#2f3419",
+        "foreground": "#e5e5e2",
+        "cursor": "#e5e5e2"
+    },
+    "colors": {
+        "color0": "#2f3419",
+        "color1": "#5290AF",
+        "color2": "#6395A2",
+        "color3": "#60ACCA",
+        "color4": "#66B6C4",
+        "color5": "#A7BBA6",
+        "color6": "#9AD2D8",
+        "color7": "#e5e5e2",
+        "color8": "#a0a09e",
+        "color9": "#5290AF",
+        "color10": "#6395A2",
+        "color11": "#60ACCA",
+        "color12": "#66B6C4",
+        "color13": "#A7BBA6",
+        "color14": "#9AD2D8",
+        "color15": "#e5e5e2"
+    }
+}

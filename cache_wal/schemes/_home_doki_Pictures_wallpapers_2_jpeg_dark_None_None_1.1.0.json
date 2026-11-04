@@ -1,0 +1,27 @@
+{
+    "wallpaper": "/home/doki/Pictures/wallpapers/2.jpeg",
+    "alpha": "100",
+    "special": {
+        "background": "#151810",
+        "foreground": "#bfd0ee",
+        "cursor": "#bfd0ee"
+    },
+    "colors": {
+        "color0": "#151810",
+        "color1": "#789354",
+        "color2": "#A39E55",
+        "color3": "#2C64E9",
+        "color4": "#4C79E1",
+        "color5": "#778BAE",
+        "color6": "#6092EF",
+        "color7": "#bfd0ee",
+        "color8": "#8591a6",
+        "color9": "#789354",
+        "color10": "#A39E55",
+        "color11": "#2C64E9",
+        "color12": "#4C79E1",
+        "color13": "#778BAE",
+        "color14": "#6092EF",
+        "color15": "#bfd0ee"
+    }
+}

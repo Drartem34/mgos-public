@@ -1,0 +1,70 @@
+Beholder Conductor.desktop 0
+Bodycam.desktop 0
+Counter-Strike 2.desktop 0
+Cyberpunk 2077.desktop 0
+Far Cry 5.desktop 0
+Uncrashed  FPV Drone Simulator.desktop 0
+Waydroid.desktop 0
+antigravity.desktop 0
+avahi-discover.desktop 0
+betaflight-configurator.desktop 0
+bssh.desktop 0
+btop.desktop 0
+bvnc.desktop 0
+chrome-cojpimdhdgemnlfinkpddlagmfjnbonl-Default.desktop 0
+chromium.desktop 0
+cmake-gui.desktop 0
+code.desktop 1
+com.hypixel.HytaleLauncher.desktop 0
+com.usebottles.bottles.App_5edd734dc88622548ef6a192c3282c67668d6f93.desktop 0
+com.usebottles.bottles.desktop 0
+eos-apps-info.desktop 0
+eos-log-tool.desktop 0
+eos-quickstart.desktop 0
+eos-update.desktop 0
+firefox.desktop 0
+google-chrome.desktop 0
+horizon-launcher.desktop 0
+horizon.desktop 0
+jconsole-java-openjdk.desktop 0
+jconsole-java25-openjdk.desktop 0
+jshell-java-openjdk.desktop 0
+jshell-java25-openjdk.desktop 0
+kitty.desktop 0
+lstopo.desktop 0
+megumin-settings.desktop 0
+minecraft-launcher.desktop 0
+modrinth-app.desktop 0
+mpv.desktop 0
+net.lutris.Lutris.desktop 0
+net.lutris.red-dead-redemption-2-1.desktop 0
+nwg-look.desktop 0
+org.gnome.DiskUtility.desktop 0
+org.gnome.Meld.desktop 0
+org.gnome.Nautilus.desktop 0
+org.gnome.baobab.desktop 0
+org.kde.fancontrol.gui.desktop 0
+org.openrgb.OpenRGB.desktop 0
+org.pulseaudio.pavucontrol.desktop 0
+org.telegram.desktop.desktop 0
+qv4l2.desktop 0
+qvidcap.desktop 0
+reflector-simple.desktop 0
+rocks.shy.VacuumTube.desktop 0
+spotify.desktop 0
+steam.desktop 0
+stoken-gui-small.desktop 0
+stoken-gui.desktop 0
+uxterm.desktop 0
+vesktop.desktop 0
+vim.desktop 0
+welcome.desktop 0
+wine-Programs-Radmin VPN-Radmin VPN.desktop 0
+wine-Programs-Radmin VPN-Radmin Viewer 3.desktop 0
+wine-Programs-Rockstar Games-Rockstar Games Launcher.desktop 0
+winetricks.desktop 0
+xgps.desktop 0
+xgpsspeed.desktop 0
+xterm.desktop 0
+yad-icon-browser.desktop 0
+yad-settings.desktop 0

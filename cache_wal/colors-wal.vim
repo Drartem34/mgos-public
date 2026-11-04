@@ -1,0 +1,23 @@
+" Special
+let wallpaper  = "/home/doki/.cache/ignis/sddm_frame.png"
+let background = "#0B0917"
+let foreground = "#c3ccf0"
+let cursor     = "#c3ccf0"
+
+" Colors
+let color0  = "#0B0917"
+let color1  = "#394595"
+let color2  = "#4F50A7"
+let color3  = "#6074D8"
+let color4  = "#817EDF"
+let color5  = "#7882B7"
+let color6  = "#6F89E9"
+let color7  = "#c3ccf0"
+let color8  = "#888ea8"
+let color9  = "#394595"
+let color10 = "#4F50A7"
+let color11 = "#6074D8"
+let color12 = "#817EDF"
+let color13 = "#7882B7"
+let color14 = "#6F89E9"
+let color15 = "#c3ccf0"

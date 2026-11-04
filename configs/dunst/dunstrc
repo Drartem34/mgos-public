@@ -1,0 +1,66 @@
+[global]
+    # --- ГЕОМЕТРІЯ ТА РОЗТАШУВАННЯ (4K ОПТИМІЗАЦІЯ) ---
+    # Розмір (Ширина x Висота) та Відступи (Горизонтальний x Вертикальний)
+    # Горизонтальний відступ 0 забезпечує центрування при origin=bottom-center.
+geometry = "550x120-0-50" 
+    width = (200, 700)
+    height = (100, 150)
+    
+    # Розташування: Внизу по центру
+    origin = "bottom-center" 
+    
+    # --- СТИЛЬ ---
+    corner_radius = 15          # М'які заокруглені кути
+    frame_width = 0             # Прибрано рамку
+    separator_height = 1
+    padding = 16                # Збільшений внутрішній відступ
+    
+    # --- ШРИФТ ТА ІКОНКИ (4K ОПТИМІЗАЦІЯ) ---
+    font = "SF-Pro-Text-Bold 12" # Збільшений розмір шрифту
+    timeout = 3                 # Вікно висить 3 секунди
+    icon_position = left
+    icon_size = 64              # Збільшений розмір іконки
+    max_icon_size = 128
+    notification_limit = 10
+
+    # --- ПРОГРЕС-БАР ---
+    progress_bar = true
+    progress_bar_height = 8 
+    progress_bar_frame_width = 0 
+    progress_bar_min_width = 200
+    progress_bar_max_width = 400
+    
+    # --- ТЕКСТ ТА ПОВЕДІНКА ---
+    alignment = center          # ТЕПЕР ТЕКСТ БУДЕ ПО ЦЕНТРУ!
+    vertical_alignment = center
+    ellipsize = middle
+    ignore_newline = yes
+    stack_duplicates = true
+    hide_duplicate_count = false
+    show_indicators = no
+    sticky_history = yes
+    history_length = 20
+    sort = yes
+
+
+# --- КОЛЬОРОВА СХЕМА (УНІФІКАЦІЯ) ---
+
+[urgency_low]
+    background = "#0b1215"      # Твій темний фон
+    foreground = "#cdd6f4"      # Твій світлий текст
+    frame_color = "#0b1215"
+    
+[urgency_normal]
+    background = "#0b1215"
+    foreground = "#cdd6f4"
+    frame_color = "#0b1215"
+
+[urgency_critical]
+    background = "#0b1215"
+    foreground = "#fa1955"      # Твій критичний червоний
+    frame_color = "#fa1955"
+
+    [custom_osd_hook]
+    summary = "*"
+    script = /home/doki/.config/dunst/notify_hook.sh
+    

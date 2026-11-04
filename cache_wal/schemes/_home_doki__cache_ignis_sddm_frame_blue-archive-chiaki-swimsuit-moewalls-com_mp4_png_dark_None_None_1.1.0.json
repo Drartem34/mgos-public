@@ -1,0 +1,27 @@
+{
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_blue-archive-chiaki-swimsuit-moewalls-com.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#211b3a",
+        "foreground": "#e6e4ec",
+        "cursor": "#e6e4ec"
+    },
+    "colors": {
+        "color0": "#211b3a",
+        "color1": "#C363B0",
+        "color2": "#6499CF",
+        "color3": "#C39BB4",
+        "color4": "#A89ECB",
+        "color5": "#E7ABD3",
+        "color6": "#A7DFEE",
+        "color7": "#e6e4ec",
+        "color8": "#a19fa5",
+        "color9": "#C363B0",
+        "color10": "#6499CF",
+        "color11": "#C39BB4",
+        "color12": "#A89ECB",
+        "color13": "#E7ABD3",
+        "color14": "#A7DFEE",
+        "color15": "#e6e4ec"
+    }
+}

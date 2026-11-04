@@ -1,0 +1,27 @@
+{
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_J9FdYiAaMb-SoftSorrowLiveWallpaper.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#533c39",
+        "foreground": "#e6e9e9",
+        "cursor": "#e6e9e9"
+    },
+    "colors": {
+        "color0": "#533c39",
+        "color1": "#AECAC9",
+        "color2": "#DAC8CA",
+        "color3": "#E5D3D3",
+        "color4": "#EDE2DE",
+        "color5": "#DDDEE1",
+        "color6": "#EED6E4",
+        "color7": "#e6e9e9",
+        "color8": "#a1a3a3",
+        "color9": "#AECAC9",
+        "color10": "#DAC8CA",
+        "color11": "#E5D3D3",
+        "color12": "#EDE2DE",
+        "color13": "#DDDEE1",
+        "color14": "#EED6E4",
+        "color15": "#e6e9e9"
+    }
+}

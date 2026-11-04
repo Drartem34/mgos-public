@@ -1,0 +1,27 @@
+{
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_sakurakouji-luna-raindrops-coffee-tsuki-ni-yorisou-otome-no-sahou-moewalls-com.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#0e101a",
+        "foreground": "#c6ccd5",
+        "cursor": "#c6ccd5"
+    },
+    "colors": {
+        "color0": "#0e101a",
+        "color1": "#58758D",
+        "color2": "#2490B1",
+        "color3": "#5A92AC",
+        "color4": "#1FA3C4",
+        "color5": "#56B2CA",
+        "color6": "#72C3D6",
+        "color7": "#c6ccd5",
+        "color8": "#8a8e95",
+        "color9": "#58758D",
+        "color10": "#2490B1",
+        "color11": "#5A92AC",
+        "color12": "#1FA3C4",
+        "color13": "#56B2CA",
+        "color14": "#72C3D6",
+        "color15": "#c6ccd5"
+    }
+}

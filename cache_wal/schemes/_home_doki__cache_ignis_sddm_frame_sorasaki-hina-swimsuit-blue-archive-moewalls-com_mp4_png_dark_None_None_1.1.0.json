@@ -1,0 +1,27 @@
+{
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_sorasaki-hina-swimsuit-blue-archive-moewalls-com.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#19103f",
+        "foreground": "#f4e1f1",
+        "cursor": "#f4e1f1"
+    },
+    "colors": {
+        "color0": "#19103f",
+        "color1": "#6B5EDD",
+        "color2": "#A864AF",
+        "color3": "#9974EA",
+        "color4": "#EBA4B2",
+        "color5": "#A88BF0",
+        "color6": "#DA9AF0",
+        "color7": "#f4e1f1",
+        "color8": "#aa9da8",
+        "color9": "#6B5EDD",
+        "color10": "#A864AF",
+        "color11": "#9974EA",
+        "color12": "#EBA4B2",
+        "color13": "#A88BF0",
+        "color14": "#DA9AF0",
+        "color15": "#f4e1f1"
+    }
+}

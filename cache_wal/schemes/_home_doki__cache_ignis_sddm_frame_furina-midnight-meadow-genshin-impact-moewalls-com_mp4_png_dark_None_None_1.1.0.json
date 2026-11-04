@@ -1,0 +1,27 @@
+{
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_furina-midnight-meadow-genshin-impact-moewalls-com.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#0E1318",
+        "foreground": "#b1bfcd",
+        "cursor": "#b1bfcd"
+    },
+    "colors": {
+        "color0": "#0E1318",
+        "color1": "#335574",
+        "color2": "#4B5E6F",
+        "color3": "#33618E",
+        "color4": "#4D6E8D",
+        "color5": "#2179C0",
+        "color6": "#548FB9",
+        "color7": "#b1bfcd",
+        "color8": "#7b858f",
+        "color9": "#335574",
+        "color10": "#4B5E6F",
+        "color11": "#33618E",
+        "color12": "#4D6E8D",
+        "color13": "#2179C0",
+        "color14": "#548FB9",
+        "color15": "#b1bfcd"
+    }
+}

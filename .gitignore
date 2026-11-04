@@ -1,0 +1,19 @@
+# Шпалери — кілька ГБ, у репозиторій не йдуть (інсталятор просто пропустить крок шпалер)
+/wallpapers/
+# Секрети: токени Google Drive
+configs/rclone/rclone.conf
+**/rclone.conf
+# Точки відкату, логи, резервні копії
+/cache/
+/gui.bak-*/
+*.log
+configs/OpenRGB/logs/
+nohup.out
+*.bak
+*.bak-*
+*.save
+# Збирається на кожній машині під її бібліотеки (install-gui.sh / gui/build.sh)
+/gui/mgos-installer
+/gui/mgos-installer.new
+__pycache__/
+*.pyc

@@ -1,0 +1,27 @@
+{
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_Ghost_Girl-Boo_3840x2160.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#121212",
+        "foreground": "#e7e7e6",
+        "cursor": "#e7e7e6"
+    },
+    "colors": {
+        "color0": "#121212",
+        "color1": "#80807E",
+        "color2": "#909090",
+        "color3": "#A09F9F",
+        "color4": "#B4B4B4",
+        "color5": "#C0C0BF",
+        "color6": "#CFCFCF",
+        "color7": "#e7e7e6",
+        "color8": "#a1a1a1",
+        "color9": "#80807E",
+        "color10": "#909090",
+        "color11": "#A09F9F",
+        "color12": "#B4B4B4",
+        "color13": "#C0C0BF",
+        "color14": "#CFCFCF",
+        "color15": "#e7e7e6"
+    }
+}

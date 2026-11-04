@@ -1,0 +1,27 @@
+{
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_1773916705.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#000915",
+        "foreground": "#8bb0d0",
+        "cursor": "#8bb0d0"
+    },
+    "colors": {
+        "color0": "#000915",
+        "color1": "#0B3B8C",
+        "color2": "#114995",
+        "color3": "#1F609A",
+        "color4": "#1352A8",
+        "color5": "#166AAE",
+        "color6": "#1C74BD",
+        "color7": "#8bb0d0",
+        "color8": "#617b91",
+        "color9": "#0B3B8C",
+        "color10": "#114995",
+        "color11": "#1F609A",
+        "color12": "#1352A8",
+        "color13": "#166AAE",
+        "color14": "#1C74BD",
+        "color15": "#8bb0d0"
+    }
+}

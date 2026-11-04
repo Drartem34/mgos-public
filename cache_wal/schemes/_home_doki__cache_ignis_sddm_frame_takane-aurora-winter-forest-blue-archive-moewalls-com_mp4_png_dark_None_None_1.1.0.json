@@ -1,0 +1,27 @@
+{
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_takane-aurora-winter-forest-blue-archive-moewalls-com.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#161b42",
+        "foreground": "#a6c0e8",
+        "cursor": "#a6c0e8"
+    },
+    "colors": {
+        "color0": "#161b42",
+        "color1": "#3A64C7",
+        "color2": "#4E72D2",
+        "color3": "#A73D8D",
+        "color4": "#AC4292",
+        "color5": "#C8549E",
+        "color6": "#5498B8",
+        "color7": "#a6c0e8",
+        "color8": "#7486a2",
+        "color9": "#3A64C7",
+        "color10": "#4E72D2",
+        "color11": "#A73D8D",
+        "color12": "#AC4292",
+        "color13": "#C8549E",
+        "color14": "#5498B8",
+        "color15": "#a6c0e8"
+    }
+}

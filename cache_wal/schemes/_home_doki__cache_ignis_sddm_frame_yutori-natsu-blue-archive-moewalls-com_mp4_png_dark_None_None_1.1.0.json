@@ -1,0 +1,27 @@
+{
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_yutori-natsu-blue-archive-moewalls-com.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#261f25",
+        "foreground": "#eae6e5",
+        "cursor": "#eae6e5"
+    },
+    "colors": {
+        "color0": "#261f25",
+        "color1": "#CC9EA3",
+        "color2": "#CEB2B3",
+        "color3": "#E0C8B1",
+        "color4": "#ADB5D1",
+        "color5": "#D2BBC5",
+        "color6": "#ECD3CF",
+        "color7": "#eae6e5",
+        "color8": "#a3a1a0",
+        "color9": "#CC9EA3",
+        "color10": "#CEB2B3",
+        "color11": "#E0C8B1",
+        "color12": "#ADB5D1",
+        "color13": "#D2BBC5",
+        "color14": "#ECD3CF",
+        "color15": "#eae6e5"
+    }
+}
