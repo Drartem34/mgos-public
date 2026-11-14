@@ -5,20 +5,36 @@ user_pref("media.hardware-video-decoding.force-enabled", true);
 user_pref("widget.dmabuf.force-enabled", true);
 
 // Попереднє встановлення з'єднань при наведенні на посилання
-user_pref("network.http.speculative-parallel-limit", 10);
 user_pref("network.dns.disablePrefetch", false);
-user_pref("network.prefetch-next", true);
 
-// Кешування в оперативну пам'ять (RAM Cache замість диску)
-user_pref("browser.cache.disk.enable", false);
+// Кеш: на диск (NVMe швидкий), у RAM лише невеликий гарячий шар
+user_pref("browser.cache.disk.enable", true);
+user_pref("browser.cache.disk.smart_size.enabled", false);
+user_pref("browser.cache.disk.capacity", 1048576);       // 1 ГБ на диску
 user_pref("browser.cache.memory.enable", true);
-user_pref("browser.cache.memory.capacity", 524288); // 512 МБ під ультрашвидкий RAM кеш
-user_pref("browser.cache.memory.max_entry_size", 51200); // Ліміт розміру одного файлу в RAM (50 МБ)
+user_pref("browser.cache.memory.capacity", 65536);       // 64 МБ у RAM (було 512)
+user_pref("browser.cache.memory.max_entry_size", 5120);  // 5 МБ на файл
 
-// Автоматичний сон для фонових неактивних вкладок
+// Вивантаження вкладок, коли RAM закінчується (Linux рахує у % вільної пам'яті)
 user_pref("browser.tabs.unloadOnLowMemory", true);
-user_pref("browser.tabs.min_inactive_duration_before_unload", 600000); // 10 хвилин
-user_pref("browser.low_commit_space_threshold_mb", 3072);
+user_pref("browser.low_commit_space_threshold_percent", 20); // <20% вільної → спати старі вкладки
+user_pref("browser.tabs.min_inactive_duration_before_unload", 300000); // не чіпати вкладки, активні за 5 хв
+
+// Менше сторінок «назад» тримаємо цілими в пам'яті (bfcache)
+user_pref("browser.sessionhistory.max_total_viewers", 2);
+user_pref("browser.sessionhistory.max_entries", 25);
+
+// Декодовані картинки: стеля кешу й швидше скидання невидимих
+user_pref("image.mem.surfacecache.max_size_kb", 262144); // 256 МБ
+user_pref("image.mem.surfacecache.min_expiration_ms", 30000);
+
+// Не тримати прогрітий процес про запас
+user_pref("dom.ipc.processPrelaunch.enabled", false);
+user_pref("browser.tabs.remote.warmup.enabled", false);
+
+// Без префетчу сторінок, які, можливо, й не відкриєш
+user_pref("network.prefetch-next", false);
+user_pref("network.http.speculative-parallel-limit", 4);
 
 // ── Ультраплавний скролінг (SmoothScroll / Smooth kinetic scrolling) ──
 user_pref("general.smoothScroll", true);

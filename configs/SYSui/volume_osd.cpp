@@ -83,7 +83,7 @@ void update_volume_ui() {
     }
     
     float bar_vol = (vol > 1.0f) ? 1.0f : vol; 
-    gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(progress_bar), bar_vol);
+    sysui::animate_fraction(progress_bar, bar_vol);
     
     if (vol > 1.0f) {
         gtk_widget_add_css_class(progress_bar, "overvol");
@@ -124,14 +124,14 @@ void apply_css() {
         window { background: transparent; }
         * { font-family: "JetBrainsMono Nerd Font", "SF Pro Display", sans-serif; outline: none; border: none; }
         
-        .osd-box {
+        .vol-box {
             background-color: )" + bg_rgba + R"(;
             border: 1px solid rgba(128, 128, 128, 0.2);
             border-radius: 15px;
             padding: 0 15px;
         }
 
-        .icon { color: )" + fg_color + R"(; font-size: 20px; margin-right: 12px; }
+        .vol-icon { color: )" + fg_color + R"(; font-size: 20px; margin-right: 12px; }
         
         progressbar trough { 
             background-color: )" + fg_trough + R"(; 
@@ -248,14 +248,15 @@ static void activate(GtkApplication* app, gpointer) {
     
     gtk_layer_set_anchor(GTK_WINDOW(osd_window), GTK_LAYER_SHELL_EDGE_BOTTOM, TRUE);
     gtk_layer_set_margin(GTK_WINDOW(osd_window), GTK_LAYER_SHELL_EDGE_BOTTOM, 120); 
+    sysui::follow_osd_position(osd_window, false);   // «Налаштування → OSD»
 
     GtkWidget* main_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-    gtk_widget_add_css_class(main_box, "osd-box");
+    gtk_widget_add_css_class(main_box, "vol-box");
     gtk_widget_set_size_request(main_box, 200, 60);
     gtk_widget_set_halign(main_box, GTK_ALIGN_CENTER);
 
     icon_label = gtk_label_new("󰕾");
-    gtk_widget_add_css_class(icon_label, "icon");
+    gtk_widget_add_css_class(icon_label, "vol-icon");
 
     progress_bar = gtk_progress_bar_new();
     gtk_widget_set_valign(progress_bar, GTK_ALIGN_CENTER);

@@ -720,6 +720,8 @@ if [ -d "./system_state" ]; then
     gum spin --spinner line --title "$(t spin_state)" -- bash -c '
         mkdir -p ~/.cache/ignis ~/.cache/megumin-os
         [ -f ./system_state/last_wallpaper.txt ] && sed "s|'"$SRC_HOME"'|$HOME|g" ./system_state/last_wallpaper.txt > ~/.cache/ignis/last_wallpaper.txt
+        # шпалер-файлів у репозиторії немає (кілька ГБ) — якщо збережених шпалер на цьому ПК нема, ставимо живі піксельні
+        _wp=$(head -1 ~/.cache/ignis/last_wallpaper.txt 2>/dev/null); case "$_wp" in pixel:*) ;; *) [ -n "$_wp" ] && { [ -e "$_wp" ] || [ -e "./wallpapers/${_wp##*/}" ]; } || echo "pixel:aurora" > ~/.cache/ignis/last_wallpaper.txt;; esac
         [ -f ./system_state/dock_history.txt ] && [ ! -f ~/.cache/megumin-os/dock_history.txt ] && cp ./system_state/dock_history.txt ~/.cache/megumin-os/
         true'
 fi
@@ -731,8 +733,10 @@ else
 fi
 
 if [ -d "./plymouth_theme" ]; then
-    gum spin --spinner line --title "$(t spin_plymouth)" -- bash -c 'sudo mkdir -p /usr/share/plymouth/themes/spinner/; sudo cp -r ./plymouth_theme/* /usr/share/plymouth/themes/spinner/ 2>/dev/null||true; sudo plymouth-set-default-theme -R spinner 2>/dev/null||true'
-    gum spin --spinner line --title "$(t spin_initram)" -- bash -c 'if command -v dracut &>/dev/null; then sudo dracut -f --no-hostonly-cmdline 2>/dev/null||true; elif command -v mkinitcpio &>/dev/null; then sudo mkinitcpio -P 2>/dev/null||true; fi'
+    # окрема тема «mgos»: пакетну «spinner» оновлення plymouth перезаписує лого «arch linux»
+    gum spin --spinner line --title "$(t spin_plymouth)" -- bash -c 'D=/usr/share/plymouth/themes/mgos; sudo mkdir -p "$D"; sudo cp -r ./plymouth_theme/. "$D/"; sudo rm -f "$D/spinner.plymouth"; sed -E -e "/^Name\[/d" -e "s|^Name=.*|Name=mgOS|" -e "s|^ImageDir=.*|ImageDir=$D|" ./plymouth_theme/*.plymouth | sudo install -Dm644 /dev/stdin "$D/mgos.plymouth"; sudo plymouth-set-default-theme mgos 2>/dev/null||true'
+    # dracut --regenerate-all на EndeavourOS пише в /boot/efi/<machine-id> і падає — тому dracut-rebuild / явний шлях
+    gum spin --spinner line --title "$(t spin_initram)" -- bash -c 'if command -v dracut-rebuild &>/dev/null; then sudo dracut-rebuild >/dev/null 2>&1||true; elif command -v dracut &>/dev/null; then for m in /usr/lib/modules/*/; do [ -f "$m/pkgbase" ] && sudo dracut -f --hostonly --no-hostonly-cmdline "/boot/initramfs-$(<"$m/pkgbase").img" "$(basename "$m")" 2>/dev/null; done; elif command -v mkinitcpio &>/dev/null; then sudo mkinitcpio -P 2>/dev/null||true; fi'
 fi
 
 if [ -d "./scripts" ]; then
@@ -793,6 +797,16 @@ if [ -f ~/.config/megumin-os/sync_sddm.sh ]; then
     rm -f "$SUDOERS_TMP"
 fi
 
+# Тема входу mgOS Pixel + шпалери/акцент/налаштування екрана входу (той самий скрипт, що й у системі)
+if [ -f ~/.config/megumin-os/sync_sddm.sh ]; then
+    gum spin --spinner line --title "🌟 Тема входу mgOS Pixel..." -- bash -c 'sudo bash ~/.config/megumin-os/sync_sddm.sh >/dev/null 2>&1' || true
+fi
+# zram: стиснена пам'ять у RAM; сховані в доці програми стискаються туди
+if [ -x ~/.local/bin/mgos-zram ]; then
+    [ -x ~/.config/SYSui/mgos-pageout ] || bash ~/.config/SYSui/build.sh pageout >/dev/null 2>&1 || true
+    gum spin --spinner line --title "🗜 zram..." -- bash -c 'sudo ~/.local/bin/mgos-zram setup >/dev/null 2>&1' || true
+fi
+
 bios_section "$(t sec_shell)"
 if [ "$SHELL" != "/usr/bin/fish" ]; then
     if gum confirm "$(t q_fish)"; then chsh -s /usr/bin/fish; fi
@@ -827,7 +841,7 @@ for cmd in hyprctl ignis dunst awww mpvpaper socat nmcli wpctl grim slurp cliphi
 done
 vcheck "python3 + PyQt6" python3 -c "import PyQt6.QtWidgets"
 if [ -d ~/.config/SYSui ]; then
-    for b in dock topbar cc_osd runner_osd wallpapers clipboard_osd notify_osd megumin_osd powermenu_osd volume_osd about_osd; do
+    for b in dock topbar cc_osd runner_osd wallpapers clipboard_osd osd_hub powermenu_osd about_osd; do
         # бінарник є, виконуваний і всі бібліотеки знаходяться
         vcheck "SYSui/$b" bash -c "[ -x ~/.config/SYSui/$b ] && ! ldd ~/.config/SYSui/$b | grep -q 'not found'"
     done

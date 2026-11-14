@@ -138,7 +138,7 @@ def apply_actual_wallpaper(path):
             except: pass
             
         shaders_opt = "glsl-shaders=/home/doki/.config/mpv/shaders/Anime4K_Restore_CNN_VL.glsl,/home/doki/.config/mpv/shaders/Anime4K_Upscale_CNN_x2_VL.glsl,/home/doki/.config/mpv/shaders/Anime4K_Restore_CNN_M.glsl" if anime4k_enabled else "glsl-shaders="
-        os.system(f"nohup mpvpaper -o 'config=no {shaders_opt} input-ipc-server=/tmp/mpv-socket loop-file=inf hwdec=auto no-audio panscan=1.0' '*' '{path}' >/dev/null 2>&1 &")
+        os.system(f"nohup nice -n 19 mpvpaper -o 'config=no {shaders_opt} input-ipc-server=/tmp/mpv-socket loop-file=inf hwdec=auto-safe no-audio panscan=1.0' '*' '{path}' >/dev/null 2>&1 &")
     else:
         # Для звичайних картинок
         subprocess.run("pkill -9 mpvpaper", shell=True, stderr=subprocess.DEVNULL)
@@ -193,7 +193,9 @@ def handle_wallpaper_selection(path):
     global current_dynamic_folder
     with open(LAST_WALLPAPER_FILE, "w") as f: f.write(path)
     if os.path.isdir(path):
+        global _last_dynamic_target
         current_dynamic_folder = path
+        _last_dynamic_target = None
         check_and_apply_dynamic_wallpaper() 
     else:
         current_dynamic_folder = None 
@@ -202,13 +204,27 @@ def handle_wallpaper_selection(path):
 
 def check_and_apply_dynamic_wallpaper():
     global current_dynamic_folder
+    # шпалери могли змінити SYSui (Super+W) чи «Налаштування» — орієнтуємось на last_wallpaper.txt
+    try:
+        with open(LAST_WALLPAPER_FILE) as f: last = f.read().strip()
+        current_dynamic_folder = last if os.path.isdir(last) else None
+    except Exception:
+        pass
     if not current_dynamic_folder: return True 
     hour = datetime.datetime.now().hour
     period = "morning" if 6 <= hour < 12 else "day" if 12 <= hour < 18 else "evening" if 18 <= hour < 22 else "night"
     for ext in ['jpg', 'png', 'jpeg', 'webp', 'mp4', 'webm', 'gif']:
         target = os.path.join(current_dynamic_folder, f"{period}.{ext}")
-        if os.path.exists(target): apply_actual_wallpaper(target); break
+        if os.path.exists(target):
+            # перезапускати mpvpaper/awww лише коли змінилась пора доби
+            global _last_dynamic_target
+            if target != _last_dynamic_target:
+                _last_dynamic_target = target
+                apply_actual_wallpaper(target)
+            break
     return True 
+
+_last_dynamic_target = None
 
 def on_toggle(action, param):
     if wp_window:
@@ -286,9 +302,20 @@ def setup(app_instance):
     app_instance.add_action(action)
 
     # --- ВІДНОВЛЕННЯ ПРИ ЗАПУСКУ ---
+    # Самі шпалери при вході піднімає ~/.config/SYSui/wallpaper_restore.sh (один бекенд, без
+    # мерехтіння). Тут лише запам'ятовуємо динамічну теку, щоб таймер міняв кадр протягом дня.
     def restore():
+        global current_dynamic_folder
         if os.path.exists(LAST_WALLPAPER_FILE):
             with open(LAST_WALLPAPER_FILE, "r") as f: path = f.read().strip()
-            if os.path.exists(path): apply_actual_wallpaper(path)
-    
-    utils.Timeout(1000, restore)
+            if os.path.isdir(path):
+                current_dynamic_folder = path
+                # кадр уже поставив wallpaper_restore.sh — запам'ятовуємо, щоб не перезапускати
+                global _last_dynamic_target
+                h = datetime.datetime.now().hour
+                per = "morning" if 6 <= h < 12 else "day" if 12 <= h < 18 else "evening" if 18 <= h < 22 else "night"
+                for ext in ['jpg', 'png', 'jpeg', 'webp', 'mp4', 'webm', 'gif']:
+                    t = os.path.join(path, f"{per}.{ext}")
+                    if os.path.exists(t): _last_dynamic_target = t; break
+
+    restore()

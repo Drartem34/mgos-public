@@ -9,7 +9,7 @@ alias ls='ls --color=auto'
 alias grep='grep --color=auto'
 PS1='[\u@\h \W]\$ '
 
-. "$HOME/.local/bin/env"
+[ -f "$HOME/.local/bin/env" ] && . "$HOME/.local/bin/env"
 export PATH="$HOME/.npm-global/bin:$PATH"
 
 
@@ -18,3 +18,6 @@ export PATH="/home/doki/.local/bin:$PATH"
 
 # kimi-code
 export PATH="/home/doki/.kimi-code/bin:$PATH"
+
+# kioskOS — енергоощадна сесія Hyprland (з TTY: kiosk)
+alias kiosk="Hyprland -c ~/.config/hyprland/kiosk.conf"

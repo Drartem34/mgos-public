@@ -34,7 +34,7 @@ GtkCssProvider* g_css_provider = nullptr;
 std::atomic<bool> is_loading{false};
 std::atomic<uint64_t> generation_id{0}; // збільшується при кожному reload — старі callbacks ігноруються
 
-enum FilterMode { ALL, IMAGES, VIDEOS };
+enum FilterMode { ALL, IMAGES, VIDEOS, DYNAMIC };
 FilterMode current_filter = ALL;
 
 // ================= УТИЛІТИ ТА КОЛЬОРИ =================
@@ -113,7 +113,7 @@ void reload_wal_colors() {
 void apply_wallpaper(const std::string& path) {
     bool is_video = has_ext(path, {"mp4", "webm", "gif"});
     
-    exec_cmd("pkill -9 mpvpaper");
+    exec_cmd("pkill -9 mpvpaper; pkill -x pixel_wallpaper");
     if (is_video) {
         exec_cmd("killall awww-daemon; rm -f /tmp/mpv-socket");
         
@@ -125,7 +125,7 @@ void apply_wallpaper(const std::string& path) {
             mpv_opts = "profile=wallpaper "
                        "input-ipc-server=/tmp/mpv-socket "
                        "loop-file=inf "
-                       "hwdec=nvdec "
+                       "hwdec=auto-safe "
                        "no-audio "
                        "panscan=1.0 "
                        "cache=no "
@@ -137,13 +137,17 @@ void apply_wallpaper(const std::string& path) {
                        "glsl-shaders= "
                        "input-ipc-server=/tmp/mpv-socket "
                        "loop-file=inf "
-                       "hwdec=nvdec "
+                       "hwdec=auto-safe "
                        "no-audio "
                        "panscan=1.0 "
                        "cache=no "
                        "demuxer-max-bytes=512KiB "
                        "demuxer-max-back-bytes=128KiB";
         }
+        // mgos-power у режимі батареї ставить відео-шпалери на паузу (кадр лишається на екрані).
+        // Якщо шпалери міняють саме зараз — стартуємо одразу на паузі.
+        const char* rt = getenv("XDG_RUNTIME_DIR");
+        if (rt && access((std::string(rt) + "/mgos-power/battery").c_str(), F_OK) == 0) mpv_opts += " pause";
         exec_cmd("nohup nice -n 19 mpvpaper -o '" + mpv_opts + "' '*' '" + path + "' &");
     } else {
         exec_cmd("pgrep awww-daemon || (awww-daemon & sleep 0.5)");
@@ -160,6 +164,7 @@ void apply_wallpaper(const std::string& path) {
             target = std::string(getenv("HOME")) + "/.cache/ignis/sddm_frame.png";
             exec_cmd("ffmpeg -i '" + path + "' -ss 00:00:00.000 -vframes 1 '" + target + "' -y");
         }
+        exec_cmd(sysui::home() + "/.local/bin/mgos-wp-poster >/dev/null 2>&1");   // миттєвий постер для входу й SDDM
         exec_cmd("wal -q -t -i '" + target + "'");
         exec_cmd("killall -SIGUSR2 waybar");
         exec_cmd("sudo -n " + sysui::home() + "/.config/megumin-os/sync_sddm.sh");
@@ -169,18 +174,21 @@ void apply_wallpaper(const std::string& path) {
 }
 
 std::string generate_thumbnail_blocking(const std::string& path) {
-    std::string thumb_path = CACHE_DIR + "/" + get_hash(path) + ".png";
-    if (fs::exists(thumb_path)) return thumb_path;
-
     std::string source = path;
     if (fs::is_directory(path)) {
         source = path + "/day.jpg"; 
         if (!fs::exists(source)) source = path + "/day.png";
         if (!fs::exists(source)) return path; 
     }
+    // відео: нова назва (_c) — старі мініатюри були сплющені в квадрат; картинки — старий кеш
+    const bool vid = has_ext(source, {"mp4", "webm", "gif", "mkv", "mov"});
+    std::string thumb_path = CACHE_DIR + "/" + get_hash(path) + (vid ? "_c.png" : ".png");
+    if (fs::exists(thumb_path)) return thumb_path;
 
-    if (has_ext(source, {"mp4", "webm", "gif"})) {
-        exec_cmd("ffmpeg -i '" + source + "' -ss 00:00:00.000 -vframes 1 -s " + std::to_string(THUMB_SIZE) + "x" + std::to_string(THUMB_SIZE) + " '" + thumb_path + "' -y");
+    if (vid) {
+        const std::string S = std::to_string(THUMB_SIZE);
+        exec_cmd("ffmpeg -loglevel error -i '" + source + "' -frames:v 1 -vf 'scale=" + S + ":" + S +
+                 ":force_original_aspect_ratio=increase,crop=" + S + ":" + S + "' '" + thumb_path + "' -y");
     } else {
         exec_cmd("magick '" + source + "' -resize " + std::to_string(THUMB_SIZE) + "x" + std::to_string(THUMB_SIZE) + "^ -gravity center -extent " + std::to_string(THUMB_SIZE) + "x" + std::to_string(THUMB_SIZE) + " '" + thumb_path + "'");
     }
@@ -207,7 +215,7 @@ gboolean add_card_to_ui(gpointer data) {
     
     GtkWidget* card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_add_css_class(card, "wp-card");
-    gtk_widget_set_size_request(card, 220, 140);
+    gtk_widget_set_size_request(card, 216, 136);
     
     // ЛІНИВЕ ЗАВАНТАЖЕННЯ: раніше одразу створювалась повна текстура для КОЖНОЇ
     // з ~215 шпалер (350x350 RGBA ≈ 0.5 МБ × 215 ≈ 100 МБ). Тепер картка порожня,
@@ -218,7 +226,25 @@ gboolean add_card_to_ui(gpointer data) {
     gtk_widget_set_vexpand(pic, TRUE);
     gtk_widget_add_css_class(pic, "wp-pic");
     
-    gtk_box_append(GTK_BOX(card), pic);
+    GtkWidget* ov = gtk_overlay_new();
+    gtk_overlay_set_child(GTK_OVERLAY(ov), pic);
+    gtk_widget_set_vexpand(ov, TRUE);
+    bool is_dir = fs::is_directory(cd->original);
+    bool is_vid = !is_dir && has_ext(cd->original, {"mp4", "webm", "gif", "mkv", "mov"});
+    if (is_dir || is_vid) {
+        GtkWidget* badge = gtk_label_new(is_vid ? "\U000F040A" : "\U000F0150");
+        gtk_widget_add_css_class(badge, "wp-badge");
+        gtk_widget_set_halign(badge, GTK_ALIGN_START);
+        gtk_widget_set_valign(badge, GTK_ALIGN_START);
+        gtk_overlay_add_overlay(GTK_OVERLAY(ov), badge);
+    }
+    GtkWidget* check = gtk_label_new("\U000F012C");
+    gtk_widget_add_css_class(check, "wp-check");
+    gtk_widget_set_halign(check, GTK_ALIGN_END);
+    gtk_widget_set_valign(check, GTK_ALIGN_END);
+    gtk_overlay_add_overlay(GTK_OVERLAY(ov), check);
+    gtk_box_append(GTK_BOX(card), ov);
+    gtk_widget_set_tooltip_text(card, fs::path(cd->original).stem().c_str());
 
     GtkWidget* child = gtk_flow_box_child_new();
     gtk_flow_box_child_set_child(GTK_FLOW_BOX_CHILD(child), card);
@@ -228,6 +254,10 @@ gboolean add_card_to_ui(gpointer data) {
     g_object_set_data_full(G_OBJECT(child), "wp-thumb", g_strdup(cd->thumb.c_str()), g_free);
     g_object_set_data(G_OBJECT(child), "wp-pic", pic);
 
+    {
+        std::ifstream lf(LAST_WP_FILE); std::string cur; std::getline(lf, cur);
+        if (cur == cd->original) gtk_widget_add_css_class(child, "current");
+    }
     gtk_flow_box_insert(GTK_FLOW_BOX(flow_box), child, -1);
     schedule_thumb_update();
 
@@ -271,7 +301,7 @@ static gboolean update_thumbs(gpointer) {
             const char* thumb = (const char*)g_object_get_data(G_OBJECT(c), "wp-thumb");
             int w = std::max(1, gtk_widget_get_width(pic));
             int h = std::max(1, gtk_widget_get_height(pic));
-            if (w < 50 || h < 50) { w = 220; h = 140; }
+            if (w < 50 || h < 50) { w = 216; h = 136; }
             GdkTexture* t = sysui::load_texture_cover(thumb, (int)(w * scale), (int)(h * scale));
             if (t) { gtk_picture_set_paintable(GTK_PICTURE(pic), GDK_PAINTABLE(t)); g_object_unref(t); }
             loaded_now++;
@@ -321,7 +351,7 @@ void scan_wallpapers_thread(uint64_t gen) {
 
     std::vector<std::string> files;
     if (fs::exists(WALLPAPER_DIR)) {
-        std::vector<std::string> valid_exts = {"png", "jpg", "jpeg", "webp", "mp4", "webm", "gif"};
+        std::vector<std::string> valid_exts = {"png", "jpg", "jpeg", "webp", "mp4", "webm", "gif", "mkv", "mov"};
         for (const auto& entry : fs::directory_iterator(WALLPAPER_DIR)) {
             std::string path = entry.path().string();
             if (has_ext(path, valid_exts) || fs::is_directory(path)) {
@@ -329,7 +359,8 @@ void scan_wallpapers_thread(uint64_t gen) {
             }
         }
     }
-    std::sort(files.begin(), files.end());
+    std::sort(files.begin(), files.end(), [](const std::string& a, const std::string& b) {
+        return strcasecmp(a.c_str(), b.c_str()) < 0; });
 
     for (const auto& f : files) {
         // Перевіряємо що наш скан ще актуальний перед важкою операцією
@@ -367,10 +398,18 @@ gboolean on_socket_message(GIOChannel *source, GIOCondition condition, gpointer 
     int client_fd = accept(server_fd, NULL, NULL);
     
     if (client_fd >= 0) {
-        char buffer[256] = {0};
+        char buffer[4096] = {0};
         int bytes_read = read(client_fd, buffer, sizeof(buffer)-1);
         if (bytes_read > 0) {
             std::string command(buffer);
+            while (!command.empty() && (command.back() == '\n' || command.back() == '\r')) command.pop_back();
+            // «set <шлях>» — поставити шпалери без вікна (привітання mgOS, скрипти)
+            if (command.rfind("set ", 0) == 0) {
+                std::string path = command.substr(4);
+                if (fs::exists(path)) apply_wallpaper(path);
+                close(client_fd);
+                return G_SOURCE_CONTINUE;
+            }
             if (command.find("toggle") != std::string::npos || command.find("show") != std::string::npos) {
                 bool is_vis = gtk_widget_get_visible(wp_window);
                 if (!is_vis || command.find("show") != std::string::npos) {
@@ -438,9 +477,11 @@ void on_child_activated(GtkFlowBox*, GtkFlowBoxChild* child, gpointer) {
 gboolean filter_func(GtkFlowBoxChild *child, gpointer data) {
     const char* path = (const char*)g_object_get_data(G_OBJECT(child), "wp-path");
     if (!path) return FALSE;
-    bool is_video = has_ext(path, {"mp4", "webm", "gif"});
-    if (current_filter == VIDEOS && !is_video) return FALSE;
-    if (current_filter == IMAGES && is_video) return FALSE;
+    bool is_dir = fs::is_directory(path);
+    bool is_video = !is_dir && has_ext(path, {"mp4", "webm", "gif", "mkv", "mov"});
+    if (current_filter == VIDEOS) return is_video;
+    if (current_filter == IMAGES) return !is_video && !is_dir;
+    if (current_filter == DYNAMIC) return is_dir;
     return TRUE;
 }
 
@@ -521,60 +562,73 @@ static gboolean on_key_pressed(GtkEventControllerKey* controller, guint keyval, 
 void apply_css() {
     if (!g_css_provider) g_css_provider = gtk_css_provider_new();
     reload_wal_colors();
+    // Стиль «Налаштувань» mgOS (macOS 26): скляна панель, сегментований перемикач, кільце акценту
+    const bool light = sysui::is_light_theme();
+    const std::string panel = light ? "rgba(246,246,248,0.94)" : "rgba(30,30,32,0.92)";
+    const std::string border = light ? "rgba(0,0,0,0.12)" : "rgba(255,255,255,0.12)";
+    const std::string fg = light ? "#1d1d1f" : "#f5f5f7";
+    const std::string fg2 = light ? "#86868b" : "#98989f";
+    const std::string seg = light ? "rgba(118,118,128,0.14)" : "rgba(118,118,128,0.26)";
+    const std::string seg_sel = light ? "#ffffff" : "#636366";
+    const std::string hover = light ? "rgba(0,0,0,0.28)" : "rgba(255,255,255,0.38)";
 
-    std::string bg_rgba = hex_to_rgba(g_wal.bg, "0.65");
-    
     std::string css = R"(
         window { background: transparent; }
-        * { outline: none; border: none; font-family: "JetBrainsMono Nerd Font", sans-serif; }
-        
+        .main-box, .main-box * { outline: none; font-family: "SF Pro Display", "Inter", sans-serif; }
         .main-box {
-            background-color: )" + bg_rgba + R"(;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 20px;
-            padding: 25px;
+            background-color: )" + panel + R"(;
+            border: 1px solid )" + border + R"(;
+            border-radius: 28px;
+            padding: 22px 26px 18px 26px;
+            box-shadow: 0 18px 50px rgba(0,0,0,0.40);
         }
+        .header-title { font-size: 22px; font-weight: 700; color: )" + fg + R"(; }
+        .header-sub { font-size: 12px; color: )" + fg2 + R"(; }
+        .seg { background-color: )" + seg + R"(; border-radius: 9px; padding: 2px; }
+        button.filter-btn {
+            background: none; border: none; box-shadow: none;
+            color: )" + fg + R"(; font-size: 12px; font-weight: 500;
+            border-radius: 7px; padding: 4px 16px; min-height: 0; margin: 0;
+            transition: background-color 160ms ease;
+        }
+        button.filter-btn:hover { background-color: )" + (light ? "rgba(0,0,0,0.05)" : "rgba(255,255,255,0.06)") + R"(; }
+        button.filter-btn:checked {
+            background-color: )" + seg_sel + R"(; font-weight: 600;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+        }
+        button.close-btn {
+            background-color: )" + seg + R"(; color: )" + fg + R"(; border: none; box-shadow: none;
+            border-radius: 99px; min-width: 26px; min-height: 26px; padding: 0;
+            font-family: "JetBrainsMono Nerd Font"; font-size: 13px;
+        }
+        button.close-btn:hover { background-color: rgba(255,69,58,0.85); color: white; }
+
+        scrollbar { background: transparent; }
+        scrollbar slider { background-color: )" + (light ? "rgba(0,0,0,0.25)" : "rgba(255,255,255,0.22)") + R"(; border-radius: 99px; min-width: 6px; }
 
         flowboxchild {
-            border-radius: 12px;
-            transition: all 0.2s cubic-bezier(0.25, 0.1, 0.25, 1);
-            margin: 10px;
-            padding: 0;
-            background: transparent;
+            border-radius: 16px; margin: 6px; padding: 4px; background: transparent;
+            transition: transform 260ms cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 160ms ease;
         }
+        flowboxchild:hover { transform: scale(1.03); box-shadow: inset 0 0 0 2px )" + hover + R"(; }
+        flowboxchild:focus-visible, flowboxchild:selected { box-shadow: inset 0 0 0 2px )" + hover + R"(; background: transparent; }
+        flowboxchild.current, flowboxchild.current:hover, flowboxchild.current:selected { box-shadow: inset 0 0 0 3px )" + g_wal.accent + R"(; }
 
-        flowboxchild:hover, flowboxchild:focus, flowboxchild:selected {
-            transform: scale(1.05);
-            background: transparent;
-            box-shadow: 0 0 0 3px )" + g_wal.accent + R"(;
+        .wp-card { border-radius: 12px; background-color: )" + seg + R"(; }
+        .wp-pic { border-radius: 12px; transition: opacity 0.2s; }
+        .wp-badge {
+            font-family: "JetBrainsMono Nerd Font"; font-size: 12px; color: white;
+            background-color: rgba(0,0,0,0.48); border-radius: 99px;
+            padding: 2px 7px; margin: 7px;
         }
-        
-        .wp-card {
-            border-radius: 10px;
-            /* overflow: hidden — не підтримується GTK4, використовуємо border-radius */
-            background-color: #1a1a1a;
+        .wp-check {
+            font-family: "JetBrainsMono Nerd Font"; font-size: 12px; color: white;
+            background-color: )" + g_wal.accent + R"(; border: 1.5px solid white; border-radius: 99px;
+            min-width: 20px; min-height: 20px; margin: 7px; opacity: 0;
         }
-
-        .wp-pic {
-            transition: opacity 0.2s;
-        }
-
-        button.filter-btn {
-            background-color: rgba(255, 255, 255, 0.05);
-            color: )" + g_wal.fg + R"(;
-            border-radius: 8px;
-            padding: 8px 16px;
-            margin: 0 5px;
-            transition: all 0.2s;
-        }
-
-        button.filter-btn:checked {
-            background-color: )" + g_wal.accent + R"(;
-            color: #121212;
-            font-weight: bold;
-        }
+        flowboxchild.current .wp-check { opacity: 1; }
     )";
-    
+
     gtk_css_provider_load_from_string(g_css_provider, css.c_str());
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(g_css_provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 }
@@ -601,40 +655,46 @@ static void activate(GtkApplication* app, gpointer) {
     gtk_layer_set_margin(GTK_WINDOW(wp_window), GTK_LAYER_SHELL_EDGE_LEFT, 150);
     gtk_layer_set_margin(GTK_WINDOW(wp_window), GTK_LAYER_SHELL_EDGE_RIGHT, 150);
 
-    GtkWidget* main_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 15);
+    GtkWidget* main_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
     gtk_widget_add_css_class(main_box, "main-box");
     
+    // ── Шапка: назва + підказка ліворуч, сегментований фільтр по центру, «закрити» праворуч ──
+    GtkWidget* head = gtk_center_box_new();
+    GtkWidget* titles = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     GtkWidget* header = gtk_label_new("Шпалери");
     gtk_widget_add_css_class(header, "header-title");
-    gtk_widget_set_halign(header, GTK_ALIGN_CENTER);
-    std::string header_css = ".header-title { font-size: 24px; font-weight: bold; color: " + g_wal.fg + "; margin-bottom: 10px; }";
-    gtk_css_provider_load_from_string(g_css_provider, (std::string(gtk_css_provider_to_string(g_css_provider)) + header_css).c_str());
-    gtk_box_append(GTK_BOX(main_box), header);
+    gtk_widget_set_halign(header, GTK_ALIGN_START);
+    GtkWidget* sub = gtk_label_new("Enter — застосувати · Esc — закрити");
+    gtk_widget_add_css_class(sub, "header-sub");
+    gtk_widget_set_halign(sub, GTK_ALIGN_START);
+    gtk_box_append(GTK_BOX(titles), header);
+    gtk_box_append(GTK_BOX(titles), sub);
+    gtk_center_box_set_start_widget(GTK_CENTER_BOX(head), titles);
 
-    GtkWidget* filter_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
-    gtk_widget_set_halign(filter_box, GTK_ALIGN_CENTER);
+    GtkWidget* filter_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+    gtk_widget_add_css_class(filter_box, "seg");
+    gtk_widget_set_valign(filter_box, GTK_ALIGN_CENTER);
+    const char* names[] = {"Усі", "Картинки", "Відео", "Динамічні"};
+    GtkWidget* first_btn = nullptr;
+    for (int i = 0; i < 4; i++) {
+        GtkWidget* b = gtk_toggle_button_new_with_label(names[i]);
+        gtk_widget_add_css_class(b, "filter-btn");
+        gtk_widget_set_focus_on_click(b, FALSE);
+        if (first_btn) gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(b), GTK_TOGGLE_BUTTON(first_btn));
+        else first_btn = b;
+        g_signal_connect(b, "toggled", G_CALLBACK(on_filter_toggled), (gpointer)(long)i);
+        gtk_box_append(GTK_BOX(filter_box), b);
+    }
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(first_btn), TRUE);
+    gtk_center_box_set_center_widget(GTK_CENTER_BOX(head), filter_box);
 
-    GtkWidget* btn_all = gtk_toggle_button_new_with_label("Усі");
-    GtkWidget* btn_img = gtk_toggle_button_new_with_label("Картинки");
-    GtkWidget* btn_vid = gtk_toggle_button_new_with_label("Відео");
-
-    gtk_widget_add_css_class(btn_all, "filter-btn");
-    gtk_widget_add_css_class(btn_img, "filter-btn");
-    gtk_widget_add_css_class(btn_vid, "filter-btn");
-
-    gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(btn_img), GTK_TOGGLE_BUTTON(btn_all));
-    gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(btn_vid), GTK_TOGGLE_BUTTON(btn_all));
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(btn_all), TRUE);
-
-    g_signal_connect(btn_all, "toggled", G_CALLBACK(on_filter_toggled), (gpointer)(long)ALL);
-    g_signal_connect(btn_img, "toggled", G_CALLBACK(on_filter_toggled), (gpointer)(long)IMAGES);
-    g_signal_connect(btn_vid, "toggled", G_CALLBACK(on_filter_toggled), (gpointer)(long)VIDEOS);
-
-    gtk_box_append(GTK_BOX(filter_box), btn_all);
-    gtk_box_append(GTK_BOX(filter_box), btn_img);
-    gtk_box_append(GTK_BOX(filter_box), btn_vid);
-    
-    gtk_box_append(GTK_BOX(main_box), filter_box);
+    GtkWidget* close_btn = gtk_button_new_with_label("\U000F0156");
+    gtk_widget_add_css_class(close_btn, "close-btn");
+    gtk_widget_set_valign(close_btn, GTK_ALIGN_CENTER);
+    gtk_widget_set_focus_on_click(close_btn, FALSE);
+    g_signal_connect(close_btn, "clicked", G_CALLBACK(+[](GtkButton*, gpointer) { gtk_widget_set_visible(wp_window, FALSE); }), nullptr);
+    gtk_center_box_set_end_widget(GTK_CENTER_BOX(head), close_btn);
+    gtk_box_append(GTK_BOX(main_box), head);
 
     GtkWidget* scroll = gtk_scrolled_window_new();
     wp_scroll = scroll;
@@ -651,7 +711,8 @@ static void activate(GtkApplication* app, gpointer) {
 
     flow_box = gtk_flow_box_new();
     gtk_widget_set_valign(flow_box, GTK_ALIGN_START);
-    gtk_flow_box_set_max_children_per_line(GTK_FLOW_BOX(flow_box), 5);
+    gtk_flow_box_set_max_children_per_line(GTK_FLOW_BOX(flow_box), 6);
+    gtk_flow_box_set_homogeneous(GTK_FLOW_BOX(flow_box), TRUE);
     gtk_flow_box_set_selection_mode(GTK_FLOW_BOX(flow_box), GTK_SELECTION_SINGLE);
     gtk_widget_set_halign(flow_box, GTK_ALIGN_CENTER);
     
@@ -675,6 +736,8 @@ static void activate(GtkApplication* app, gpointer) {
     gtk_widget_add_controller(wp_window, key_ctrl);
 
     gtk_window_set_child(GTK_WINDOW(wp_window), main_box);
+    sysui::install_shared_style();
+    sysui::pop_on_show(wp_window, main_box);
     // ВАЖЛИВО: realize без показу — реєструє layer-shell surface в Wayland
     // Без цього gtk_widget_set_visible(TRUE) не спрацює після FALSE
     g_signal_connect(wp_window, "hide", G_CALLBACK(on_wp_hide), nullptr);

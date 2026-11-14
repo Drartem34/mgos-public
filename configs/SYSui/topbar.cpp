@@ -19,6 +19,7 @@
 #include <set>
 #include <dirent.h>
 #include <gio/gio.h>
+#include <glib-unix.h>
 #include "sysui_common.h"
 
 using json = nlohmann::json;
@@ -181,6 +182,7 @@ window, window.background { background: transparent; }
 .lang-lbl.lang-icon { font-size: 13px; font-weight: 700; }
 .wifi-icon { }
 .vol-lbl { font-weight: bold; }
+.bat-lbl { font-weight: bold; }
 
 /* Псевдо-Трей */
 .tray-icon { margin: 0 4px; }
@@ -227,6 +229,10 @@ window.light-theme.dots .ws-btn.active { background-color: $COLOR4; }
 .wifi-icon { color: $COLOR4; }
 .vol-lbl { color: $COLOR3; }
 .overvol { color: #f38ba8 !important; }
+.bat-lbl { color: $FG; }
+.bat-lbl.bat-chg { color: #a6e3a1; }
+.bat-lbl.bat-low { color: $COLOR3; }
+.bat-lbl.bat-crit { color: $DANGER; }
 .music-title { color: $FG; }
 )";
 
@@ -249,6 +255,10 @@ window.light-theme .clock-box { color: #121212; }
 window.light-theme .wifi-icon { color: $COLOR4; }
 window.light-theme .vol-lbl { color: $COLOR3; }
 window.light-theme .overvol { color: #f38ba8 !important; }
+window.light-theme .bat-lbl { color: #121212; }
+window.light-theme .bat-lbl.bat-chg { color: #2f9e44; }
+window.light-theme .bat-lbl.bat-low { color: #d08700; }
+window.light-theme .bat-lbl.bat-crit { color: $DANGER; }
 window.light-theme .music-title { color: #121212; }
 
 /* ===== Стиль macOS: одна суцільна прозора розмита плашка замість бульбашок ===== */
@@ -270,6 +280,8 @@ window.macos .ws-btn { margin: 4px 1px; }
 window.light-theme.macos .ignis-bar-inner { background-color: $MAC_BG_LIGHT; border-bottom: $MAC_BORDER_LIGHT; }
 window.light-theme.macos .module-box:hover { background-color: rgba(0,0,0,0.08); }
 )";
+
+static const char* clock_popover_css();   // clock_popover.h
 
 static std::string build_themed_css() {
     reload_wal_colors();
@@ -301,7 +313,7 @@ static std::string build_themed_css() {
         return tmpl;
     };
 
-    return std::string(CSS_BASE) + fill(CSS_DARK_TEMPLATE) + fill(CSS_LIGHT_TEMPLATE);
+    return std::string(CSS_BASE) + clock_popover_css() + fill(CSS_DARK_TEMPLATE) + fill(CSS_LIGHT_TEMPLATE);
 }
 
 void apply_css() {
@@ -313,7 +325,122 @@ void apply_css() {
 // ===================== ЗМІНА ТЕМИ =====================
 struct ThemeWatchData { GtkWidget* window; };
 
+static GtkWidget* g_power_box = nullptr;
+
+// ===================== ЕКОНОМІЯ: «ЗАПЕЧЕНИЙ» БЛЮР У ПОВНОЕКРАННОМУ РЕЖИМІ =====================
+// Вимикати блюр на весь екран — погано: при виході видно стрибок «прозоре → скло».
+// Натомість блюр лишається, але стає безкоштовним: Hyprland кешує розмиття шпалер
+// (new_optimizations), а вікна під повноекранним не малює. Кеш скидає лише відео-шпалера
+// (mpvpaper) — тож поки вікно на весь екран, ставимо її на паузу: блюр «запечений»
+// на останньому кадрі, і після виходу перехід непомітний.
+// Повністю блюр вимикає лише «Економ ефекти» (CC / Super+Shift+F1) — тоді вікна стають непрозорими.
+// Живе в топбарі (він і так слухає події Hyprland) — без окремого процесу; у кіоску топбара немає.
+static std::map<std::string, int> g_eco_overlays;   // namespace → скільки шарів відкрито
+static bool g_eco_fs = false;
+static int  g_eco_applied = -1;                      // що ми востаннє поставили в Hyprland (-1 — невідомо)
+
+static bool eco_is_overlay(const std::string& ns) {
+    static const char* L[] = {"control_center", "clipboard", "megumin_osd", "volume_osd", "brightness_osd",
+                              "notify_osd", "powermenu", "runner", "about", "wallpapers", "clock_popover", "dock_stash"};
+    for (const char* n : L) if (ns == n) return true;
+    return false;
+}
+
+// Без блюру прозорі вікна (kitty, меню…) виглядають брудно — поки блюр вимкнено, робимо їх
+// непрозорими (setprop opaque), а коли блюр повертається — знімаємо (unset → як за правилами).
+static std::set<std::string> g_eco_opaque;
+static void eco_opaque_one(const std::string& addr, bool on) {
+    sysui::hypr_request("dispatch setprop address:" + addr + " opaque " + (on ? "1" : "unset"));
+}
+static void eco_opaque_all(bool on) {
+    if (on) {
+        try {
+            for (auto& c : json::parse(sysui::hypr_request("j/clients"))) {
+                std::string a = c.value("address", "");
+                if (!a.empty() && g_eco_opaque.insert(a).second) eco_opaque_one(a, true);
+            }
+        } catch (...) {}
+    } else {
+        for (auto& a : g_eco_opaque) eco_opaque_one(a, false);
+        g_eco_opaque.clear();
+    }
+}
+
+// mpv IPC (mpvpaper input-ipc-server=/tmp/mpv-socket). Повертає відповідь або "".
+static std::string mpv_ipc(const std::string& cmd) {
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return "";
+    sockaddr_un a{}; a.sun_family = AF_UNIX; strncpy(a.sun_path, "/tmp/mpv-socket", sizeof(a.sun_path) - 1);
+    std::string out;
+    if (connect(fd, (sockaddr*)&a, sizeof a) == 0) {
+        std::string m = cmd + "\n";
+        if (write(fd, m.data(), m.size()) == (ssize_t)m.size()) {
+            struct timeval tv{0, 200000}; setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+            char b[512]; ssize_t n = read(fd, b, sizeof b - 1);
+            if (n > 0) out.assign(b, n);
+        }
+    }
+    close(fd);
+    return out;
+}
+// Пауза відео-шпалери, поки вікно на весь екран («Пауза відео-шпалер» або «запечений» блюр).
+// Знімаємо паузу лише якщо ставили її ми — ручну паузу / паузу mgos-power не чіпаємо.
+static void eco_wallpaper_pause(bool fs) {
+    static bool we_paused = false;
+    const auto& st = sysui::settings();
+    bool want = fs && (st.video_optimization || st.eco_fs_blur);
+    if (want && !we_paused) {
+        if (mpv_ipc("{\"command\":[\"get_property\",\"pause\"]}").find("\"data\":false") != std::string::npos) {
+            mpv_ipc("{\"command\":[\"set_property\",\"pause\",true]}");
+            we_paused = true;
+        }
+    } else if (!want && we_paused) {
+        we_paused = false;
+        // поки були на весь екран, вийняли зарядку — на батареї паузу тримає mgos-power, не знімаємо
+        bool on_ac = true;
+        if (DIR* d = opendir("/sys/class/power_supply")) {
+            while (dirent* e = readdir(d)) {
+                std::string base = std::string("/sys/class/power_supply/") + e->d_name;
+                std::ifstream t(base + "/type"); std::string ty; t >> ty;
+                if (ty == "Mains") { std::ifstream o(base + "/online"); int v = 1; o >> v; on_ac = v != 0; }
+            }
+            closedir(d);
+        }
+        if (on_ac) mpv_ipc("{\"command\":[\"set_property\",\"pause\",false]}");
+    }
+}
+
+static void eco_blur_apply() {
+    const auto& st = sysui::settings();
+    bool overlay = false;
+    for (auto& [ns, n] : g_eco_overlays) if (n > 0) { overlay = true; break; }
+    (void)overlay;
+    bool want = st.hyprland_blur && !st.eco_effects;
+    if ((int)want == g_eco_applied) return;
+    g_eco_applied = want;
+    sysui::hypr_request(std::string("keyword decoration:blur:enabled ") + (want ? "true" : "false"));
+    eco_opaque_all(!want);
+}
+
+static void eco_layer_event(const std::string& ns, bool open) {
+    if (!eco_is_overlay(ns)) return;
+    int& n = g_eco_overlays[ns];
+    n = open ? n + 1 : std::max(0, n - 1);
+    eco_blur_apply();
+}
+
 static gboolean check_theme(gpointer user_data) {
+    // налаштування змінились (кнопка ⏻, економія блюру) — застосовуємо наживо
+    static long long last_stamp = -1;
+    long long stamp = sysui::theme_stamp();
+    if (stamp != last_stamp) {
+        last_stamp = stamp;
+        if (g_power_box) gtk_widget_set_visible(g_power_box, sysui::settings().topbar_power);
+        g_eco_applied = -1;   // перечитати: «Налаштування» могли самі змінити blur:enabled
+        eco_blur_apply();
+        eco_wallpaper_pause(g_eco_fs);
+    }
+
     auto* d = static_cast<ThemeWatchData*>(user_data);
 
     // Раніше popen("gsettings ...") кожні 2 с — тепер напряму через GSettings (без fork).
@@ -424,14 +551,33 @@ static void on_tray_click(GtkGestureClick* gesture, int, double, double, gpointe
 }
 
 // ===================== ОНОВЛЕННЯ ДАНИХ (ПОЛІНГ) =====================
+namespace cpop { static std::string clock_suffix(); }   // clock_popover.h — фокус-таймер у бульбашці
+
 static gboolean update_clock(gpointer) {
     time_t now = time(0);
     struct tm tstruct;
     localtime_r(&now, &tstruct);
     char buf[80];
     strftime(buf, sizeof(buf), " %H:%M", &tstruct);
-    gtk_label_set_text(GTK_LABEL(clock_label), buf);
-    return G_SOURCE_CONTINUE;
+    gtk_label_set_text(GTK_LABEL(clock_label), (std::string(buf) + cpop::clock_suffix()).c_str());
+    // Наступне оновлення — рівно на початку наступної хвилини (раніше будили процес щосекунди).
+    static guint next = 0;
+    if (next) g_source_remove(next);
+    next = g_timeout_add_seconds(60 - tstruct.tm_sec, [](gpointer) -> gboolean { next = 0; update_clock(nullptr); return G_SOURCE_REMOVE; }, nullptr);
+    return G_SOURCE_REMOVE;
+}
+
+// Після сну монотонний таймер «відстає» — оновлюємо годинник одразу при пробудженні (logind PrepareForSleep=false).
+static void clock_watch_resume() {
+    GDBusConnection* sys = g_bus_get_sync(G_BUS_TYPE_SYSTEM, nullptr, nullptr);
+    if (!sys) return;
+    g_dbus_connection_signal_subscribe(sys, "org.freedesktop.login1", "org.freedesktop.login1.Manager", "PrepareForSleep",
+        "/org/freedesktop/login1", nullptr, G_DBUS_SIGNAL_FLAGS_NONE,
+        [](GDBusConnection*, const gchar*, const gchar*, const gchar*, const gchar*, GVariant* params, gpointer) {
+            gboolean going = TRUE;
+            g_variant_get(params, "(b)", &going);
+            if (!going) update_clock(nullptr);
+        }, nullptr, nullptr);
 }
 
 static gboolean update_workspaces(gpointer) {
@@ -579,6 +725,138 @@ static gboolean update_mouse_battery(gpointer) {
         gtk_widget_set_visible(mouse_box, FALSE);
     }
     return G_SOURCE_CONTINUE;
+}
+
+// ===================== БАТАРЕЯ НОУТБУКА =====================
+// Джерело — UPower (D-Bus, DisplayDevice): оновлення лише по сигналах, без fork і без частого полінгу.
+// Якщо UPower недоступний — читаємо /sys/class/power_supply/BAT* раз на 30 с.
+// На ПК без батареї плашка не показується взагалі.
+static GtkWidget* bat_box   = nullptr;
+static GtkWidget* bat_label = nullptr;
+static GDBusProxy* g_upower_dev = nullptr;
+
+static std::string read_sysfs(const std::string& p) {
+    std::ifstream f(p);
+    std::string s;
+    std::getline(f, s);
+    return s;
+}
+
+static std::string sysfs_battery_dir() {
+    DIR* d = opendir("/sys/class/power_supply");
+    if (!d) return "";
+    std::string found;
+    struct dirent* e;
+    while ((e = readdir(d)) != nullptr) {
+        if (e->d_name[0] == '.') continue;
+        std::string dir = std::string("/sys/class/power_supply/") + e->d_name;
+        if (read_sysfs(dir + "/type") == "Battery" && read_sysfs(dir + "/scope") != "Device") { found = dir; break; }
+    }
+    closedir(d);
+    return found;
+}
+
+static std::string fmt_duration(long long sec) {
+    if (sec <= 0) return "";
+    long long h = sec / 3600, m = (sec % 3600) / 60;
+    return h ? std::to_string(h) + " год " + std::to_string(m) + " хв" : std::to_string(m) + " хв";
+}
+
+// state: 1 заряджається, 2 розряджається, 4 повністю заряджена, 5 очікує заряду (як у UPower)
+static void bat_render(double pct, int state, long long to_empty, long long to_full, double watts) {
+    if (!bat_label) return;
+    int p = std::clamp((int)(pct + 0.5), 0, 100);
+    bool charging = (state == 1);
+    bool plugged  = (state == 1 || state == 4 || state == 5);
+
+    static const char* LEVELS[] = {"󰂎", "󰁺", "󰁻", "󰁼", "󰁽", "󰁾", "󰁿", "󰂀", "󰂁", "󰂂", "󰁹"};
+    static const char* CHG[]    = {"󰢟", "󰢜", "󰂆", "󰂇", "󰂈", "󰢝", "󰂉", "󰢞", "󰂊", "󰂋", "󰂅"};
+    const char* icon = (plugged ? CHG : LEVELS)[p / 10];
+
+    std::string text = std::string(icon) + " " + std::to_string(p) + "%";
+    gtk_label_set_text(GTK_LABEL(bat_label), text.c_str());
+
+    for (const char* c : {"bat-low", "bat-crit", "bat-chg"}) gtk_widget_remove_css_class(bat_label, c);
+    if (charging || plugged)  gtk_widget_add_css_class(bat_label, "bat-chg");
+    else if (p <= 10)         gtk_widget_add_css_class(bat_label, "bat-crit");
+    else if (p <= 20)         gtk_widget_add_css_class(bat_label, "bat-low");
+
+    std::string tip = "Батарея: " + std::to_string(p) + "%";
+    if (charging) {
+        tip += " · заряджається";
+        if (std::string t = fmt_duration(to_full); !t.empty()) tip += "\nДо повного: " + t;
+    } else if (state == 4 || (plugged && p >= 99)) {
+        tip += " · заряджена";
+    } else if (plugged) {
+        tip += " · від мережі";
+    } else {
+        if (std::string t = fmt_duration(to_empty); !t.empty()) tip += "\nЗалишилось: " + t;
+    }
+    if (watts > 0.1) {
+        char w[32]; snprintf(w, sizeof(w), "%.1f", watts);
+        tip += std::string("\n") + (charging ? "Заряд: " : "Споживання: ") + w + " Вт";
+    }
+    tip += "\n\nЛКМ — Control Center (режим живлення)";
+    gtk_widget_set_tooltip_text(bat_box, tip.c_str());
+    gtk_widget_set_visible(bat_box, TRUE);
+}
+
+static void bat_update_upower() {
+    if (!g_upower_dev) return;
+    auto getd = [](const char* k) -> double {
+        double v = 0; GVariant* x = g_dbus_proxy_get_cached_property(g_upower_dev, k);
+        if (x) { if (g_variant_is_of_type(x, G_VARIANT_TYPE_DOUBLE)) v = g_variant_get_double(x); g_variant_unref(x); }
+        return v;
+    };
+    auto getu = [](const char* k) -> long long {
+        long long v = 0; GVariant* x = g_dbus_proxy_get_cached_property(g_upower_dev, k);
+        if (x) {
+            if (g_variant_is_of_type(x, G_VARIANT_TYPE_UINT32)) v = g_variant_get_uint32(x);
+            else if (g_variant_is_of_type(x, G_VARIANT_TYPE_INT64)) v = g_variant_get_int64(x);
+            else if (g_variant_is_of_type(x, G_VARIANT_TYPE_BOOLEAN)) v = g_variant_get_boolean(x);
+            g_variant_unref(x);
+        }
+        return v;
+    };
+    if (!getu("IsPresent")) { gtk_widget_set_visible(bat_box, FALSE); return; }
+    bat_render(getd("Percentage"), (int)getu("State"), getu("TimeToEmpty"), getu("TimeToFull"), getd("EnergyRate"));
+}
+
+static gboolean bat_update_sysfs(gpointer) {
+    if (g_upower_dev) return G_SOURCE_REMOVE;   // UPower з'явився — полінг більше не потрібен
+    static std::string dir = sysfs_battery_dir();
+    if (dir.empty()) { gtk_widget_set_visible(bat_box, FALSE); return G_SOURCE_CONTINUE; }
+    std::string cap = read_sysfs(dir + "/capacity"), st = read_sysfs(dir + "/status");
+    if (cap.empty()) { gtk_widget_set_visible(bat_box, FALSE); return G_SOURCE_CONTINUE; }
+    int state = st == "Charging" ? 1 : st == "Discharging" ? 2 : st == "Full" ? 4 : 5;
+    double watts = 0;
+    std::string pw = read_sysfs(dir + "/power_now");
+    if (!pw.empty()) watts = atof(pw.c_str()) / 1e6;
+    bat_render(atof(cap.c_str()), state, 0, 0, watts);
+    return G_SOURCE_CONTINUE;
+}
+
+static void on_bat_click(GtkGestureClick*, int, double, double, gpointer) { cc_send("toggle"); }
+
+static void bat_init() {
+    g_dbus_proxy_new_for_bus(G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, nullptr,
+        "org.freedesktop.UPower", "/org/freedesktop/UPower/devices/DisplayDevice", "org.freedesktop.UPower.Device",
+        nullptr, [](GObject*, GAsyncResult* res, gpointer) {
+            GDBusProxy* p = g_dbus_proxy_new_for_bus_finish(res, nullptr);
+            gchar* owner = p ? g_dbus_proxy_get_name_owner(p) : nullptr;
+            if (!owner) {                      // UPower немає — запасний шлях через sysfs
+                if (p) g_object_unref(p);
+                bat_update_sysfs(nullptr);
+                g_timeout_add_seconds(30, bat_update_sysfs, nullptr);
+                return;
+            }
+            g_free(owner);
+            g_upower_dev = p;
+            g_signal_connect(p, "g-properties-changed", G_CALLBACK(+[](GDBusProxy*, GVariant*, GStrv, gpointer) {
+                bat_update_upower();
+            }), nullptr);
+            bat_update_upower();
+        }, nullptr);
 }
 
 static gboolean update_pseudo_tray(gpointer) {
@@ -880,6 +1158,12 @@ static void music_init() {
     g_timeout_add_seconds(5, music_poll, nullptr);
 }
 
+// ===================== ГОДИННИК → БЛОК (календар, музика, таймер) =====================
+#include "clock_popover.h"
+static gboolean update_fullscreen(gpointer);
+static GtkWidget* clock_bubble = nullptr;
+static void on_clock_click(GtkGestureClick*, int, double, double, gpointer) { cpop::toggle(clock_bubble, topbar_window); }
+
 // ===================== UI КОНСТРУКТОРИ =====================
 GtkWidget* create_clickable_box(GtkWidget* child, GCallback on_click, gpointer data = nullptr) {
     GtkWidget* box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
@@ -920,7 +1204,9 @@ static void activate(GtkApplication* app, gpointer user_data) {
     
     GtkWidget* pwr_lbl = gtk_label_new("⏻");
     gtk_widget_add_css_class(pwr_lbl, "power-icon");
-    gtk_box_append(GTK_BOX(left_box), create_clickable_box(pwr_lbl, G_CALLBACK(on_power_click)));
+    g_power_box = create_clickable_box(pwr_lbl, G_CALLBACK(on_power_click));
+    gtk_widget_set_visible(g_power_box, sysui::settings().topbar_power);
+    gtk_box_append(GTK_BOX(left_box), g_power_box);
 
     GtkWidget* ws_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
     gtk_widget_add_css_class(ws_box, "module-box");
@@ -949,7 +1235,10 @@ static void activate(GtkApplication* app, gpointer user_data) {
     GtkWidget* center_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     clock_label = gtk_label_new(" 00:00");
     gtk_widget_add_css_class(clock_label, "clock-box");
-    gtk_box_append(GTK_BOX(center_box), create_clickable_box(clock_label, nullptr));
+    clock_bubble = create_clickable_box(clock_label, G_CALLBACK(on_clock_click));
+    gtk_widget_set_cursor_from_name(clock_bubble, "pointer");
+    gtk_box_append(GTK_BOX(center_box), clock_bubble);
+    cpop::attach_drop(clock_bubble, topbar_window);
 
     // --- ПРАВА ЧАСТИНА ---
     GtkWidget* right_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
@@ -971,6 +1260,12 @@ static void activate(GtkApplication* app, gpointer user_data) {
     gtk_widget_add_controller(vol_btn, scroll);
     gtk_box_append(GTK_BOX(right_box), vol_btn);
 
+    // Батарея ноутбука (ховається, якщо батареї немає)
+    bat_label = gtk_label_new("󰁹 --%");
+    gtk_widget_add_css_class(bat_label, "bat-lbl");
+    bat_box = create_clickable_box(bat_label, G_CALLBACK(on_bat_click));
+    gtk_widget_set_visible(bat_box, FALSE);
+    gtk_box_append(GTK_BOX(right_box), bat_box);
 
     mouse_label = gtk_label_new("󰍽 --%");
     gtk_widget_add_css_class(mouse_label, "mouse-lbl");
@@ -993,25 +1288,57 @@ static void activate(GtkApplication* app, gpointer user_data) {
 
     // Запуск таймерів
     update_workspaces(nullptr);
-    update_clock(nullptr);      g_timeout_add(1000, update_clock, nullptr);
+    update_clock(nullptr);
+    clock_watch_resume();
     update_language(nullptr);
     update_network(nullptr);
     update_volume(nullptr); 
-    update_pseudo_tray(nullptr); g_timeout_add(3000, update_pseudo_tray, nullptr);
-    update_mouse_battery(nullptr); g_timeout_add(10000, update_mouse_battery, nullptr);
+    update_pseudo_tray(nullptr); g_timeout_add_seconds(3, update_pseudo_tray, nullptr);
+    update_mouse_battery(nullptr); g_timeout_add_seconds(30, update_mouse_battery, nullptr);
+    bat_init();
     music_init();
+    // pkill -USR1 -x topbar — відкрити/закрити блок годинника (для гарячої клавіші)
+    g_unix_signal_add(SIGUSR1, [](gpointer) -> gboolean { cpop::toggle(clock_bubble, topbar_window); return G_SOURCE_CONTINUE; }, nullptr);
+    // SIGUSR2 — блок «Надіслати файл» (Quick Share) без перетягування
+    g_unix_signal_add(SIGUSR2, [](gpointer) -> gboolean { cpop::open_request(clock_bubble, topbar_window); return G_SOURCE_CONTINUE; }, nullptr);
 
     // Таймер для зміни теми
     auto* twd = new ThemeWatchData{topbar_window};
     check_theme(twd);  
-    g_timeout_add(2000, check_theme, twd);
+    g_timeout_add_seconds(2, check_theme, twd);
     
     
     // Перевірка Pywal (раз на секунду — перебудова CSS лише при реальній зміні файлу)
     reload_wal_timer(nullptr);
-    g_timeout_add(1000, reload_wal_timer, nullptr);
+    g_timeout_add_seconds(1, reload_wal_timer, nullptr);
 
     gtk_widget_set_visible(topbar_window, TRUE);
+    update_fullscreen(nullptr);
+}
+
+// Повноекранне вікно (fullscreen 2, не «максимізація») на активному робочому столі → ховаємо топбар.
+// Інакше невидимий під вікном шар далі ловить мишку вгорі екрана — Firefox не показує вкладки.
+static gboolean update_fullscreen(gpointer) {
+    if (!topbar_window) return G_SOURCE_REMOVE;
+    bool fs = false;
+    try {
+        json ws = json::parse(sysui::hypr_request("j/activeworkspace"));
+        if (ws.value("hasfullscreen", false)) {
+            int id = ws.value("id", -1);
+            for (auto& c : json::parse(sysui::hypr_request("j/clients")))
+                if (c["workspace"].value("id", -2) == id && c.value("fullscreen", 0) == 2) { fs = true; break; }
+        }
+    } catch (...) { return G_SOURCE_REMOVE; }
+    // Не ховаємо (unmap) панель: Hyprland анімував би виїзд, а на наступному столі — в'їзд, і при швидкому
+    // гортанні 1→2(fullscreen)→3 обидві копії були б на екрані одночасно («топбар дублюється»).
+    // Натомість переносимо шар під вікна: fullscreen-вікно просто накриває панель, без анімацій.
+    if (fs != g_eco_fs) { g_eco_fs = fs; eco_wallpaper_pause(fs); }
+    static int under = -1;
+    if ((int)fs != under) {
+        under = fs;
+        gtk_layer_set_layer(GTK_WINDOW(topbar_window), fs ? GTK_LAYER_SHELL_LAYER_BOTTOM : GTK_LAYER_SHELL_LAYER_TOP);
+    }
+    return G_SOURCE_REMOVE;
 }
 
 void listen_hyprland_ipc() {
@@ -1053,6 +1380,33 @@ void listen_hyprland_ipc() {
                 
                 if (line.find("workspace>>") == 0 || line.find("createworkspace>>") == 0 || line.find("destroyworkspace>>") == 0 || line.find("activewindow>>") == 0) {
                     g_idle_add([](gpointer) -> gboolean { update_workspaces(nullptr); return G_SOURCE_REMOVE; }, nullptr);
+                    g_idle_add(update_fullscreen, nullptr);
+                    g_timeout_add(150, update_fullscreen, nullptr);
+                } else if (line.find("fullscreen>>") == 0 || line.find("closewindow>>") == 0 || line.find("movewindow") == 0) {
+                    if (line.rfind("closewindow>>", 0) == 0) {
+                        auto* a = new std::string("0x" + line.substr(13));
+                        g_idle_add([](gpointer d) -> gboolean { auto* a = (std::string*)d; g_eco_opaque.erase(*a); delete a; return G_SOURCE_REMOVE; }, a);
+                    }
+                    // подія приходить раніше, ніж Hyprland оновлює стан вікна — перевіряємо ще й трохи згодом
+                    g_idle_add(update_fullscreen, nullptr);
+                    g_timeout_add(120, update_fullscreen, nullptr);
+                    g_timeout_add(400, update_fullscreen, nullptr);
+                } else if (line.rfind("openlayer>>", 0) == 0 || line.rfind("closelayer>>", 0) == 0) {
+                    bool open = line[0] == 'o';
+                    auto* ns = new std::string(line.substr(line.find(">>") + 2));
+                    g_idle_add(open ? (GSourceFunc)[](gpointer d) -> gboolean { auto* n = (std::string*)d; eco_layer_event(*n, true); delete n; return G_SOURCE_REMOVE; }
+                                    : (GSourceFunc)[](gpointer d) -> gboolean { auto* n = (std::string*)d; eco_layer_event(*n, false); delete n; return G_SOURCE_REMOVE; }, ns);
+                } else if (line.rfind("openwindow>>", 0) == 0) {
+                    // нове вікно, поки блюр вимкнено, — теж непрозоре
+                    auto* a = new std::string("0x" + line.substr(12, line.find(',') - 12));
+                    g_idle_add([](gpointer d) -> gboolean {
+                        auto* a = (std::string*)d;
+                        if (g_eco_applied == 0 && g_eco_opaque.insert(*a).second) eco_opaque_one(*a, true);
+                        delete a; return G_SOURCE_REMOVE;
+                    }, a);
+                } else if (line.rfind("configreloaded>>", 0) == 0) {
+                    // hyprctl reload повертає blur:enabled із конфігу — ставимо наш стан знову
+                    g_idle_add([](gpointer) -> gboolean { g_eco_applied = -1; eco_blur_apply(); return G_SOURCE_REMOVE; }, nullptr);
                 } else if (line.find("activelayout>>") == 0) {
                     g_idle_add([](gpointer) -> gboolean { update_language(nullptr); return G_SOURCE_REMOVE; }, nullptr);
                 }

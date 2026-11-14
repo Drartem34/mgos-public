@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  Кроки GUI-інсталятора Megumin OS 6 (mgos-installer).
+#  Кроки GUI-інсталятора Megumin OS 6.5 (mgos-installer).
 #  Кожен крок — функція step_<id>. Усі кроки ІДЕМПОТЕНТНІ: інсталятор зберігає
 #  прогрес і після збою/перезавантаження повторює крок, на якому зупинився.
 #
@@ -46,7 +46,7 @@ PACKAGES_STABLE=(
     qt6-svg qt6-virtualkeyboard qt6-multimedia-ffmpeg
 )
 PACKAGES_AUR=(python-ignis-git ignis-gvc whitesur-icon-theme-git mpvpaper bluetuith)
-SYSUI_BINS=(dock topbar cc_osd runner_osd wallpapers clipboard_osd notify_osd megumin_osd powermenu_osd volume_osd about_osd)
+SYSUI_BINS=(dock topbar cc_osd runner_osd wallpapers clipboard_osd osd_hub powermenu_osd about_osd)   # osd_hub = гучність+яскравість+сповіщення+музика
 
 msg()      { echo "@@MSG $*"; }
 sub()      { echo "@@SUB $1"; }
@@ -58,6 +58,58 @@ conf_group() {  # conf_group <назва секції без дужок>
     awk -v s="[$1]" '/^\[/{on=($0==s); next} on && !/^[[:space:]]*#/{for(i=1;i<=NF;i++) print $i}' gui/packages.conf 2>/dev/null
 }
 conf_hw() { awk '/^\[hw:/{print substr($0, 5, length($0) - 5)}' gui/packages.conf 2>/dev/null; }
+
+# ---------- дублі й конфлікти пакетів (gui/conflicts.conf) ----------
+_trim() { local x=$1; x=${x#"${x%%[![:space:]]*}"}; printf '%s' "${x%"${x##*[![:space:]]}"}"; }
+_unit_state() {  # _unit_state <юніт|user:юніт> → enabled/disabled/masked/static/…
+    case $1 in user:*) systemctl --user is-enabled "${1#user:}" 2>/dev/null ;; *) systemctl is-enabled "$1" 2>/dev/null ;; esac
+}
+_unit_on() { [ "$(_unit_state "$1")" = enabled ] || { [[ $1 != user:* ]] && systemctl is-active -q "$1" 2>/dev/null; }; }
+_conf_need() {  # усі умови правила виконуються?
+    local r
+    for r in $1; do case $r in
+        -) ;;
+        pkg:*)   grep -qx -- "${r#pkg:}" <<< "$_PKGS" || return 1 ;;
+        cmd:*)   command -v "${r#cmd:}" &>/dev/null || return 1 ;;
+        svc:*)   _unit_on "${r#svc:}" || return 1 ;;
+        nosvc:*) _unit_on "${r#nosvc:}" && return 1 ;;
+    esac; done
+    return 0
+}
+# _conflicts_scan — по рядку на кожен знайдений конфлікт:
+#   роль|старі пакети, що стоять|старі служби, що увімкнені|служби нового|умови
+#   (роздільник «|», не таб: read з пробільним IFS склеює порожні поля й зсуває решту)
+_conflicts_scan() {
+    [ -f gui/conflicts.conf ] || return 0
+    _PKGS=$(pacman -Qq 2>/dev/null)
+    local role need olds osvcs nsvcs p u have on
+    while IFS='|' read -r role need olds osvcs nsvcs; do
+        role=$(_trim "$role"); [ -z "$role" ] || [[ $role == \#* ]] && continue
+        need=$(_trim "$need"); _conf_need "$need" || continue
+        have=""; on=""
+        for p in $olds;  do [ "$p" != - ] && grep -qx -- "$p" <<< "$_PKGS" && have+=" $p"; done
+        for u in $osvcs; do [ "$u" != - ] && _unit_on "$u" && on+=" $u"; done
+        [ -z "$have$on" ] && continue
+        printf '%s|%s|%s|%s|%s\n' "$role" "$(_trim "$have")" "$(_trim "$on")" "$(_trim "$nsvcs")" "$need"
+    done < gui/conflicts.conf
+}
+# той самий пакет двічі: foo і foo-git / foo-bin (лише звіт — що лишити, вирішує людина)
+_dup_builds() {
+    local all p b; all=$(pacman -Qq 2>/dev/null)
+    for p in $(grep -E -- '-(git|bin)$' <<< "$all"); do
+        b=${p%-git}; b=${b%-bin}
+        grep -qx -- "$b" <<< "$all" && echo "$b + $p"
+    done
+}
+bk_unit() {  # bk_unit <юніт|user:юніт> — стан служби до змін
+    case $1 in
+        user:*) _seen "$1" || _rec SU "${1#user:}" "$(_unit_state "$1" || true)" ;;
+        *)      bk_service "$1" ;;
+    esac
+}
+_sctl() {  # _sctl <дія> <юніт|user:юніт>
+    case $2 in user:*) systemctl --user "$1" "${2#user:}" ;; *) sudo systemctl "$1" "${2#user:}" ;; esac
+}
 # PCI-пристрої читаємо прямо з /sys: lspci (pciutils) на свіжому Arch часто немає,
 # і тоді жодна відеокарта «не знаходилась» — драйвери мовчки пропускались.
 pci_has() {  # pci_has <vendor, напр. 0x8086> <префікс класу: 0x03 — відео, 0x0280 — Wi-Fi>
@@ -94,8 +146,11 @@ hw_ok() {
 # Без цього yay пробує поставити «foo», pacman питає «Remove foo-git? [y/N]»,
 # на --noconfirm відповідає «N» і падає (так було з ignis-gvc ↔ ignis-gvc-git).
 have_variant() {
-    local b=${1%-git}; b=${b%-bin}
-    pacman -Qq "$b" "$b-git" "$b-bin" 2>/dev/null | grep -q .
+    local b=${1%-git} v; b=${b%-bin}
+    # не «pacman -Qq a b c | grep»: під set -o pipefail pacman повертає 1 (частини назв нема),
+    # і перевірка завжди була хибною — yay ставив ignis-gvc поверх ignis-gvc-git і падав
+    for v in "$b" "$b-git" "$b-bin"; do pacman -Q "$v" &>/dev/null && return 0; done
+    return 1
 }
 classified() {
     { printf '%s\n' "${PACKAGES_CORE[@]}" "${PACKAGES_STABLE[@]}" "${PACKAGES_AUR[@]}"
@@ -179,6 +234,7 @@ install_list() {
 #    N <шлях>              — не існував (відкат: видалити)
 #    L <тека> <список>     — тека лише доповнюється (відкат: видалити нові файли)
 #    S <служба> <стан>     — стан служби до змін
+#    SU <служба> <стан>    — стан служби користувача (systemctl --user) до змін
 #    G <схема> <ключ> <значення> — gsettings до змін
 #    SH <оболонка>         — оболонка користувача до змін
 #    P <тема>              — тема Plymouth до змін (відкат: перезібрати initramfs)
@@ -314,7 +370,15 @@ step_rollback() {
             N)  if ! _safe_rm_path "$a"; then fail_pkg "$a (небезпечний шлях — не видаляю)"; continue; fi
                 if _in_home "$a"; then rm -rf -- "$a"; else sudo rm -rf -- "$a"; fi; msg "прибрано $a" ;;
             L)  [ -d "$a" ] && comm -13 <(sort "$CACHE/files/$b") <(find "$a" -mindepth 1 | sort) | sort -r | while read -r x; do rm -rf -- "$x"; done ;;
-            S)  [ "$b" != enabled ] && sudo systemctl disable --now "$a" 2>/dev/null && msg "вимкнено $a" ;;
+            S)  case $b in
+                    enabled) sudo systemctl enable --now "$a" 2>/dev/null && msg "увімкнено $a" ;;
+                    masked)  sudo systemctl mask --now "$a" 2>/dev/null && msg "замасковано $a" ;;
+                    *)       sudo systemctl disable --now "$a" 2>/dev/null && msg "вимкнено $a" ;;
+                esac ;;
+            SU) case $b in
+                    enabled) systemctl --user enable --now "$a" 2>/dev/null && msg "увімкнено $a (користувач)" ;;
+                    *)       systemctl --user disable --now "$a" 2>/dev/null && msg "вимкнено $a (користувач)" ;;
+                esac ;;
             G)  gsettings set "$a" "$b" "$c" 2>/dev/null ;;
             SH) sudo chsh -s "$a" "$USER" ;;
             P)  [ "$a" != none ] && sudo plymouth-set-default-theme "$a" 2>/dev/null; rebuild=1 ;;
@@ -322,7 +386,7 @@ step_rollback() {
     done < <(tac "$MAN")
     if [ $rebuild = 1 ]; then
         msg "initramfs"
-        if command -v dracut &>/dev/null; then sudo dracut -f --regenerate-all 2>&1 | tail -2; elif command -v mkinitcpio &>/dev/null; then sudo mkinitcpio -P 2>&1 | tail -2; fi
+        _rebuild_initramfs || true
     fi
     grep -q $'\t/etc/udev/' "$MAN" && sudo udevadm control --reload 2>/dev/null
     sub "$((total + 2))/$((total + 2))"
@@ -413,6 +477,56 @@ _sf_fallback() {
     fc-cache -f >/dev/null 2>&1 || true
 }
 
+# Дві програми на одну роль (tlp + power-profiles-daemon, swww + awww, pulseaudio + pipewire…)
+# б'ються між собою. Прибираємо стару, лише коли нова на місці (gui/conflicts.conf).
+step_dedupe() {
+    [ -f gui/conflicts.conf ] || { msg "Немає gui/conflicts.conf — пропуск"; return 0; }
+    msg "Шукаю дублі"
+    local role have on nsvcs need p u r req rm keep fixed=0 found
+    found=$(_conflicts_scan)
+    while IFS='|' read -r role have on nsvcs need; do
+        [ -n "$role" ] || continue
+        msg "$role"
+        for u in $on; do
+            bk_unit "$u"; _sctl disable "$u" 2>/dev/null; _sctl stop "$u" 2>/dev/null
+            echo "вимкнено $u"
+        done
+        rm=()
+        for p in $have; do
+            pacman -Qq "$p" &>/dev/null || continue   # уже прибрано попереднім правилом
+            # не видаляємо те, від чого залежить щось поза цим правилом
+            keep=""
+            req=$(LC_ALL=C pacman -Qi "$p" 2>/dev/null | awk -F' *: ' '/^Required By/{print $2}')
+            for r in $req; do [ "$r" = None ] && continue; [[ " $have " == *" $r "* ]] || keep+=" $r"; done
+            if [ -n "$keep" ]; then echo "⚠ $p лишаю — від нього залежить:$keep"; else rm+=("$p"); fi
+        done
+        if [ ${#rm[@]} -gt 0 ]; then
+            msg "Видаляю: ${rm[*]}"
+            # лише -R: -s з netctl забрав би systemd-resolvconf (потрібен wg-quick/openvpn);
+            # сироти покаже аналіз. Без -n — конфіги лишаються як .pacsave
+            sudo pacman -R --noconfirm "${rm[@]}" 2>&1 | tail -2 || true
+            for p in "${rm[@]}"; do pacman -Qq "$p" &>/dev/null && fail_pkg "$p (не вдалося видалити)"; done
+        fi
+        for u in $nsvcs; do
+            [ "$u" = - ] && continue
+            case $u in
+                unmask:*) u=${u#unmask:}
+                    [ "$(_unit_state "$u")" = masked ] && { bk_unit "$u"; sudo systemctl unmask "$u" 2>/dev/null && echo "знято mask з $u"; } ;;
+                *)  _unit_on "$u" && continue
+                    [ -n "$(_unit_state "$u")" ] || continue   # юніта немає — нема що вмикати
+                    bk_unit "$u"; _sctl enable "$u" 2>/dev/null && _sctl start "$u" 2>/dev/null; echo "увімкнено $u" ;;
+            esac
+        done
+        fixed=$((fixed + 1))
+    done <<< "$found"
+    sub 1/2
+    local d; d=$(_dup_builds)
+    [ -n "$d" ] && echo "Той самий пакет у двох збірках (перевір, яка потрібна — тут не чіпаю):" && sed 's/^/  • /' <<< "$d"
+    sub 2/2
+    [ $fixed -eq 0 ] && echo "Конфліктів пакетів не знайдено" || echo "Виправлено конфліктів: $fixed"
+    return 0
+}
+
 step_files() {
     msg "Теки"
     local d
@@ -470,7 +584,9 @@ step_home() {
         fi
         msg "${f#./home/}"
     done < <(find ./home -type f -print0)
-    chmod +x ~/.local/bin/wal 2>/dev/null
+    chmod +x ~/.local/bin/wal ~/.local/bin/mgos-power ~/.local/bin/mgos-sound ~/.local/bin/mgos-fan \
+             ~/.local/bin/mgos-share ~/.local/bin/mgos-quickshare ~/.local/bin/mfg-unlocker-run \
+             ~/.local/bin/mgos-wp-poster ~/.local/bin/mgos-close ~/.local/bin/mgos-zram 2>/dev/null
     _kiosk_shell_hooks   # mgOS перезаписав ~/.bashrc — повертаємо команду kiosk, якщо kioskOS встановлено
     bk ~/.local/share/applications/mimeinfo.cache
     update-desktop-database ~/.local/share/applications 2>/dev/null || true
@@ -527,6 +643,8 @@ step_theme() {
         bk ~/.cache/ignis/last_wallpaper.txt; bk ~/.cache/megumin-os/dock_history.txt
         mkdir -p ~/.cache/ignis ~/.cache/megumin-os
         [ -f ./system_state/last_wallpaper.txt ] && sed "s|$SRC_HOME|$HOME|g" ./system_state/last_wallpaper.txt > ~/.cache/ignis/last_wallpaper.txt
+        # шпалер-файлів у репозиторії немає (кілька ГБ) — якщо збережених шпалер на цьому ПК нема, ставимо живі піксельні
+        _wp=$(head -1 ~/.cache/ignis/last_wallpaper.txt 2>/dev/null); case "$_wp" in pixel:*) ;; *) [ -n "$_wp" ] && { [ -e "$_wp" ] || [ -e "./wallpapers/${_wp##*/}" ]; } || echo "pixel:aurora" > ~/.cache/ignis/last_wallpaper.txt;; esac
         [ -f ./system_state/dock_history.txt ] && [ ! -f ~/.cache/megumin-os/dock_history.txt ] && cp ./system_state/dock_history.txt ~/.cache/megumin-os/
     fi
     sub 2/3
@@ -539,16 +657,58 @@ step_theme() {
     sub 3/3; return 0
 }
 
+# Перезбирання initramfs для всіх ядер. Повертає 1, якщо хоч одне не зібралось.
+# «dracut --regenerate-all» на EndeavourOS пише у /boot/efi/<machine-id>/<kver> (BLS-розкладка),
+# якої немає → «image generation failed», а старий initramfs (з темою bgrt / лого Arch) лишався.
+# Тому: dracut-rebuild (EndeavourOS) або dracut з явним /boot/initramfs-<pkgbase>.img.
+_rebuild_initramfs() {
+    local rc=0 m kver base out
+    if command -v dracut-rebuild &>/dev/null; then
+        out=$(sudo dracut-rebuild 2>&1) || rc=1
+        printf '%s\n' "$out" | grep -E '^::|dracut\[F\]|[Ee]rror' | tail -6
+        grep -q 'dracut\[F\]' <<< "$out" && rc=1
+    elif command -v dracut &>/dev/null; then
+        for m in /usr/lib/modules/*/; do
+            [ -f "$m/pkgbase" ] || continue
+            kver=$(basename "$m"); base=$(<"$m/pkgbase")
+            echo ":: initramfs-$base ($kver)"
+            out=$(sudo dracut --force --hostonly --no-hostonly-cmdline "/boot/initramfs-$base.img" "$kver" 2>&1) || rc=1
+            grep -q 'dracut\[F\]' <<< "$out" && { rc=1; grep 'dracut\[F\]' <<< "$out" | tail -2; }
+            if [ -f "/boot/initramfs-$base-fallback.img" ]; then
+                sudo dracut --force --no-hostonly "/boot/initramfs-$base-fallback.img" "$kver" >/dev/null 2>&1 || rc=1
+            fi
+        done
+    elif command -v mkinitcpio &>/dev/null; then
+        sudo mkinitcpio -P 2>&1 | tail -3; [ "${PIPESTATUS[0]}" = 0 ] || rc=1
+    else
+        echo "Немає dracut / mkinitcpio — initramfs не перезібрано"; rc=1
+    fi
+    [ $rc = 0 ] || echo "❌ initramfs не перезібрано — при завантаженні буде стара заставка"
+    return $rc
+}
+
+# Тема Plymouth mgOS ставиться в ОКРЕМУ теку «mgos». Раніше вона копіювалась поверх
+# пакетної «spinner» — кожне оновлення пакета plymouth повертало туди лого «arch linux».
+PLY_THEME=mgos
+PLY_DIR=/usr/share/plymouth/themes/$PLY_THEME
 step_boot() {
     [ -d ./plymouth_theme ] || { msg "Немає теми Plymouth — пропуск"; return 0; }
-    msg "Тема Plymouth"
-    bk_plymouth; bk /usr/share/plymouth/themes/spinner
-    sudo mkdir -p /usr/share/plymouth/themes/spinner/
-    sudo cp -r ./plymouth_theme/* /usr/share/plymouth/themes/spinner/ 2>/dev/null || true
-    sudo plymouth-set-default-theme spinner 2>/dev/null || true
+    msg "Тема Plymouth ($PLY_THEME)"
+    bk_plymouth; bk "$PLY_DIR"
+    sudo mkdir -p "$PLY_DIR"
+    sudo rsync -a --delete --exclude '*.plymouth' ./plymouth_theme/ "$PLY_DIR/" 2>/dev/null \
+        || sudo cp -r ./plymouth_theme/. "$PLY_DIR/"
+    sudo rm -f "$PLY_DIR/spinner.plymouth"
+    # опис теми: two-step з картинками з $PLY_DIR (watermark.png — лого mgOS), без перекладів назви
+    sed -E -e '/^Name\[/d' -e "s|^Name=.*|Name=mgOS|" -e "s|^Description=.*|Description=Megumin OS boot splash|" \
+        -e "s|^ImageDir=.*|ImageDir=$PLY_DIR|" ./plymouth_theme/*.plymouth \
+        | sudo install -Dm644 /dev/stdin "$PLY_DIR/$PLY_THEME.plymouth"
+    sudo plymouth-set-default-theme "$PLY_THEME" || { echo "❌ plymouth-set-default-theme $PLY_THEME не спрацював"; return 1; }
+    # Без «quiet splash» Plymouth не показується, а ядро/systemd сиплють рядки модулів.
+    # Пункт recovery у GRUB бере лише GRUB_CMDLINE_LINUX — там текст лишається для діагностики.
+    _grub_params "quiet splash loglevel=3 rd.udev.log_level=3 systemd.show_status=auto vt.global_cursor_default=0"
     sub 1/2; msg "initramfs (dracut / mkinitcpio)"
-    if command -v dracut &>/dev/null; then sudo dracut -f --regenerate-all 2>&1 | tail -3 || true
-    elif command -v mkinitcpio &>/dev/null; then sudo mkinitcpio -P 2>&1 | tail -3 || true; fi
+    _rebuild_initramfs || return 1
     return 0
 }
 
@@ -580,7 +740,20 @@ _mgos_sessions_menu() {
         _mgos_session_entry mgos.desktop "mgOS" "Megumin OS — повна оболонка, повна потужність" "$ex"
     fi
     if _kiosk_installed; then
-        _mgos_session_entry kiosk.desktop "kiosk" "Енергоощадна kiosk-сесія (економія лише в ній)" "$KIOSK_SESSION_BIN"
+        # kiosk-session ставить крок kioskOS. Якщо kiosk.conf є, а скрипта нема (kiosk ставили вручну
+        # чи йде лише відновлення mgOS) — пункт у SDDM вів у неіснуючий файл і сесія не стартувала.
+        if [ ! -x "$KIOSK_SESSION_BIN" ] || [ ! -x "$KIOSK_MODE_BIN" ]; then
+            if [ -f "$KIOSK_SESS_SRC/kiosk-session" ] && [ -f "$KIOSK_SESS_SRC/kioskos-mode" ]; then
+                msg "kiosk-session + kioskos-mode"
+                bk "$KIOSK_SESSION_BIN"; bk "$KIOSK_MODE_BIN"
+                sudo install -Dm755 "$KIOSK_SESS_SRC/kiosk-session" "$KIOSK_SESSION_BIN"
+                sudo install -Dm755 "$KIOSK_SESS_SRC/kioskos-mode" "$KIOSK_MODE_BIN"
+                [ -d /var/lib/kioskos ] || { bk /var/lib/kioskos; sudo install -d -m 755 -o "$USER" /var/lib/kioskos; }
+            fi
+        fi
+        local kex=$KIOSK_SESSION_BIN
+        [ -x "$kex" ] || kex="Hyprland -c $HOME/.config/hyprland/kiosk.conf"
+        _mgos_session_entry kiosk.desktop "kiosk" "Енергоощадна kiosk-сесія (економія лише в ній)" "$kex"
         # стара назва пункту (попередня версія інсталятора)
         if [ -f /usr/share/wayland-sessions/kioskos.desktop ]; then bk /usr/share/wayland-sessions/kioskos.desktop; sudo rm -f /usr/share/wayland-sessions/kioskos.desktop; fi
     fi
@@ -620,11 +793,36 @@ step_services() {
     fi
     bk /etc/sddm.conf.d
     for s in ./system_state/etc/sddm.conf.d/*.conf; do [ -f "$s" ] && sudo install -m 644 "$s" /etc/sddm.conf.d/; done
+    # тема входу mgOS Pixel (піксельний годинник і кнопки) + шпалери/акцент/«Налаштування → Екран входу»;
+    # той самий скрипт, що й у системі. Без нього theme.conf зі знімка вказав би на ще не встановлену тему.
+    if [ -f ~/.config/megumin-os/sync_sddm.sh ]; then
+        msg "Тема входу mgOS + перехід із заставки"; bk /usr/share/sddm/themes/mgos-pixel; bk /etc/systemd/system/sddm.service.d/10-mgos-plymouth.conf
+        sudo bash ~/.config/megumin-os/sync_sddm.sh >/dev/null 2>&1 \
+            || printf "[Theme]\nCurrent=sddm-astronaut-theme\n" | sudo tee /etc/sddm.conf.d/theme.conf >/dev/null
+    fi
+    # тема зі знімка (mgos-pixel) не встановилась (крок «Конфіги» пропущено) — лишаємо класичну, щоб вхід не зламався
+    if grep -q 'Current=mgos-pixel' /etc/sddm.conf.d/theme.conf 2>/dev/null && [ ! -f /usr/share/sddm/themes/mgos-pixel/Main.qml ]; then
+        printf "[Theme]\nCurrent=sddm-astronaut-theme\n" | sudo tee /etc/sddm.conf.d/theme.conf >/dev/null
+    fi
+    # zram: стиснена пам'ять у RAM; сховані в доці програми стискаються туди (mgos-pageout, cap_sys_nice)
+    if [ -x ~/.local/bin/mgos-zram ]; then
+        msg "zram (стиснена пам'ять)"
+        bk /etc/systemd/zram-generator.conf; bk /etc/sysctl.d/99-mgos-zram.conf; bk /usr/local/bin/mgos-pageout; bk /etc/tmpfiles.d/mgos-zswap.conf
+        sudo ~/.local/bin/mgos-zram setup >/dev/null 2>&1 || echo "zram не вдалося налаштувати (sudo mgos-zram setup)"
+    fi
     _mgos_sessions_menu
     if ls ./system_state/etc/udev/*.rules &>/dev/null; then
         msg "udev-правила"
         for s in ./system_state/etc/udev/*.rules; do bk "/etc/udev/rules.d/$(basename "$s")"; sudo install -m 644 "$s" /etc/udev/rules.d/; done
         sudo udevadm control --reload 2>/dev/null || true
+    fi
+    # кулер: power-profiles-daemon лишаємо СТОКОВИМ (він веде і platform_profile) — блок --block-driver
+    # ламав кіоск: power-saver переставав вмикати економ-профіль прошивки, кулер крутився. Прибираємо старий, якщо є.
+    if [ -e /etc/systemd/system/power-profiles-daemon.service.d/mgos-fan.conf ]; then
+        msg "кулер: повертаю стоковий power-profiles-daemon"
+        sudo rm -f /etc/systemd/system/power-profiles-daemon.service.d/mgos-fan.conf
+        sudo systemctl daemon-reload 2>/dev/null || true
+        sudo systemctl try-restart power-profiles-daemon 2>/dev/null || true
     fi
     return 0
 }
@@ -669,11 +867,18 @@ step_shell() {
 }
 
 step_gpu() {
-    if gpu_nvidia; then echo "NVIDIA — лишаю env-змінні nvidia"; return 0; fi
-    msg "Не NVIDIA — вимикаю nvidia-змінні в hyprland.conf"
     local f=~/.config/hypr/hyprland.conf
+    if gpu_nvidia; then
+        # знімок системи автора (лише Intel) має ці рядки закоментованими — на NVIDIA вмикаємо назад
+        msg "NVIDIA — вмикаю env-змінні nvidia"
+        [ -f "$f" ] && bk "$f" && sed -i -E 's/^# (env = (LIBVA_DRIVER_NAME, nvidia|GBM_BACKEND, nvidia-drm|NVD_BACKEND,direct|WLR_NO_HARDWARE_CURSORS, 1)).*/\1/' "$f"
+        return 0
+    fi
+    msg "Не NVIDIA — вимикаю nvidia-змінні в hyprland.conf"
     [ -f "$f" ] && bk "$f"
     [ -f "$f" ] && sed -i -E 's/^(env = (LIBVA_DRIVER_NAME, nvidia|GBM_BACKEND, nvidia-drm|NVD_BACKEND,direct|WLR_NO_HARDWARE_CURSORS, 1))/# \1/' "$f"
+    # VA-API для Intel: без iHD Firefox декодує YouTube процесором (лаги на весь екран)
+    _intel_gpu && install_list 0 intel-media-driver
     return 0
 }
 
@@ -762,7 +967,13 @@ _hw_write() {
             for t in "${tps[@]}"; do printf 'device {\n    name = %s\n    sensitivity = 0.25\n    accel_profile = adaptive\n}\n' "$t"; done
             [ "$profile" = mgos ] && echo "source = ~/.config/hypr/touchpad.conf    # жести 3 пальцями, плавний скрол"
         fi
+        # Налаштування користувача з settings.py (тачпад, повтор клавіш, курсор) — завжди останніми, щоб перекривали все вище
+        [ "$profile" = mgos ] && { echo; echo "source = ~/.config/hypr/touchpad-user.conf    # «Налаштування» → Трекпад / Клавіатура / Курсор"; }
     } > "$auto"
+    # source на неіснуючий файл — помилка конфігу Hyprland, тож файл має бути завжди (settings.py перепише його)
+    if [ "$profile" = mgos ] && [ ! -f "$dir/touchpad-user.conf" ]; then
+        echo "# mgOS: файл заповнюють «Налаштування» (settings.py). Поки порожній — діють значення з touchpad.conf / mgos-auto.conf." > "$dir/touchpad-user.conf"
+    fi
 }
 
 _hw_touchpad_power() {   # тачпад без авто-сну — нічого не обмежує, діє в обох сесіях
@@ -897,6 +1108,10 @@ step_check() {
     [ ${#m[@]} -eq 0 ] && c ok "Пакети" "Драйвери під це залізо" "встановлені" || c warn "Пакети" "Драйвери під це залізо" "немає: ${m[*]}"
     n=$(checkupdates 2>/dev/null | wc -l)
     [ "$n" -eq 0 ] && c ok "Пакети" "Оновлення" "система актуальна" || { [ "$n" -gt 100 ] && x=fail || x=warn; c $x "Пакети" "Оновлення" "$n пакетів чекають оновлення"; }
+    x=$(_conflicts_scan | awk -F'|' '{o = $2; if ($3 != "") o = o (o != "" ? ", " : "") $3; print $1 ": " o}' | paste -sd ';' | sed 's/;/; /g')
+    [ -z "$x" ] && c ok "Пакети" "Дублі й конфлікти" "немає" || c fail "Пакети" "Дублі й конфлікти" "$x — виправить крок «Дублі та конфлікти»"
+    x=$(_dup_builds | paste -sd ',' | sed 's/,/, /g')
+    [ -z "$x" ] || c warn "Пакети" "Дві збірки одного пакета" "$x"
     n=$(pacman -Qtdq 2>/dev/null | wc -l)
     [ "$n" -eq 0 ] && c ok "Пакети" "Сироти" "немає" || c warn "Пакети" "Сироти" "$n непотрібних залежностей (pacman -Qtdq)"
     n=$(du -sm /var/cache/pacman/pkg 2>/dev/null | awk '{print $1}')
@@ -1040,6 +1255,7 @@ step_verify() {
         if "$@" >/dev/null 2>&1; then echo "@@CHECK ok $n"; else echo "@@CHECK fail $n"; fail=$((fail + 1)); fi; }
     local c
     for c in hyprctl ignis dunst awww mpvpaper socat nmcli wpctl grim slurp cliphist; do chk "$c" command -v "$c"; done
+    chk "немає конфліктних пакетів" test -z "$(_conflicts_scan)"
     chk "python3 + PyQt6" python3 -c "import PyQt6.QtWidgets"
     if [ -d ~/.config/SYSui ]; then
         local b
@@ -1053,9 +1269,21 @@ step_verify() {
     if systemctl is-enabled sddm >/dev/null 2>&1; then echo "@@CHECK ok SDDM увімкнено"
     else echo "@@CHECK warn SDDM вимкнено (вхід не через SDDM)"; fi
     chk "пункт «mgOS» у меню сесій" test -f "$MGOS_SESS_DIR/mgos.desktop" -a -f "$MGOS_SESS_CONF"
+    # пункт kiosk має вести в існуючу програму (інакше SDDM просто повертає на екран входу)
+    [ -f "$MGOS_SESS_DIR/kiosk.desktop" ] && chk "пункт «kiosk» запускається" bash -c \
+        'e=$(sed -n "s/^Exec=//p" "$1" | awk "{print \$1}"); command -v "$e"' _ "$MGOS_SESS_DIR/kiosk.desktop"
+    if [ -d ./plymouth_theme ] && [ -d "$PLY_DIR" ]; then
+        chk "заставка Plymouth ($PLY_THEME)" test "$(plymouth-set-default-theme 2>/dev/null)" = "$PLY_THEME"
+        # initramfs має бути зібраний ПІСЛЯ встановлення теми — інакше при завантаженні стара заставка
+        local img; for img in /boot/initramfs-*.img; do
+            [[ "$img" == *fallback* ]] && continue
+            [ -e "$img" ] && chk "initramfs з новою заставкою ($(basename "$img"))" test "$img" -nt "$PLY_DIR/$PLY_THEME.plymouth"
+        done
+    fi
     chk "автомасштаб екранів (mgos-display)" test -x "$HW_DISPLAY_BIN"
     [ -f ~/.config/hypr/hyprland.conf ] && chk "mgos-auto.conf підключено" bash -c "test -f ~/.config/hypr/mgos-auto.conf && grep -q '^source = ~/.config/hypr/mgos-auto.conf' ~/.config/hypr/hyprland.conf"
     [ -n "$(_hw_touchpads)" ] && [ -f ~/.config/hypr/hyprland.conf ] && chk "жести тачпада (touchpad.conf)" grep -q '^gesture = 3, horizontal, workspace' ~/.config/hypr/touchpad.conf
+    [ -f ~/.config/hypr/mgos-auto.conf ] && grep -q 'touchpad-user.conf' ~/.config/hypr/mgos-auto.conf && chk "touchpad-user.conf (Налаштування)" test -f ~/.config/hypr/touchpad-user.conf
     echo "Перевірок: $total, з помилками: $fail"
     return 0
 }
@@ -1187,6 +1415,13 @@ step_kiosk_files() {
     _kiosk_paths ~/.config/waybar/kiosk.jsonc ~/.config/waybar/kiosk.css ~/.config/waybar/volume.py
     chmod +x ~/.config/waybar/volume.py
     sub 2/5
+
+    # kitty у kiosk — свій темний конфіг (kiosk.conf: env KITTY_CONFIG_DIRECTORY), mgOS-ний kitty не чіпаємо
+    if _kiosk_has config/kitty-kiosk/kitty.conf; then
+        bk ~/.config/kitty-kiosk
+        mkdir -p ~/.config/kitty-kiosk
+        cp -a "$KIOSK_DIR/config/kitty-kiosk/kitty.conf" ~/.config/kitty-kiosk/
+    fi
 
     # dunst: якщо вже налаштований (наприклад, mgOS) — не чіпаємо, лише доставляємо music_notify.sh
     if _kiosk_has config/dunst; then
@@ -1449,10 +1684,10 @@ step_kiosk_system() {
     sub 5/5; return 0
 }
 
-step_kiosk_kernel() {
-    # nowatchdog / loglevel=3 лише прибирають зайві переривання й спам — потужність ПК не обмежують
-    local want; want=$(cat "$KIOSK_DIR/kernel_params.txt" 2>/dev/null)
-    [ -n "$want" ] || { msg "Параметрів ядра у знімку немає"; return 0; }
+# _grub_params "<параметри>" — дописати параметри ядра в GRUB_CMDLINE_LINUX_DEFAULT (з бекапом),
+# однакові ключі (loglevel=…) замінює; grub-mkconfig лише якщо щось змінилось
+_grub_params() {
+    local want=$1
     if [ ! -f /etc/default/grub ] || ! command -v grub-mkconfig &>/dev/null; then
         echo "GRUB не знайдено — додай параметри ядра вручну у свій завантажувач: $want"; return 0
     fi
@@ -1479,6 +1714,13 @@ step_kiosk_kernel() {
     msg "grub-mkconfig"
     sudo grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tail -2
     echo "Додано:$added (діє після перезавантаження)"
+}
+
+step_kiosk_kernel() {
+    # nowatchdog / loglevel=3 лише прибирають зайві переривання й спам — потужність ПК не обмежують
+    local want; want=$(cat "$KIOSK_DIR/kernel_params.txt" 2>/dev/null)
+    [ -n "$want" ] || { msg "Параметрів ядра у знімку немає"; return 0; }
+    _grub_params "$want"
 }
 
 step_kiosk_verify() {

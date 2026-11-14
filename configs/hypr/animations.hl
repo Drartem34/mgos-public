@@ -13,14 +13,17 @@ animations {
     bezier = emphasizedAccel, 0.3, 0, 0.8, 0.15
     bezier = emphasizedDecel, 0.05, 0.7, 0.1, 1
     bezier = standard, 0.2, 0, 0, 1
+    bezier = mgosSpring, 0.16, 1.18, 0.3, 1     # пружина з легким перельотом (вхід у mgOS, OSD)
+    bezier = mgosReveal, 0.25, 0.1, 0.25, 1     # м'яке проявлення шпалер
 
     # ОСЬ ТУТ ТІЛЬКИ ОДИН РЯДОК ДЛЯ РАМКИ
     animation = borderangle, 1, 50, linear, loop
 
     # Інші анімації
-    animation = layersIn, 1, 5, emphasizedDecel, slide
+    animation = layersIn, 1, 6, mgosSpring, slide
     animation = layersOut, 1, 4, emphasizedAccel, slide
-    animation = fadeLayers, 1, 5, standard
+    animation = fadeLayersIn, 1, 9, mgosReveal
+    animation = fadeLayersOut, 1, 4, standard
 
     animation = windowsIn, 1, 5, emphasizedDecel
     animation = windowsOut, 1, 3, emphasizedAccel
@@ -31,5 +34,14 @@ animations {
 
     animation = fade, 1, 6, standard
     animation = fadeDim, 1, 6, standard
+    animation = fadeSwitch, 1, 2, emphasizedAccel   # Super+Q → сховище: вікно швидко гасне перед переносом (mgos-close)
     animation = border, 1, 6, standard
 }
+
+# ━━ Вхід у mgOS: шпалери проявляються з темряви → топбар падає згори → док піднімається знизу ━━
+# (порядок задають затримки exec-once у hyprland.conf; тут — напрямок кожного шару)
+layerrule = no_anim on, match:namespace wallpaper      # постер шпалер (swaybg) — з'являється миттєво
+layerrule = animation fade, match:namespace mpvpaper
+layerrule = animation fade, match:namespace awww-daemon
+layerrule = animation slide top, match:namespace topbar
+layerrule = animation slide bottom, match:namespace dock

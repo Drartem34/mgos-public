@@ -38,6 +38,7 @@ static const StepDef STEPS[] = {
     {"drivers",     "Драйвери під це залізо",     "󰢮", 8,  false},
     {"apps",        "Програми зі знімка",         "󰀻", 14, false},
     {"dev",         "Інструменти розробки",       "󰅩", 8,  false},
+    {"dedupe",      "Дублі та конфлікти пакетів", "󰃢", 1,  false},
     {"files",       "Теки та шрифти",             "󰉋", 1,  false},
     {"configs",     "Конфіги mgOS",               "󰒓", 2,  true},
     {"home",        "Домашні файли (~)",          "󰋜", 1,  false},
@@ -976,7 +977,7 @@ static void finish_all() {
     bool warn = !g_problems.empty();
     gtk_label_set_text(GTK_LABEL(g_done_icon), warn ? "󰀦" : "󰄬");
     if (warn) gtk_widget_add_css_class(g_done_icon, "warn"); else gtk_widget_remove_css_class(g_done_icon, "warn");
-    gtk_label_set_text(GTK_LABEL(g_done_title), warn ? "Майже готово — виріши, що робити з проблемами" : (R.mode == Mode::Update ? "Систему оновлено" : R.mode == Mode::Kiosk ? "kioskOS готова!" : "Megumin OS 6 готова!"));
+    gtk_label_set_text(GTK_LABEL(g_done_title), warn ? "Майже готово — виріши, що робити з проблемами" : (R.mode == Mode::Update ? "Систему оновлено" : R.mode == Mode::Kiosk ? "kioskOS готова!" : "Megumin OS 6.5 готова!"));
     std::string sub = std::string(mode_title(R.mode)) + " за " + fmt_time(R.elapsed) +
         (R.mode == Mode::Kiosk ? ".  Вхід: у меню сесій SDDM обери «kiosk» (або «mgOS»), з TTY — команда kiosk" : "") +
         ".  Не подобається результат — «Скасувати все» поверне систему як було.  Лог: " + R.log_path;
@@ -1025,7 +1026,7 @@ static void begin_run() {
     }
     g_logf.open(R.log_path, std::ios::app);
     gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(g_log_view)), "", -1);
-    log_line(std::string("== Megumin OS 6 — ") + mode_title(R.mode) + " ==");
+    log_line(std::string("== Megumin OS 6.5 — ") + mode_title(R.mode) + " ==");
     build_run_rows();
     g_pause_req = false; g_cancel_req = false;
     gtk_widget_set_visible(g_close_banner, FALSE);
@@ -1352,6 +1353,7 @@ static void start_with_options() {
         if (on("OPT_DRIVERS")) S.push_back("drivers");
         if (!R.opt["OPT_APPS"].empty()) S.push_back("apps");
         if (on("OPT_DEV")) S.push_back("dev");
+        S.push_back("dedupe");
         S.push_back("files");
         if (R.opt["OPT_CONFIGS"] != "-") { S.push_back("configs"); S.push_back("home"); S.push_back("build"); }
         for (auto x : {"theme", "boot", "scripts", "services", "look"}) S.push_back(x);
@@ -1364,6 +1366,7 @@ static void start_with_options() {
         R.opt["OPT_WALL"] = "0";
         S = {"preflight", "snapshot"};
         if (on("R_PKGS")) for (auto x : {"yay", "repos", "core", "stable", "aur", "utils", "drivers"}) S.push_back(x);
+        S.push_back("dedupe");   // завжди: швидко, а дублі заважають і без перевстановлення пакетів
         if (on("R_CFG")) { S.push_back("configs"); S.push_back("home"); S.push_back("build"); S.push_back("cleanup"); S.push_back("hw"); }
         if (on("R_THEME")) { S.push_back("theme"); S.push_back("look"); }
         if (on("R_SYS")) { S.push_back("scripts"); S.push_back("services"); if (!on("R_THEME")) S.push_back("look"); }
@@ -1376,14 +1379,14 @@ static void start_with_options() {
         R.opt["OPT_KIOSK_KERNEL"] = on("OPT_KIOSK_KERNEL") ? "1" : "0";
         S = {"preflight", "snapshot", "yay"};
         if (on("OPT_UPDATE")) S.push_back("sysupdate");
-        for (auto x : {"kiosk_pkgs", "kiosk_extra", "kiosk_files", "kiosk_build", "kiosk_firefox"}) S.push_back(x);
+        for (auto x : {"kiosk_pkgs", "dedupe", "kiosk_extra", "kiosk_files", "kiosk_build", "kiosk_firefox"}) S.push_back(x);
         if (on("OPT_KIOSK_THEME")) S.push_back("kiosk_theme");
         S.push_back("kiosk_system");
         S.push_back("kiosk_hw");
         if (on("OPT_KIOSK_KERNEL")) S.push_back("kiosk_kernel");
         S.push_back("kiosk_verify");
     } else {
-        S = {"preflight", "snapshot", "yay", "repos", "upd_repo", "upd_aur", "upd_missing", "build", "verify"};
+        S = {"preflight", "snapshot", "yay", "repos", "upd_repo", "upd_aur", "upd_missing", "dedupe", "build", "verify"};
     }
     begin_run();
 }
@@ -1631,7 +1634,7 @@ static GtkWidget* build_welcome() {
     gtk_box_append(GTK_BOX(p), label("󰄬", "big-icon", 0.5));
     gtk_box_append(GTK_BOX(p), label("Все готово до роботи", "h1", 0.5));
     GtkWidget* sub = label(kiosk ? "kioskOS встановлено. Тиха, енергоощадна сесія — для браузера, документів і довгої роботи від батареї."
-                                 : "Megumin OS 6 встановлено і налаштовано під цей комп'ютер. Ласкаво просимо!", "dimtxt", 0.5);
+                                 : "Megumin OS 6.5 встановлено і налаштовано під цей комп'ютер. Ласкаво просимо!", "dimtxt", 0.5);
     gtk_label_set_wrap(GTK_LABEL(sub), TRUE); gtk_label_set_justify(GTK_LABEL(sub), GTK_JUSTIFY_CENTER);
     gtk_box_append(GTK_BOX(p), sub);
 
@@ -1775,7 +1778,7 @@ static GtkWidget* build_home() {
     gtk_grid_set_row_spacing(GTK_GRID(cards), 12); gtk_grid_set_column_spacing(GTK_GRID(cards), 12);
     gtk_grid_set_column_homogeneous(GTK_GRID(cards), TRUE); gtk_grid_set_row_homogeneous(GTK_GRID(cards), TRUE);
     // 3 колонки: п'ята картка (kioskOS) не робить вікно вищим за екран ноутбука
-    gtk_grid_attach(GTK_GRID(cards), mode_card("󰏔", "Встановити", "Повне встановлення Megumin OS 6 на чистий Arch Linux — система 1 в 1 як у знімку", "≈ 30–90 хв", Mode::Install), 0, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(cards), mode_card("󰏔", "Встановити", "Повне встановлення Megumin OS 6.5 на чистий Arch Linux — система 1 в 1 як у знімку", "≈ 30–90 хв", Mode::Install), 0, 0, 1, 1);
     gtk_grid_attach(GTK_GRID(cards), mode_card("󰁯", "Відновити", "Повернути конфіги, панелі, тему й служби до знімка mgOS", snap.empty() ? "зі знімка" : "знімок від " + snap, Mode::Restore), 1, 0, 1, 1);
     gtk_grid_attach(GTK_GRID(cards), mode_card("󰚰", "Оновити", "Знайти й оновити застарілі пакети mgOS, доставити відсутні", std::to_string(npk) + " пакетів у знімку", Mode::Update), 2, 0, 1, 1);
     gtk_grid_attach(GTK_GRID(cards), mode_card("󰓙", "Перевірити", "Діагностика: що зламано, чого бракує, що відрізняється від знімка", "≈ 2 с · нічого не змінює", Mode::Check), 0, 1, 1, 1);
@@ -1999,7 +2002,7 @@ static void activate(GtkApplication* app, gpointer) {
 
     g_win = gtk_application_window_new(app);
     gtk_widget_add_css_class(g_win, "mgos");
-    gtk_window_set_title(GTK_WINDOW(g_win), "Megumin OS 6 — Інсталятор");
+    gtk_window_set_title(GTK_WINDOW(g_win), "Megumin OS 6.5 — Інсталятор");
     gtk_window_set_default_size(GTK_WINDOW(g_win), 760, 780);
     gtk_window_set_decorated(GTK_WINDOW(g_win), FALSE);
     g_signal_connect(g_win, "close-request", G_CALLBACK(on_close), nullptr);
@@ -2029,7 +2032,7 @@ static void activate(GtkApplication* app, gpointer) {
     gtk_widget_set_margin_start(tbox, 22); gtk_widget_set_margin_bottom(tbox, 10);
     GtkWidget* tr = hbox(0);
     gtk_box_append(GTK_BOX(tr), label("Megumin OS", "title"));
-    GtkWidget* badge = label("6", "badge", 0.5); gtk_widget_set_valign(badge, GTK_ALIGN_CENTER);
+    GtkWidget* badge = label("6.5", "badge", 0.5); gtk_widget_set_valign(badge, GTK_ALIGN_CENTER);
     gtk_box_append(GTK_BOX(tr), badge);
     gtk_box_append(GTK_BOX(tbox), tr);
     g_subtitle = label("", "subtitle");
