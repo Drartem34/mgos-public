@@ -21,7 +21,7 @@ FLAGS="$(pkg-config --cflags --libs gtk4 gtk4-layer-shell-0 gio-unix-2.0)"
 pids=()
 for src in "${ARGS[@]}"; do
     out=${MAP[$src]}; [ -z "$out" ] && { echo "невідомий модуль: $src"; exit 1; }
-    OPT=-O2; [ "$src" = pixel_wallpaper ] && OPT="-O3 -ffast-math"   # шпалери рахують десятки тисяч пікселів щокадру
+    OPT=-O2; { [ "$src" = pixel_wallpaper ] || [ "$src" = welcome ]; } && OPT="-O3 -ffast-math"   # шпалери рахують десятки тисяч пікселів щокадру
     ( g++ -std=c++17 $OPT -s "$src.cpp" -o "$out.new" $FLAGS && echo "✓ $out" ) & pids+=($!)
 done
 fail=0; for p in "${pids[@]}"; do wait $p || fail=1; done

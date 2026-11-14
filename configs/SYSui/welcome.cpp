@@ -35,8 +35,7 @@ static std::string g_page = "look";
 static const char* PAGES[] = {"look", "wifi", "wallpaper", "desktop", "done"};
 static const int NPAGES = 5;
 // фон: піксельний стиль (g_wv) або вибрані шпалери-зображення
-static cairo_surface_t* g_bg_img = nullptr;    // на весь екран, cover
-static cairo_surface_t* g_bg_blur = nullptr;   // маленька розмита копія g_bg_img
+static GdkTexture* g_bg_tex = nullptr;         // вибрані шпалери-зображення (cover, розмір екрана)
 static double g_bg_switch = -10;               // коли змінили фон — проявлення з темряви
 static double g_mouse_x = -1e6, g_mouse_y = -1e6;
 static std::string g_test_bg;
@@ -58,10 +57,19 @@ static const int B8[64] = {0,32,8,40,2,34,10,42,48,16,56,24,50,18,58,26,12,44,4,
                            3,35,11,43,1,33,9,41,51,19,59,27,49,17,57,25,15,47,7,39,13,45,5,37,63,31,55,23,61,29,53,21};
 
 // Текст з піксельним розчиненням: alpha<1 → видно лише клітинки, де поріг Байєра < alpha.
-static void pixel_text(cairo_t* cr, int W, int H, const std::string& text, const char* font, double px,
-                       double alpha, double scale, double cy, double cell) {
-    if (alpha <= 0.001) return;
-    PangoLayout* l = pango_cairo_create_layout(cr);
+// Те саме, але для GPU: напис рендериться раз (кеш), щокадру лише дизер-розчинення маленької
+// картинки тексту; сяйво під ним — GSK-тінь, а не 6 проходів маски на процесорі.
+struct TextCache { std::string key; cairo_surface_t* s = nullptr; };
+static TextCache g_tc[4];
+static cairo_surface_t* text_surface(const std::string& text, const char* font, double px, double scale) {
+    char k[64]; snprintf(k, sizeof k, "|%s|%.1f|%.3f", font, px, scale);
+    std::string key = text + k;
+    for (auto& c : g_tc) if (c.s && c.key == key) return c.s;
+    static int rr = 0; TextCache& c = g_tc[rr++ % 4];
+    if (c.s) cairo_surface_destroy(c.s);
+    cairo_surface_t* tmp = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
+    cairo_t* t = cairo_create(tmp);
+    PangoLayout* l = pango_cairo_create_layout(t);
     PangoFontDescription* fd = pango_font_description_from_string(font);
     pango_font_description_set_absolute_size(fd, px * PANGO_SCALE);
     pango_layout_set_font_description(l, fd);
@@ -69,150 +77,142 @@ static void pixel_text(cairo_t* cr, int W, int H, const std::string& text, const
     int tw, th; pango_layout_get_pixel_size(l, &tw, &th);
     int sw = (int)(tw * scale) + 8, sh = (int)(th * scale) + 8;
     cairo_surface_t* s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, sw, sh);
-    cairo_t* c = cairo_create(s);
-    cairo_scale(c, scale, scale);
-    cairo_set_source_rgb(c, 1, 1, 1);
-    pango_cairo_update_layout(c, l);
-    cairo_move_to(c, 4 / scale, 4 / scale);
-    pango_cairo_show_layout(c, l);
-    cairo_destroy(c);
-    if (alpha < 0.999) {                                  // піксельне розчинення
-        cairo_surface_flush(s);
-        unsigned char* d = cairo_image_surface_get_data(s);
-        int st = cairo_image_surface_get_stride(s);
+    cairo_t* cr = cairo_create(s);
+    cairo_scale(cr, scale, scale);
+    cairo_set_source_rgb(cr, 1, 1, 1);
+    pango_cairo_update_layout(cr, l);
+    cairo_move_to(cr, 4 / scale, 4 / scale);
+    pango_cairo_show_layout(cr, l);
+    cairo_destroy(cr);
+    pango_font_description_free(fd); g_object_unref(l); cairo_destroy(t); cairo_surface_destroy(tmp);
+    c.key = key; c.s = s;
+    return s;
+}
+static void pixel_text_gpu(GtkSnapshot* snap, int W, const std::string& text, const char* font, double px,
+                           double alpha, double scale, double cy, double cell);
+static double ease(double x) { x = std::clamp(x, 0.0, 1.0); return 1 - std::pow(1 - x, 3); }
+static void pixel_text_gpu(GtkSnapshot* snap, int W, const std::string& text, const char* font, double px,
+                           double alpha, double scale, double cy, double cell) {
+    if (alpha <= 0.001) return;
+    // масштаб квантуємо (кеш не роздувається на кожен кадр «наїзду»)
+    scale = std::round(scale * 200) / 200;
+    cairo_surface_t* src = text_surface(text, font, px, scale);
+    int sw = cairo_image_surface_get_width(src), sh = cairo_image_surface_get_height(src), st = cairo_image_surface_get_stride(src);
+    cairo_surface_flush(src);
+    GBytes* by;
+    if (alpha < 0.999) {                                  // піксельне розчинення — на копії
+        guchar* d = (guchar*)g_malloc((gsize)st * sh);
+        memcpy(d, cairo_image_surface_get_data(src), (size_t)st * sh);
         for (int y = 0; y < sh; y++) {
             uint32_t* row = (uint32_t*)(d + y * st);
             int cy8 = (int)(y / cell) & 7;
             for (int x = 0; x < sw; x++)
                 if ((B8[cy8 * 8 + ((int)(x / cell) & 7)] + 0.5) / 64.0 >= alpha) row[x] = 0;
         }
-        cairo_surface_mark_dirty(s);
-    }
-    // м'яке сяйво під текстом (у кольорі акценту)
+        by = g_bytes_new_take(d, (gsize)st * sh);
+    } else by = g_bytes_new(cairo_image_surface_get_data(src), (gsize)st * sh);
+    GdkTexture* tex = gdk_memory_texture_new(sw, sh, GDK_MEMORY_DEFAULT, by, st);
+    g_bytes_unref(by);
     pw::RGB a = g_wv.accent_now();
-    cairo_save(cr);
-    double x = (W - sw) / 2.0, y = cy - sh / 2.0;
-    cairo_set_source_rgba(cr, a.r, a.g, a.b, 0.35 * alpha);
-    for (int k = 1; k <= 3; k++) { cairo_mask_surface(cr, s, x - k, y); cairo_mask_surface(cr, s, x + k, y); }
-    cairo_set_source_surface(cr, s, x, y);
-    cairo_paint(cr);
-    cairo_restore(cr);
-    cairo_surface_destroy(s);
-    pango_font_description_free(fd);
-    g_object_unref(l);
+    GskShadow sh_{{(float)a.r, (float)a.g, (float)a.b, (float)(0.6 * alpha)}, 0, 0, 7};
+    graphene_rect_t r = GRAPHENE_RECT_INIT((float)((W - sw) / 2.0), (float)(cy - sh / 2.0), (float)sw, (float)sh);
+    gtk_snapshot_push_shadow(snap, &sh_, 1);
+    gtk_snapshot_append_texture(snap, tex, &r);
+    gtk_snapshot_pop(snap);
+    g_object_unref(tex);
 }
 
-static double ease(double x) { x = std::clamp(x, 0.0, 1.0); return 1 - std::pow(1 - x, 3); }
-
-// Розмиття: джерело малюється у W/F × H/F, далі 3 проходи box blur по горизонталі й вертикалі.
-static const int BLUR_F = 12;
-static void box_blur(cairo_surface_t* s, int passes = 3, int R = 2) {
-    cairo_surface_flush(s);
-    int w = cairo_image_surface_get_width(s), h = cairo_image_surface_get_height(s), st = cairo_image_surface_get_stride(s) / 4;
-    uint32_t* d = (uint32_t*)cairo_image_surface_get_data(s);
-    std::vector<uint32_t> tmp(std::max(w, h));
-    auto run = [&](uint32_t* p, int n, int step) {
-        for (int i = 0; i < n; i++) {
-            unsigned a = 0, r = 0, g = 0, b = 0, c = 0;
-            for (int k = -R; k <= R; k++) {
-                int j = std::clamp(i + k, 0, n - 1); uint32_t v = p[j * step];
-                a += v >> 24; r += (v >> 16) & 255; g += (v >> 8) & 255; b += v & 255; c++;
-            }
-            tmp[i] = (a / c) << 24 | (r / c) << 16 | (g / c) << 8 | (b / c);
-        }
-        for (int i = 0; i < n; i++) p[i * step] = tmp[i];
-    };
-    for (int ps = 0; ps < passes; ps++) {
-        for (int y = 0; y < h; y++) run(d + y * st, w, 1);
-        for (int x = 0; x < w; x++) run(d + x, h, st);
-    }
-    cairo_surface_mark_dirty(s);
-}
-static cairo_surface_t* small_copy(cairo_surface_t* src, double sx, double sy, int w, int h) {
-    cairo_surface_t* s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
-    cairo_t* c = cairo_create(s);
-    cairo_set_source_rgb(c, 0, 0, 0); cairo_paint(c);
-    cairo_scale(c, sx, sy);
-    cairo_set_source_surface(c, src, 0, 0);
-    cairo_pattern_set_filter(cairo_get_source(c), CAIRO_FILTER_GOOD);
-    cairo_paint(c);
-    cairo_destroy(c);
-    return s;
-}
-static void rounded(cairo_t* cr, double x, double y, double w, double h, double r) {
-    cairo_new_sub_path(cr);
-    cairo_arc(cr, x + w - r, y + r, r, -M_PI / 2, 0);
-    cairo_arc(cr, x + w - r, y + h - r, r, 0, M_PI / 2);
-    cairo_arc(cr, x + r, y + h - r, r, M_PI / 2, M_PI);
-    cairo_arc(cr, x + r, y + r, r, M_PI, 1.5 * M_PI);
-    cairo_close_path(cr);
-}
-
-static void draw(GtkDrawingArea*, cairo_t* cr, int W, int H, gpointer) {
-    cairo_set_source_rgb(cr, 0, 0, 0);
-    cairo_paint(cr);
-    // картка — це «вікно» для чорної діри, курсор — теж (привиди лінзуються)
+// ---------- малювання: усе на GPU ----------
+// Раніше кадр (1920×1080) малював процесор через Cairo, а скло під карткою — box blur на CPU.
+// Тепер: фон — маленька текстура cols×rows, яку масштабує відеокарта (NEAREST), скло —
+// GSK blur-нода над тією ж текстурою, обрізана скругленим прямокутником картки. CPU рахує лише
+// сітку пікселів (~60 тис.) і, поки йде інтро, смугу з текстом «Привіт». Без GPU GTK сам
+// перейде на програмний рендерер — працює так само, лише повільніше.
+G_DECLARE_FINAL_TYPE(WelcomeView, welcome_view, WELCOME, VIEW, GtkWidget)
+struct _WelcomeView { GtkWidget parent; };
+G_DEFINE_TYPE(WelcomeView, welcome_view, GTK_TYPE_WIDGET)
+static void welcome_view_snapshot(GtkWidget* w, GtkSnapshot* snap) {
+    int W = gtk_widget_get_width(w), H = gtk_widget_get_height(w);
+    if (W <= 0 || H <= 0) return;
+    graphene_rect_t full = GRAPHENE_RECT_INIT(0, 0, (float)W, (float)H);
+    GdkRGBA black = {0, 0, 0, 1};
+    gtk_snapshot_append_color(snap, &black, &full);
+    // картка — це «вікно» для чорної діри, курсор — теж (привиди лінзуються й засмоктуються)
     graphene_rect_t cb{};
-    bool have_card = g_card && gtk_widget_get_visible(g_ui) && gtk_widget_compute_bounds(g_card, g_area, &cb);
+    bool have_card = g_card && gtk_widget_get_visible(g_ui) && gtk_widget_compute_bounds(g_card, w, &cb);
     double wcell = std::max(1, g_wv.cell);
     g_wv.bh_wins.clear();
     if (have_card) g_wv.bh_wins.push_back({(float)(cb.origin.x / wcell), (float)(cb.origin.y / wcell),
                                            (float)((cb.origin.x + cb.size.width) / wcell), (float)((cb.origin.y + cb.size.height) / wcell), true});
     g_wv.bh_cx = g_mouse_x / wcell; g_wv.bh_cy = g_mouse_y / wcell;
+
     // 1) фон: сяйво / вибраний піксельний стиль / вибрані шпалери
+    GdkTexture* tex = nullptr; graphene_rect_t tr = full; GskScalingFilter flt = GSK_SCALING_FILTER_LINEAR;
     double rv = std::clamp((g_t - INTRO_DARK) / REVEAL, 0.0, 1.0);
-    if (g_bg_img) {
-        cairo_set_source_surface(cr, g_bg_img, 0, 0);
-        cairo_paint(cr);
-    } else if (rv > 0) {
+    if (g_bg_tex) tex = (GdkTexture*)g_object_ref(g_bg_tex);
+    else if (rv > 0) {
         g_wv.t = g_t; g_wv.reveal = rv;
-        g_wv.draw(cr, W, H);
+        // адаптивна якість: базово ~320 «пікселів» по ширині; якщо кадр рахується довше 5 мс
+        // (слабкий ПК, ліміт 8 мс) — пікселі крупніші, поки не вкладемося. Анімація лишається плавною.
+        static int extra = 0; static double avg = 0; static int n = 0;
+        g_wv.cell = std::max(4, W / 320) + extra;
+        gint64 t0 = g_get_monotonic_time();
+        g_wv.render(W, H);
+        double ms = (g_get_monotonic_time() - t0) / 1000.0;
+        avg = n ? avg * 0.9 + ms * 0.1 : ms;
+        if (++n > 20 && avg > 8.0 && extra < 6) { extra++; n = 0; }
+        if (g_wv.surf) {
+            int cw = g_wv.sw, ch = g_wv.sh, st = cairo_image_surface_get_stride(g_wv.surf);
+            GBytes* by = g_bytes_new(cairo_image_surface_get_data(g_wv.surf), (gsize)st * ch);
+            tex = gdk_memory_texture_new(cw, ch, GDK_MEMORY_DEFAULT, by, st);
+            g_bytes_unref(by);
+            tr = GRAPHENE_RECT_INIT(0, 0, (float)(cw * g_wv.cell), (float)(ch * g_wv.cell));
+            flt = GSK_SCALING_FILTER_NEAREST;
+        }
     }
+    if (tex) gtk_snapshot_append_scaled_texture(snap, tex, flt, &tr);
     double sw_u = (g_t - g_bg_switch) / 0.7;
-    if (sw_u < 1) { cairo_set_source_rgba(cr, 0, 0, 0, 1 - ease(sw_u)); cairo_paint(cr); }
-    // 1б) скло під карткою: розмита копія фону
-    if (have_card && g_ui_shown >= 0) {
-        double a = ease((g_t - g_ui_shown) / 0.7);
-        cairo_surface_t* bl = nullptr; bool own = false;
-        int bw = std::max(8, W / BLUR_F), bh = std::max(8, H / BLUR_F);
-        if (g_bg_img) bl = g_bg_blur;
-        else if (g_wv.surf) {
-            bl = small_copy(g_wv.surf, (double)bw / g_wv.sw, (double)bh / g_wv.sh, bw, bh);
-            box_blur(bl); own = true;
-        }
-        if (bl) {
-            cairo_save(cr);
-            rounded(cr, cb.origin.x, cb.origin.y, cb.size.width, cb.size.height, 26);
-            cairo_clip(cr);
-            cairo_scale(cr, (double)W / cairo_image_surface_get_width(bl), (double)H / cairo_image_surface_get_height(bl));
-            cairo_set_source_surface(cr, bl, 0, 0);
-            cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
-            cairo_pattern_set_extend(cairo_get_source(cr), CAIRO_EXTEND_PAD);
-            cairo_paint_with_alpha(cr, a * (sw_u < 1 ? ease(sw_u) : 1));
-            cairo_restore(cr);
-            if (own) cairo_surface_destroy(bl);
-        }
+    if (sw_u < 1) { GdkRGBA f = {0, 0, 0, (float)(1 - ease(sw_u))}; gtk_snapshot_append_color(snap, &f, &full); }
+
+    // 1б) скло під карткою: та сама текстура, розмита відеокартою
+    if (tex && have_card && g_ui_shown >= 0) {
+        double a = ease((g_t - g_ui_shown) / 0.7) * (sw_u < 1 ? ease(sw_u) : 1);
+        GskRoundedRect rr;
+        gsk_rounded_rect_init_from_rect(&rr, &cb, 26);
+        gtk_snapshot_push_rounded_clip(snap, &rr);
+        gtk_snapshot_push_opacity(snap, a);
+        gtk_snapshot_push_blur(snap, 36);
+        gtk_snapshot_append_scaled_texture(snap, tex, GSK_SCALING_FILTER_LINEAR, &tr);
+        gtk_snapshot_pop(snap);
+        gtk_snapshot_pop(snap);
+        gtk_snapshot_pop(snap);
     }
-    // 2) «Привіт» мовами
-    double cell = std::max(3.0, W / 480.0);
+    if (tex) g_object_unref(tex);
+
+    // 2) «Привіт» мовами і 3) «Ласкаво просимо» — лише смуга з текстом, лише під час інтро
     double ws = words_start();
-    if (g_t >= ws && g_t < welcome_start()) {
+    bool words = g_t >= ws && g_t < welcome_start();
+    bool hello = g_t >= welcome_start() && !g_intro_done;
+    if (!words && !hello) return;
+    double cell = std::max(3.0, W / 480.0);
+    if (words) {
         int i = std::min(NW - 1, (int)((g_t - ws) / WORD_T));
         double u = (g_t - ws - i * WORD_T) / WORD_T;      // 0..1 у межах слова
         double a = u < 0.28 ? ease(u / 0.28) : u > 0.72 ? 1 - ease((u - 0.72) / 0.28) : 1;
         double sc = 1.06 - 0.06 * ease(u / 0.5);
-        pixel_text(cr, W, H, WORDS[i].text, WORDS[i].font, H * 0.13, a, sc, H * 0.45, cell);
+        pixel_text_gpu(snap, W, WORDS[i].text, WORDS[i].font, H * 0.13, a, sc, H * 0.45, cell);
     }
-    // 3) «Ласкаво просимо» — до натискання «Почати»
-    if (g_t >= welcome_start() && !g_intro_done) {
+    if (hello) {
         double u = (g_t - welcome_start()) / 0.9;
-        pixel_text(cr, W, H, "Ласкаво просимо", "SF Pro Display Bold", H * 0.095, ease(u), 1.04 - 0.04 * ease(u), H * 0.40, cell);
-        pixel_text(cr, W, H, "до Megumin OS", "SF Pro Display", H * 0.045, ease(u - 0.35), 1, H * 0.51, cell);
+        pixel_text_gpu(snap, W, "Ласкаво просимо", "SF Pro Display Bold", H * 0.095, ease(u), 1.04 - 0.04 * ease(u), H * 0.40, cell);
+        pixel_text_gpu(snap, W, "до Megumin OS", "SF Pro Display", H * 0.045, ease(u - 0.35), 1, H * 0.51, cell);
         double hint = 0.55 + 0.45 * std::sin((g_t - welcome_start()) * 2.4);
-        if (u > 1.4) pixel_text(cr, W, H, "Натисніть Enter або клацніть, щоб почати", "SF Pro Display", H * 0.02,
-                                std::min(1.0, (u - 1.4) * 1.5) * hint, 1, H * 0.80, 2);
+        if (u > 1.4) pixel_text_gpu(snap, W, "Натисніть Enter або клацніть, щоб почати", "SF Pro Display", H * 0.02,
+                                    std::min(1.0, (u - 1.4) * 1.5) * hint, 1, H * 0.80, 2);
     }
 }
+static void welcome_view_class_init(WelcomeViewClass* k) { GTK_WIDGET_CLASS(k)->snapshot = welcome_view_snapshot; }
+static void welcome_view_init(WelcomeView*) {}
 
 // ---------- застосування налаштувань ----------
 static void run_bg(const std::string& cmd) {
@@ -516,37 +516,31 @@ static void set_bg_image(const std::string& src) {
         GdkPixbuf* pb = gdk_pixbuf_new_from_file_at_scale(path.c_str(), std::max(W, (int)(fw * sc + 0.5)), std::max(H, (int)(fh * sc + 0.5)), FALSE, nullptr);
         if (!pb) return;
         // pixbuf (RGB/RGBA) → cairo ARGB32, з обрізанням по центру
-        cairo_surface_t* s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, W, H);
-        int pw_ = gdk_pixbuf_get_width(pb), ph = gdk_pixbuf_get_height(pb), nc = gdk_pixbuf_get_n_channels(pb), rs = gdk_pixbuf_get_rowstride(pb);
-        int ox = std::max(0, (pw_ - W) / 2), oy = std::max(0, (ph - H) / 2);
-        const guchar* px = gdk_pixbuf_read_pixels(pb);
-        unsigned char* d = cairo_image_surface_get_data(s); int ds = cairo_image_surface_get_stride(s);
-        for (int y = 0; y < H && y + oy < ph; y++)
-            for (int x = 0; x < W && x + ox < pw_; x++) {
-                const guchar* p = px + (y + oy) * rs + (x + ox) * nc;
-                ((uint32_t*)(d + y * ds))[x] = 0xFF000000u | p[0] << 16 | p[1] << 8 | p[2];
-            }
-        cairo_surface_mark_dirty(s);
-        g_object_unref(pb);
-        cairo_surface_t* bl = small_copy(s, 1.0 / BLUR_F, 1.0 / BLUR_F, std::max(8, W / BLUR_F), std::max(8, H / BLUR_F));
-        box_blur(bl);
-        struct R { cairo_surface_t *s, *b; gint64 req; };
+        // обрізаємо по центру до розміру екрана; текстуру зробить головний потік
+        int pw_ = gdk_pixbuf_get_width(pb), ph = gdk_pixbuf_get_height(pb);
+        GdkPixbuf* crop = gdk_pixbuf_new_subpixbuf(pb, std::max(0, (pw_ - W) / 2), std::max(0, (ph - H) / 2), std::min(W, pw_), std::min(H, ph));
+        GdkPixbuf* own = gdk_pixbuf_copy(crop);
+        g_object_unref(crop); g_object_unref(pb);
+        struct R { GdkPixbuf* pb; gint64 req; };
         g_idle_add([](gpointer d) -> gboolean {
             R* r = (R*)d;
-            if (r->req != g_bg_req) { cairo_surface_destroy(r->s); cairo_surface_destroy(r->b); }
-            else {
-                if (g_bg_img) cairo_surface_destroy(g_bg_img);
-                if (g_bg_blur) cairo_surface_destroy(g_bg_blur);
-                g_bg_img = r->s; g_bg_blur = r->b; g_bg_switch = g_t;
+            if (r->req == g_bg_req) {
+                GdkPixbuf* p = r->pb;
+                GBytes* by = gdk_pixbuf_read_pixel_bytes(p);
+                GdkTexture* t = gdk_memory_texture_new(gdk_pixbuf_get_width(p), gdk_pixbuf_get_height(p),
+                                                       gdk_pixbuf_get_has_alpha(p) ? GDK_MEMORY_R8G8B8A8 : GDK_MEMORY_R8G8B8,
+                                                       by, gdk_pixbuf_get_rowstride(p));
+                g_bytes_unref(by);
+                if (g_bg_tex) g_object_unref(g_bg_tex);
+                g_bg_tex = t; g_bg_switch = g_t;
             }
-            delete r; return G_SOURCE_REMOVE;
-        }, new R{s, bl, req});
+            g_object_unref(r->pb); delete r; return G_SOURCE_REMOVE;
+        }, new R{own, req});
     }).detach();
 }
 static void set_bg_pixel(const std::string& style) {
     ++g_bg_req;
-    if (g_bg_img) { cairo_surface_destroy(g_bg_img); g_bg_img = nullptr; }
-    if (g_bg_blur) { cairo_surface_destroy(g_bg_blur); g_bg_blur = nullptr; }
+    if (g_bg_tex) { g_object_unref(g_bg_tex); g_bg_tex = nullptr; }
     g_wv.style = style; g_wv.reveal = 1; g_bg_switch = g_t;
 }
 static void wp_select(GtkWidget* card) {
@@ -597,44 +591,75 @@ static GtkWidget* wp_card(GtkWidget* root, const std::string& name, const std::s
     *pic_out = pic;
     return btn;
 }
-static void pic_set_file(GtkWidget* pic, const std::string& f) {
-    if (f.empty() || access(f.c_str(), R_OK) != 0) return;
-    if (GdkTexture* t = sysui::load_texture_cover(f.c_str(), 300, 168)) {
-        gtk_picture_set_paintable(GTK_PICTURE(pic), GDK_PAINTABLE(t));
-        g_object_unref(t);
-    }
+// Мініатюри: декодування — у фоновому потоці, у GTK — лише готова маленька текстура.
+// Черги дві: піксельні прев'ю (коли відкрили сторінку) і зображення (коли відкрили їхню вкладку),
+// обробка по одній — інтерфейс не замерзає навіть на слабкому ПК.
+// Ім'я мініатюри — як у wallpapers.cpp (std::hash шляху), тож кеш спільний із Super+W.
+struct ThumbJob { std::string path; GtkWidget* pic; };
+static std::deque<ThumbJob> g_pix_q, g_img_q;
+static bool g_pix_on = false, g_img_on = false, g_thumb_busy = false;
+static void thumb_next();
+static void pic_load_async(GtkWidget* pic, const std::string& f) {   // забирає посилання на pic
+    std::thread([pic, f]() {
+        GdkPixbuf* pb = nullptr;
+        if (!f.empty() && access(f.c_str(), R_OK) == 0) {
+            int fw = 0, fh = 0;
+            if (gdk_pixbuf_get_file_info(f.c_str(), &fw, &fh) && fw > 0) {
+                double sc = std::max(300.0 / fw, 168.0 / fh);
+                GdkPixbuf* s = gdk_pixbuf_new_from_file_at_scale(f.c_str(), std::max(300, (int)(fw * sc + .5)), std::max(168, (int)(fh * sc + .5)), FALSE, nullptr);
+                if (s) {
+                    int w = gdk_pixbuf_get_width(s), h = gdk_pixbuf_get_height(s);
+                    GdkPixbuf* sub = gdk_pixbuf_new_subpixbuf(s, std::max(0, (w - 300) / 2), std::max(0, (h - 168) / 2), std::min(300, w), std::min(168, h));
+                    pb = gdk_pixbuf_copy(sub); g_object_unref(sub); g_object_unref(s);
+                }
+            }
+        }
+        struct R { GtkWidget* pic; GdkPixbuf* pb; };
+        g_idle_add([](gpointer d) -> gboolean {
+            R* r = (R*)d;
+            if (r->pb) {
+                GBytes* by = gdk_pixbuf_read_pixel_bytes(r->pb);
+                GdkTexture* t = gdk_memory_texture_new(gdk_pixbuf_get_width(r->pb), gdk_pixbuf_get_height(r->pb),
+                                                       gdk_pixbuf_get_has_alpha(r->pb) ? GDK_MEMORY_R8G8B8A8 : GDK_MEMORY_R8G8B8,
+                                                       by, gdk_pixbuf_get_rowstride(r->pb));
+                g_bytes_unref(by);
+                gtk_picture_set_paintable(GTK_PICTURE(r->pic), GDK_PAINTABLE(t));
+                g_object_unref(t); g_object_unref(r->pb);
+            }
+            g_object_unref(r->pic); delete r;
+            g_thumb_busy = false;
+            thumb_next();
+            return G_SOURCE_REMOVE;
+        }, new R{pic, pb});
+    }).detach();
 }
-// мініатюри зображень — по одній (не 70 ffmpeg/magick разом), лише коли відкрили сторінку шпалер;
-// ім'я — як у wallpapers.cpp (std::hash шляху), тож кеш спільний із Super+W
-static std::deque<std::pair<std::string, GtkWidget*>> g_thumb_q;
-static bool g_thumbs_started = false, g_thumb_busy = false;
 static void thumb_next() {
-    if (g_thumb_busy || g_thumb_q.empty()) return;
-    auto [path, pic] = g_thumb_q.front(); g_thumb_q.pop_front();
-    std::string cache = sysui::home() + "/.cache/ignis/wallpaper_thumbs";
-    std::string src = path;
-    if (fs::is_directory(path)) { src = path + "/day.jpg"; if (!fs::exists(src)) src = path + "/day.png"; }
-    bool vid = is_video(src);
-    std::string thumb = cache + "/" + std::to_string(std::hash<std::string>{}(path)) + (vid ? "_c.png" : ".png");
-    if (fs::exists(thumb)) { pic_set_file(pic, thumb); g_object_unref(pic); thumb_next(); return; }
-    g_mkdir_with_parents(cache.c_str(), 0755);
-    char* qs = g_shell_quote(src.c_str()); char* qt = g_shell_quote(thumb.c_str());
-    std::string cmd = vid ? std::string("ffmpeg -loglevel error -i ") + qs + " -frames:v 1 -vf 'scale=350:350:force_original_aspect_ratio=increase,crop=350:350' " + qt + " -y"
-                          : std::string("magick ") + qs + "[0] -resize 350x350^ -gravity center -extent 350x350 " + qt;
-    g_free(qs); g_free(qt);
+    if (g_thumb_busy) return;
+    std::deque<ThumbJob>* q = g_pix_on && !g_pix_q.empty() ? &g_pix_q : g_img_on && !g_img_q.empty() ? &g_img_q : nullptr;
+    if (!q) return;
+    ThumbJob j = q->front(); q->pop_front();
     g_thumb_busy = true;
-    sh_async("nice -n 10 " + cmd + "; echo " + thumb, [pic](const std::string& out, bool) {
-        pic_set_file(pic, out.substr(0, out.find('\n')));
-        g_object_unref(pic);
-        g_thumb_busy = false;
-        thumb_next();
-    });
+    std::string f, cmd;
+    if (j.path.rfind("pixel:", 0) == 0) {   // прев'ю піксельного стилю — один кадр від pixel_wallpaper
+        std::string id = j.path.substr(6);
+        f = sysui::home() + "/.cache/megumin-os/pixel_previews/welcome_" + id + ".png";
+        cmd = sysui::home() + "/.config/SYSui/pixel_wallpaper --poster '" + f + "' 384x216 --style " + id;
+    } else {
+        std::string cache = sysui::home() + "/.cache/ignis/wallpaper_thumbs", src = j.path;
+        if (fs::is_directory(src)) { src = j.path + "/day.jpg"; if (!fs::exists(src)) src = j.path + "/day.png"; }
+        bool vid = is_video(src);
+        f = cache + "/" + std::to_string(std::hash<std::string>{}(j.path)) + (vid ? "_c.png" : ".png");
+        g_mkdir_with_parents(cache.c_str(), 0755);
+        char* qs = g_shell_quote(src.c_str()); char* qt = g_shell_quote(f.c_str());
+        cmd = vid ? std::string("ffmpeg -loglevel error -i ") + qs + " -frames:v 1 -vf 'scale=350:350:force_original_aspect_ratio=increase,crop=350:350' " + qt + " -y"
+                  : std::string("magick ") + qs + "[0] -resize 350x350^ -gravity center -extent 350x350 " + qt;
+        g_free(qs); g_free(qt);
+    }
+    if (access(f.c_str(), R_OK) == 0) { pic_load_async(j.pic, f); return; }
+    sh_async("nice -n 10 " + cmd, [j, f](const std::string&, bool) { pic_load_async(j.pic, f); });
 }
-static void wp_thumbs_start() {
-    if (g_thumbs_started) return;
-    g_thumbs_started = true;
-    thumb_next();
-}
+static void wp_thumbs_start() { if (!g_pix_on) { g_pix_on = true; thumb_next(); } }
+static void img_thumbs_start() { if (!g_img_on) { g_img_on = true; thumb_next(); } }
 static GtkWidget* build_wallpaper() {
     GtkWidget* b = page_box("Шпалери", "Живі піксельні підлаштовуються під колір акценту. Вибране одразу видно у фоні.");
     std::string cur = wp_current();
@@ -650,6 +675,7 @@ static GtkWidget* build_wallpaper() {
         g_object_set_data(G_OBJECT(t), "stack", st);
         g_object_set_data(G_OBJECT(t), "page", (gpointer)id);
         g_signal_connect(t, "toggled", G_CALLBACK(+[](GtkToggleButton* t, gpointer) {
+            if (gtk_toggle_button_get_active(t) && !strcmp((const char*)g_object_get_data(G_OBJECT(t), "page"), "images")) img_thumbs_start();
             if (gtk_toggle_button_get_active(t))
                 gtk_stack_set_visible_child_name(GTK_STACK(g_object_get_data(G_OBJECT(t), "stack")), (const char*)g_object_get_data(G_OBJECT(t), "page"));
         }), nullptr);
@@ -688,9 +714,7 @@ static GtkWidget* build_wallpaper() {
         GtkWidget* c = wp_card(b, o.name, std::string("pixel:") + o.id, cur == std::string("pixel:") + o.id, &pic);
         gtk_flow_box_append(GTK_FLOW_BOX(f1), c);
         g_object_ref(pic);
-        std::string f = cache + "/welcome_" + o.id + ".png";
-        sh_async("[ -s '" + f + "' ] || " + sysui::home() + "/.config/SYSui/pixel_wallpaper --poster '" + f + "' 384x216 --style " + o.id + "; echo '" + f + "'",
-                 [pic](const std::string& out, bool) { pic_set_file(pic, out.substr(0, out.find('\n'))); g_object_unref(pic); });
+        g_pix_q.push_back({std::string("pixel:") + o.id, pic});   // прев'ю — у черзі, коли відкриють сторінку
     }
     gtk_stack_add_named(GTK_STACK(st), sc1, "pixel");
     // зображення і відео
@@ -712,7 +736,7 @@ static GtkWidget* build_wallpaper() {
         GtkWidget* c = wp_card(b, nm, p, p == cur, &pic);
         gtk_flow_box_append(GTK_FLOW_BOX(f2), c);
         g_object_ref(pic);
-        g_thumb_q.push_back({p, pic});
+        g_img_q.push_back({p, pic});
     }
     if (files.empty()) gtk_widget_set_visible(seg, FALSE);
     gtk_stack_add_named(GTK_STACK(st), sc2, "images");
@@ -893,7 +917,9 @@ dropdown > button { border-radius: 9px; }
 )";
 
 int main(int argc, char** argv) {
-    sysui::mem_init();
+    // НЕ sysui::mem_init(): він вмикає Cairo-рендерер (CPU), а тут кадр масштабує і розмиває відеокарта
+    mallopt(M_ARENA_MAX, 2);
+    mallopt(M_TRIM_THRESHOLD, 128 * 1024);
     bool once = false, preview = true;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -907,7 +933,7 @@ int main(int argc, char** argv) {
 
     GtkApplication* app = gtk_application_new("com.megumin.welcome", G_APPLICATION_NON_UNIQUE);
     g_signal_connect(app, "activate", G_CALLBACK(+[](GtkApplication* app, gpointer) {
-        sysui::mem_ready();
+        sysui::install_shared_style();
         g_wv.style = "aurora";
         g_wv.set_accent(sysui::accent());
         if (sysui::settings().accent_mode != "custom") g_wv.set_palette_css(sysui::wal_css_path());
@@ -925,8 +951,8 @@ int main(int argc, char** argv) {
         sysui::live_css(CSS);
 
         GtkWidget* ov = gtk_overlay_new();
-        g_area = gtk_drawing_area_new();
-        gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(g_area), draw, nullptr, nullptr);
+        g_area = (GtkWidget*)g_object_new(welcome_view_get_type(), nullptr);
+        gtk_widget_set_hexpand(g_area, TRUE); gtk_widget_set_vexpand(g_area, TRUE);
         gtk_overlay_set_child(GTK_OVERLAY(ov), g_area);
 
         g_ui = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
@@ -1022,7 +1048,11 @@ int main(int argc, char** argv) {
                 gtk_widget_set_opacity(g_win, 1 - ease(u));
                 if (u >= 1) { gtk_window_destroy(GTK_WINDOW(g_win)); return G_SOURCE_REMOVE; }
             }
-            gtk_widget_queue_draw(g_area);
+            // статичний фон (зображення) і нічого не рухається — кадр не перемальовуємо
+            bool still = g_bg_tex && g_intro_done && g_leave < 0 && g_t - g_bg_switch > 0.8 && g_t - g_ui_shown > 0.8;
+            static double last_mx = 0, last_my = 0;
+            if (!still || last_mx != g_mouse_x || last_my != g_mouse_y) gtk_widget_queue_draw(g_area);
+            last_mx = g_mouse_x; last_my = g_mouse_y;
             return G_SOURCE_CONTINUE;
         }, nullptr);
     }), nullptr);

@@ -1020,6 +1020,19 @@ SOUND_EVENTS = [
 ]
 SOUND_DEFAULTS = {"sounds_enabled": True, "sounds_volume": 70, "sound_theme": "mgos", "sounds_input": False}
 
+# «Заводські» значення mgOS = знімок налаштувань автора (sync_from_system.sh → ~/.config/megumin-os/defaults.json,
+# інсталятор кладе його разом із settings.json). Кнопки «За замовчуванням» повертають саме до них.
+def _load_factory_defaults():
+    try:
+        fd = json.loads((Path.home() / ".config" / "megumin-os" / "defaults.json").read_text())
+    except Exception:
+        return
+    for table in (PANEL_DEFAULTS, TP_DEFAULTS, BLUR_DEFAULTS, SOUND_DEFAULTS):
+        for k in table:
+            if k in fd and type(fd[k]) == type(table[k]):
+                table[k] = fd[k]
+_load_factory_defaults()
+
 
 def list_sound_themes():
     out = {}
