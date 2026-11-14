@@ -17,3 +17,7 @@ nohup.out
 /gui/mgos-installer.new
 __pycache__/
 *.pyc
+
+# зібраний графічний інсталятор (збирається arch-installer/build.sh)
+/arch-installer/mgos-setup
+/arch-installer/mgos-setup.new

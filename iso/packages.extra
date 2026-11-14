@@ -1,0 +1,25 @@
+# --- Megumin OS live (додається до releng/packages.x86_64) ---
+hyprland
+xdg-desktop-portal-hyprland
+kitty
+firefox
+gtk4
+gtk4-layer-shell
+networkmanager
+network-manager-applet
+gnome-disk-utility
+gparted
+polkit
+inter-font
+ttf-jetbrains-mono-nerd
+noto-fonts
+noto-fonts-emoji
+mesa
+vulkan-intel
+vulkan-radeon
+intel-media-driver
+pipewire
+wireplumber
+pciutils
+curl
+rsync
