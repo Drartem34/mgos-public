@@ -1,0 +1,28 @@
+{
+    "checksum": "084816fcf6682ffdfc17000d39d850c3",
+    "wallpaper": "/home/doki/Pictures/wallpapers/porsche-911-gt2-3840x2160-12109.jpg",
+    "alpha": "100",
+    "special": {
+        "background": "#090812",
+        "foreground": "#c1c1c3",
+        "cursor": "#c1c1c3"
+    },
+    "colors": {
+        "color0": "#090812",
+        "color1": "#4531D7",
+        "color2": "#611AE8",
+        "color3": "#A11CDE",
+        "color4": "#B426CA",
+        "color5": "#A165D8",
+        "color6": "#E75DF7",
+        "color7": "#c1c1c3",
+        "color8": "#5a576a",
+        "color9": "#4531D7",
+        "color10": "#611AE8",
+        "color11": "#A11CDE",
+        "color12": "#B426CA",
+        "color13": "#A165D8",
+        "color14": "#E75DF7",
+        "color15": "#c1c1c3"
+    }
+}

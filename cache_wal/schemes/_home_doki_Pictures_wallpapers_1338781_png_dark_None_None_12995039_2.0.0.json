@@ -1,0 +1,28 @@
+{
+    "checksum": "80824b4c3c0333b613791c5268161260",
+    "wallpaper": "/home/doki/Pictures/wallpapers/1338781.png",
+    "alpha": "100",
+    "special": {
+        "background": "#0d0f20",
+        "foreground": "#c2c3c7",
+        "cursor": "#c2c3c7"
+    },
+    "colors": {
+        "color0": "#0d0f20",
+        "color1": "#0F25A3",
+        "color2": "#29509C",
+        "color3": "#2649C7",
+        "color4": "#B853C3",
+        "color5": "#5DA8CC",
+        "color6": "#AAB1D2",
+        "color7": "#c2c3c7",
+        "color8": "#5d6071",
+        "color9": "#0F25A3",
+        "color10": "#29509C",
+        "color11": "#2649C7",
+        "color12": "#B853C3",
+        "color13": "#5DA8CC",
+        "color14": "#AAB1D2",
+        "color15": "#c2c3c7"
+    }
+}

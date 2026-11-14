@@ -1,0 +1,28 @@
+{
+    "checksum": "b788c493a4566674949e908ddf091fda",
+    "wallpaper": "/home/doki/Pictures/wallpapers/10-14-Night.jpg",
+    "alpha": "100",
+    "special": {
+        "background": "#101425",
+        "foreground": "#c3c4c8",
+        "cursor": "#c3c4c8"
+    },
+    "colors": {
+        "color0": "#101425",
+        "color1": "#43495C",
+        "color2": "#4B576D",
+        "color3": "#576379",
+        "color4": "#62697C",
+        "color5": "#5B6A81",
+        "color6": "#6D7488",
+        "color7": "#c3c4c8",
+        "color8": "#5f6374",
+        "color9": "#43495C",
+        "color10": "#4B576D",
+        "color11": "#576379",
+        "color12": "#62697C",
+        "color13": "#5B6A81",
+        "color14": "#6D7488",
+        "color15": "#c3c4c8"
+    }
+}

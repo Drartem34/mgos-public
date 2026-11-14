@@ -1,0 +1,28 @@
+{
+    "checksum": "9e8cb0e3407de20f6f15456588fd6992",
+    "wallpaper": "/home/doki/Pictures/wallpapers/Windows_Wallpaper Expeditions_IG_ Loic Lagarde_1x1.jpg",
+    "alpha": "100",
+    "special": {
+        "background": "#312a13",
+        "foreground": "#cbc9c4",
+        "cursor": "#cbc9c4"
+    },
+    "colors": {
+        "color0": "#312a13",
+        "color1": "#D6BFA7",
+        "color2": "#A0B4D9",
+        "color3": "#B9C3DA",
+        "color4": "#B5C8E6",
+        "color5": "#D1D1D4",
+        "color6": "#EAE4DE",
+        "color7": "#cbc9c4",
+        "color8": "#7a7463",
+        "color9": "#D6BFA7",
+        "color10": "#A0B4D9",
+        "color11": "#B9C3DA",
+        "color12": "#B5C8E6",
+        "color13": "#D1D1D4",
+        "color14": "#EAE4DE",
+        "color15": "#cbc9c4"
+    }
+}

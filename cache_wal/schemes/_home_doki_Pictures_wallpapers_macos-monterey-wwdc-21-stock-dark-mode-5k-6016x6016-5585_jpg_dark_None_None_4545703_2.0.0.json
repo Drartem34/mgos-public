@@ -1,0 +1,28 @@
+{
+    "checksum": "7a078e0632bb4b0b5d27749bcb2fd056",
+    "wallpaper": "/home/doki/Pictures/wallpapers/macos-monterey-wwdc-21-stock-dark-mode-5k-6016x6016-5585.jpg",
+    "alpha": "100",
+    "special": {
+        "background": "#130d1e",
+        "foreground": "#c4c2c6",
+        "cursor": "#c4c2c6"
+    },
+    "colors": {
+        "color0": "#130d1e",
+        "color1": "#3313AC",
+        "color2": "#3D23B8",
+        "color3": "#4D178B",
+        "color4": "#5F249C",
+        "color5": "#7340B2",
+        "color6": "#2F17CA",
+        "color7": "#c4c2c6",
+        "color8": "#635c70",
+        "color9": "#3313AC",
+        "color10": "#3D23B8",
+        "color11": "#4D178B",
+        "color12": "#5F249C",
+        "color13": "#7340B2",
+        "color14": "#2F17CA",
+        "color15": "#c4c2c6"
+    }
+}

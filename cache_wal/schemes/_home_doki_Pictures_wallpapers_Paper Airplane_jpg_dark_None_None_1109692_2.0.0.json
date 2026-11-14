@@ -1,0 +1,28 @@
+{
+    "checksum": "00ba82caff770ffccd2c080c65b95939",
+    "wallpaper": "/home/doki/Pictures/wallpapers/Paper Airplane.jpg",
+    "alpha": "100",
+    "special": {
+        "background": "#081014",
+        "foreground": "#c1c3c4",
+        "cursor": "#c1c3c4"
+    },
+    "colors": {
+        "color0": "#081014",
+        "color1": "#2B7B82",
+        "color2": "#6A7387",
+        "color3": "#4E8B8F",
+        "color4": "#9C9A9F",
+        "color5": "#CCAF98",
+        "color6": "#D1BAAA",
+        "color7": "#c1c3c4",
+        "color8": "#58646b",
+        "color9": "#2B7B82",
+        "color10": "#6A7387",
+        "color11": "#4E8B8F",
+        "color12": "#9C9A9F",
+        "color13": "#CCAF98",
+        "color14": "#D1BAAA",
+        "color15": "#c1c3c4"
+    }
+}

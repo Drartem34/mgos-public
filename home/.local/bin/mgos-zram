@@ -1,0 +1,96 @@
+#!/bin/bash
+# ============================================================================
+#  mgOS: zram — стиснена пам'ять у RAM замість повільного swap на диску.
+#  Сховище доку (Super+A / Super+Q) витісняє туди пам'ять схованих програм.
+#
+#    sudo mgos-zram setup   — увімкнути zram (zstd, ½ RAM, до 8 ГБ) + тюнінг ядра
+#                             і поставити mgos-pageout з дозволом cap_sys_nice
+#    mgos-zram status       — скільки зараз у zram і як стиснулось
+#    mgos-zram json         — те саме для «Налаштувань»
+# ============================================================================
+set -u
+cmd="${1:-status}"
+
+status_vals() {   # orig_mb compr_mb disk_mb
+    local f=/sys/block/zram0/mm_stat
+    [ -r "$f" ] || { echo "0 0 0"; return 1; }
+    read -r orig compr used _ < "$f"
+    local size; size=$(cat /sys/block/zram0/disksize 2>/dev/null || echo 0)
+    echo "$((orig >> 20)) $((used >> 20)) $((size >> 20))"
+}
+
+case "$cmd" in
+setup)
+    [ "$(id -u)" -eq 0 ] || { echo "Потрібен root: sudo $0 setup"; exit 1; }
+    U_NAME="${SUDO_USER:-}"
+    U_HOME=$( [ -n "$U_NAME" ] && getent passwd "$U_NAME" | cut -d: -f6 )
+    echo "== zram-generator"
+    if ! pacman -Q zram-generator &>/dev/null; then
+        pacman -S --needed --noconfirm zram-generator || { echo "Не вдалось встановити zram-generator"; exit 1; }
+    fi
+    cat > /etc/systemd/zram-generator.conf <<'EOF'
+# mgOS: стиснений swap у RAM (сховані програми з доку стискаються сюди)
+[zram0]
+zram-size = min(ram / 2, 8192)
+compression-algorithm = zstd
+swap-priority = 100
+fs-type = swap
+EOF
+    # рекомендації для swap лише в zram (Fedora/Pop!_OS): охочіше витісняти, без readahead
+    cat > /etc/sysctl.d/99-mgos-zram.conf <<'EOF'
+vm.swappiness = 150
+vm.page-cluster = 0
+vm.watermark_boost_factor = 0
+vm.watermark_scale_factor = 125
+EOF
+    sysctl -q --system >/dev/null 2>&1 || true
+    # zswap перехоплює все, що витісняється, і тримає у своєму пулі (20% RAM) — до zram доходить майже
+    # нічого, а сховані програми стискаються двічі. Для swap лише в zram zswap вимикаємо: одразу і назавжди.
+    echo "== zswap вимкнено (лише zram)"
+    echo 0 > /sys/module/zswap/parameters/enabled 2>/dev/null || true
+    cat > /etc/tmpfiles.d/mgos-zswap.conf <<'EOF2'
+# mgOS: swap лише в zram — zswap вимкнено (див. mgos-zram)
+w- /sys/module/zswap/parameters/enabled - - - - 0
+EOF2
+    systemctl daemon-reload
+    # Уже працює як swap — не чіпаємо (перезапуск вивантажує весь zram назад у RAM, а кілька перезапусків
+    # поспіль впираються в start-limit dev-zram0.swap і swap лишається вимкненим зовсім).
+    if ! swapon --show=NAME --noheadings 2>/dev/null | grep -q '^/dev/zram0$'; then
+        systemctl reset-failed dev-zram0.swap systemd-zram-setup@zram0.service 2>/dev/null || true
+        systemctl restart systemd-zram-setup@zram0.service
+        systemctl start dev-zram0.swap 2>/dev/null || swapon -p 100 /dev/zram0 2>/dev/null || true
+    fi
+    echo "== mgos-pageout (стискання схованих програм)"
+    SRC=""
+    for c in "$(dirname "$(readlink -f "$0")")/mgos-pageout" "${U_HOME:-/nonexistent}/.config/SYSui/mgos-pageout"; do
+        [ -f "$c" ] && [ ! -L "$c" ] && { SRC=$c; break; }
+    done
+    if [ -n "$SRC" ]; then
+        install -m 755 -o root -g root "$SRC" /usr/local/bin/mgos-pageout
+        setcap cap_sys_nice+ep /usr/local/bin/mgos-pageout && echo "  /usr/local/bin/mgos-pageout (cap_sys_nice)"
+    else
+        echo "  ! mgos-pageout не зібрано (~/.config/SYSui/build.sh pageout)"
+    fi
+    echo
+    zramctl
+    swapon --show
+    ;;
+json)
+    read -r o c s < <(status_vals)
+    on=false; [ "$s" -gt 0 ] && on=true
+    cap=false; getcap /usr/local/bin/mgos-pageout 2>/dev/null | grep -q cap_sys_nice && cap=true
+    zs=false; [ "$(cat /sys/module/zswap/parameters/enabled 2>/dev/null)" = Y ] && zs=true
+    printf '{"enabled": %s, "orig_mb": %d, "used_mb": %d, "size_mb": %d, "pageout": %s, "zswap": %s}\n' "$on" "$o" "$c" "$s" "$cap" "$zs"
+    ;;
+status|*)
+    if read -r o c s < <(status_vals) && [ "$s" -gt 0 ]; then
+        echo "zram: $s МБ, зараз у ньому $o МБ даних → займають $c МБ RAM"
+    else
+        echo "zram вимкнено. Увімкнути: sudo $0 setup"
+    fi
+    getcap /usr/local/bin/mgos-pageout 2>/dev/null | grep -q cap_sys_nice \
+        && echo "стискання схованих програм: готове" || echo "стискання схованих програм: не встановлено (sudo $0 setup)"
+    [ "$(cat /sys/module/zswap/parameters/enabled 2>/dev/null)" = Y ] \
+        && echo "! zswap увімкнено — перехоплює пам'ять до zram (sudo $0 setup вимкне)"
+    ;;
+esac

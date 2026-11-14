@@ -1,0 +1,28 @@
+{
+    "checksum": "d0fbfcc6a2077e1c70832cd95d124614",
+    "wallpaper": "/home/doki/Pictures/wallpapers/anime-girl-girly-3840x2160-9793.jpg",
+    "alpha": "100",
+    "special": {
+        "background": "#0d0d1f",
+        "foreground": "#c2c2c7",
+        "cursor": "#c2c2c7"
+    },
+    "colors": {
+        "color0": "#0d0d1f",
+        "color1": "#4A58B7",
+        "color2": "#9F57A7",
+        "color3": "#C561BD",
+        "color4": "#6BB2E8",
+        "color5": "#BFB6D5",
+        "color6": "#9C9CE1",
+        "color7": "#c2c2c7",
+        "color8": "#5c5c71",
+        "color9": "#4A58B7",
+        "color10": "#9F57A7",
+        "color11": "#C561BD",
+        "color12": "#6BB2E8",
+        "color13": "#BFB6D5",
+        "color14": "#9C9CE1",
+        "color15": "#c2c2c7"
+    }
+}

@@ -1,0 +1,28 @@
+{
+    "checksum": "c285779fecf66167eb720579390c5bdb",
+    "wallpaper": "/home/doki/Pictures/wallpapers/Windows_Wallpaper Expeditions_IG_ Kohki Yamaguchi_1x1.jpg",
+    "alpha": "100",
+    "special": {
+        "background": "#171c22",
+        "foreground": "#c5c6c7",
+        "cursor": "#c5c6c7"
+    },
+    "colors": {
+        "color0": "#171c22",
+        "color1": "#9E6D6A",
+        "color2": "#C97969",
+        "color3": "#CB8A75",
+        "color4": "#7A8386",
+        "color5": "#9C9492",
+        "color6": "#DEAC99",
+        "color7": "#c5c6c7",
+        "color8": "#606976",
+        "color9": "#9E6D6A",
+        "color10": "#C97969",
+        "color11": "#CB8A75",
+        "color12": "#7A8386",
+        "color13": "#9C9492",
+        "color14": "#DEAC99",
+        "color15": "#c5c6c7"
+    }
+}

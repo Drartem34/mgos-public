@@ -1,0 +1,28 @@
+{
+    "checksum": "b6a6825ab1762605bd19fd25a2b5a1e5",
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_suoming-wuthering-waves-2-moewalls-com.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#210e13",
+        "foreground": "#c7c2c4",
+        "cursor": "#c7c2c4"
+    },
+    "colors": {
+        "color0": "#210e13",
+        "color1": "#D12E2D",
+        "color2": "#BB554F",
+        "color3": "#EB514F",
+        "color4": "#9F8786",
+        "color5": "#ABA3A8",
+        "color6": "#EBB4A4",
+        "color7": "#c7c2c4",
+        "color8": "#725d62",
+        "color9": "#D12E2D",
+        "color10": "#BB554F",
+        "color11": "#EB514F",
+        "color12": "#9F8786",
+        "color13": "#ABA3A8",
+        "color14": "#EBB4A4",
+        "color15": "#c7c2c4"
+    }
+}

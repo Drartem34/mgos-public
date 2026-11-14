@@ -1,0 +1,28 @@
+{
+    "checksum": "c66547c3470448505598146554f7d827",
+    "wallpaper": "/home/doki/Pictures/wallpapers/WW_win95_v004_dark_post.png",
+    "alpha": "100",
+    "special": {
+        "background": "#0b1a16",
+        "foreground": "#c2c5c4",
+        "cursor": "#c2c5c4"
+    },
+    "colors": {
+        "color0": "#0b1a16",
+        "color1": "#769160",
+        "color2": "#2B65A3",
+        "color3": "#708F90",
+        "color4": "#40A2C8",
+        "color5": "#95A2A3",
+        "color6": "#AFCBCE",
+        "color7": "#c2c5c4",
+        "color8": "#5a6f69",
+        "color9": "#769160",
+        "color10": "#2B65A3",
+        "color11": "#708F90",
+        "color12": "#40A2C8",
+        "color13": "#95A2A3",
+        "color14": "#AFCBCE",
+        "color15": "#c2c5c4"
+    }
+}

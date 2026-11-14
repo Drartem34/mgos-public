@@ -1,0 +1,28 @@
+{
+    "checksum": "5fa589f6cee93233ac28e302562ccf0b",
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_arona-error-blue-archive-moewalls-com.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#080711",
+        "foreground": "#c1c1c3",
+        "cursor": "#c1c1c3"
+    },
+    "colors": {
+        "color0": "#080711",
+        "color1": "#0F269B",
+        "color2": "#314AB4",
+        "color3": "#275BE7",
+        "color4": "#475AE6",
+        "color5": "#B47CC9",
+        "color6": "#3394C3",
+        "color7": "#c1c1c3",
+        "color8": "#59566a",
+        "color9": "#0F269B",
+        "color10": "#314AB4",
+        "color11": "#275BE7",
+        "color12": "#475AE6",
+        "color13": "#B47CC9",
+        "color14": "#3394C3",
+        "color15": "#c1c1c3"
+    }
+}

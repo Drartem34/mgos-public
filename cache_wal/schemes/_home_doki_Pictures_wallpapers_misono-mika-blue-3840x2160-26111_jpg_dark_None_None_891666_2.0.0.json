@@ -1,0 +1,28 @@
+{
+    "checksum": "d8d3009faad3f532df992cc52a354729",
+    "wallpaper": "/home/doki/Pictures/wallpapers/misono-mika-blue-3840x2160-26111.jpg",
+    "alpha": "100",
+    "special": {
+        "background": "#150e21",
+        "foreground": "#c4c2c7",
+        "cursor": "#c4c2c7"
+    },
+    "colors": {
+        "color0": "#150e21",
+        "color1": "#594C62",
+        "color2": "#8D7284",
+        "color3": "#A992AB",
+        "color4": "#CCA2AF",
+        "color5": "#B9B0CA",
+        "color6": "#C9BBCD",
+        "color7": "#c4c2c7",
+        "color8": "#645d72",
+        "color9": "#594C62",
+        "color10": "#8D7284",
+        "color11": "#A992AB",
+        "color12": "#CCA2AF",
+        "color13": "#B9B0CA",
+        "color14": "#C9BBCD",
+        "color15": "#c4c2c7"
+    }
+}

@@ -1,0 +1,28 @@
+{
+    "checksum": "8fe791467a09f0f6b57dc0d5094ecc06",
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_maki-konuri-graffiti-blue-archive-moewalls-com.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#161e34",
+        "foreground": "#c4c6cc",
+        "cursor": "#c4c6cc"
+    },
+    "colors": {
+        "color0": "#161e34",
+        "color1": "#356790",
+        "color2": "#3E8E99",
+        "color3": "#72D6FE",
+        "color4": "#B2AEB3",
+        "color5": "#F1A19E",
+        "color6": "#A1E2FC",
+        "color7": "#c4c6cc",
+        "color8": "#656b7c",
+        "color9": "#356790",
+        "color10": "#3E8E99",
+        "color11": "#72D6FE",
+        "color12": "#B2AEB3",
+        "color13": "#F1A19E",
+        "color14": "#A1E2FC",
+        "color15": "#c4c6cc"
+    }
+}

@@ -1,0 +1,28 @@
+{
+    "checksum": "f7ecac6ff940dc5f705905587369f849",
+    "wallpaper": "/home/doki/Pictures/wallpapers/wp5134857-pink-aesthetic-for-computer-wallpapers.png",
+    "alpha": "100",
+    "special": {
+        "background": "#211035",
+        "foreground": "#c7c3cc",
+        "cursor": "#c7c3cc"
+    },
+    "colors": {
+        "color0": "#211035",
+        "color1": "#B087B8",
+        "color2": "#E28AB8",
+        "color3": "#9DA2D1",
+        "color4": "#B1ABD9",
+        "color5": "#DAACD7",
+        "color6": "#F4B2D6",
+        "color7": "#c7c3cc",
+        "color8": "#6e637a",
+        "color9": "#B087B8",
+        "color10": "#E28AB8",
+        "color11": "#9DA2D1",
+        "color12": "#B1ABD9",
+        "color13": "#DAACD7",
+        "color14": "#F4B2D6",
+        "color15": "#c7c3cc"
+    }
+}

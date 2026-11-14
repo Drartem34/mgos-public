@@ -1,0 +1,12 @@
+[SddmGreeterTheme]
+Name=mgOS
+Description=Мінімалістичний екран входу Megumin OS у стилі macOS з плавним переходом із заставки
+Author=Megumin OS
+License=GPL-3.0-or-later
+Type=sddm-theme
+Version=2.0
+ConfigFile=theme.conf
+MainScript=Main.qml
+Theme-Id=mgos-pixel
+Theme-API=2.0
+QtVersion=6

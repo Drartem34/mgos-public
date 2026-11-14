@@ -1,0 +1,28 @@
+{
+    "checksum": "e00976b0a313cb2dbff1ee36022af2e9",
+    "wallpaper": "/home/doki/Pictures/wallpapers/wallhaven-we1yjx.png",
+    "alpha": "100",
+    "special": {
+        "background": "#2c1519",
+        "foreground": "#cac4c5",
+        "cursor": "#cac4c5"
+    },
+    "colors": {
+        "color0": "#2c1519",
+        "color1": "#50B6DF",
+        "color2": "#1ED3C7",
+        "color3": "#F0DCA6",
+        "color4": "#DA97CE",
+        "color5": "#B6C1C9",
+        "color6": "#E3DED8",
+        "color7": "#cac4c5",
+        "color8": "#786266",
+        "color9": "#50B6DF",
+        "color10": "#1ED3C7",
+        "color11": "#F0DCA6",
+        "color12": "#DA97CE",
+        "color13": "#B6C1C9",
+        "color14": "#E3DED8",
+        "color15": "#cac4c5"
+    }
+}

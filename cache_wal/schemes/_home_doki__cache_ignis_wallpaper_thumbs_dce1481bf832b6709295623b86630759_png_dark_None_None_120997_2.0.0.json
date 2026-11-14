@@ -1,0 +1,28 @@
+{
+    "checksum": "c97b760e645447153d62e04d52461d04",
+    "wallpaper": "/home/doki/.cache/ignis/wallpaper_thumbs/dce1481bf832b6709295623b86630759.png",
+    "alpha": "100",
+    "special": {
+        "background": "#211c1e",
+        "foreground": "#c7c6c6",
+        "cursor": "#c7c6c6"
+    },
+    "colors": {
+        "color0": "#211c1e",
+        "color1": "#947592",
+        "color2": "#A5958F",
+        "color3": "#DBAB98",
+        "color4": "#EBCDB3",
+        "color5": "#C9B7D5",
+        "color6": "#ECD7CD",
+        "color7": "#c7c6c6",
+        "color8": "#776168",
+        "color9": "#947592",
+        "color10": "#A5958F",
+        "color11": "#DBAB98",
+        "color12": "#EBCDB3",
+        "color13": "#C9B7D5",
+        "color14": "#ECD7CD",
+        "color15": "#c7c6c6"
+    }
+}

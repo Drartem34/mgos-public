@@ -1,0 +1,28 @@
+{
+    "checksum": "ff179b51726257977f67aa0928678634",
+    "wallpaper": "/home/doki/Pictures/wallpapers/wallpaperflare.com_wallpaper(1).jpg",
+    "alpha": "100",
+    "special": {
+        "background": "#15090e",
+        "foreground": "#c4c1c2",
+        "cursor": "#c4c1c2"
+    },
+    "colors": {
+        "color0": "#15090e",
+        "color1": "#DC9A59",
+        "color2": "#DE985E",
+        "color3": "#B87485",
+        "color4": "#BB9597",
+        "color5": "#D39D96",
+        "color6": "#F0D6A7",
+        "color7": "#c4c1c2",
+        "color8": "#6c5861",
+        "color9": "#DC9A59",
+        "color10": "#DE985E",
+        "color11": "#B87485",
+        "color12": "#BB9597",
+        "color13": "#D39D96",
+        "color14": "#F0D6A7",
+        "color15": "#c4c1c2"
+    }
+}

@@ -1,0 +1,28 @@
+{
+    "checksum": "6ec4aa53640890dbd18096a325f88291",
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_arona-ruined-classroom-blue-archive-moewalls-com.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#223a60",
+        "foreground": "#c7cdd7",
+        "cursor": "#c7cdd7"
+    },
+    "colors": {
+        "color0": "#223a60",
+        "color1": "#A2ABDC",
+        "color2": "#8AB2ED",
+        "color3": "#93C7FD",
+        "color4": "#B0CDF6",
+        "color5": "#BCDEFB",
+        "color6": "#D0D3EF",
+        "color7": "#c7cdd7",
+        "color8": "#767f8f",
+        "color9": "#A2ABDC",
+        "color10": "#8AB2ED",
+        "color11": "#93C7FD",
+        "color12": "#B0CDF6",
+        "color13": "#BCDEFB",
+        "color14": "#D0D3EF",
+        "color15": "#c7cdd7"
+    }
+}

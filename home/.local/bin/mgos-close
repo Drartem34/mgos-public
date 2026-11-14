@@ -1,0 +1,15 @@
+#!/bin/bash
+# mgOS: Super+Q у режимі «ховати в сховище» (Налаштування → Док).
+# Вікно плавно гасне (~0,2 с, як згортання в macOS) і їде в сховище special:mgos-dock — програма лишається
+# відкритою (і стискається в zram); повернути — клік по іконці в доку або Super+A.
+# Якщо вікно вже в сховищі — закриваємо його. Закрити назовсім будь-де — Shift+Super+Q.
+read -r addr ws < <(hyprctl activewindow -j 2>/dev/null | jq -r '"\(.address // "") \(.workspace.name // "")"')
+case "$ws" in
+    "") exit 0 ;;
+    special:mgos-dock) exec hyprctl dispatch killactive ;;
+esac
+# Миттєвий перенос у приховане сховище = вікно просто зникає, а сусіди в цей час їдуть на його місце —
+# це й давало ривок. Спершу гасимо (анімація fadeSwitch в animations.hl), потім переносимо.
+hyprctl dispatch setprop "address:$addr" opacity 0.0 override >/dev/null
+sleep 0.2
+hyprctl --batch "dispatch movetoworkspacesilent special:mgos-dock,address:$addr ; dispatch setprop address:$addr opacity 1.0" >/dev/null

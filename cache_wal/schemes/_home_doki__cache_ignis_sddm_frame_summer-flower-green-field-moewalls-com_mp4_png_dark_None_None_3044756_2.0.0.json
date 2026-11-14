@@ -1,0 +1,28 @@
+{
+    "checksum": "499f4eaa4132794188a5962bc6aadc06",
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_summer-flower-green-field-moewalls-com.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#1e2d1e",
+        "foreground": "#c6cac6",
+        "cursor": "#c6cac6"
+    },
+    "colors": {
+        "color0": "#1e2d1e",
+        "color1": "#6B8BAD",
+        "color2": "#6DA4CA",
+        "color3": "#A0A2AF",
+        "color4": "#D2B5AD",
+        "color5": "#EDD1AF",
+        "color6": "#8FB7D2",
+        "color7": "#c6cac6",
+        "color8": "#657c65",
+        "color9": "#6B8BAD",
+        "color10": "#6DA4CA",
+        "color11": "#A0A2AF",
+        "color12": "#D2B5AD",
+        "color13": "#EDD1AF",
+        "color14": "#8FB7D2",
+        "color15": "#c6cac6"
+    }
+}

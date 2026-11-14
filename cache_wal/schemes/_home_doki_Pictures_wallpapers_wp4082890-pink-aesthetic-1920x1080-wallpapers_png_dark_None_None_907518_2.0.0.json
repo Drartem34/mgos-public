@@ -1,0 +1,28 @@
+{
+    "checksum": "f6f7396d31eeb5028ddeefb174d48c51",
+    "wallpaper": "/home/doki/Pictures/wallpapers/wp4082890-pink-aesthetic-1920x1080-wallpapers.png",
+    "alpha": "100",
+    "special": {
+        "background": "#190a0c",
+        "foreground": "#c5c1c2",
+        "cursor": "#c5c1c2"
+    },
+    "colors": {
+        "color0": "#190a0c",
+        "color1": "#B575C9",
+        "color2": "#AB9CAC",
+        "color3": "#F78DB6",
+        "color4": "#F9A4BC",
+        "color5": "#F296C9",
+        "color6": "#FCADCE",
+        "color7": "#c5c1c2",
+        "color8": "#6e595d",
+        "color9": "#B575C9",
+        "color10": "#AB9CAC",
+        "color11": "#F78DB6",
+        "color12": "#F9A4BC",
+        "color13": "#F296C9",
+        "color14": "#FCADCE",
+        "color15": "#c5c1c2"
+    }
+}

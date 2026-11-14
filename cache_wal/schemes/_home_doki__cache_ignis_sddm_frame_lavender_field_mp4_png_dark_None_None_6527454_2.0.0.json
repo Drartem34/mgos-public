@@ -1,0 +1,28 @@
+{
+    "checksum": "b2feb6af93d9b10d60aafb98f8ce5eab",
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_lavender_field.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#191c13",
+        "foreground": "#c5c6c4",
+        "cursor": "#c5c6c4"
+    },
+    "colors": {
+        "color0": "#191c13",
+        "color1": "#867834",
+        "color2": "#8D7259",
+        "color3": "#93893A",
+        "color4": "#9B8C59",
+        "color5": "#9F9993",
+        "color6": "#96A9AD",
+        "color7": "#c5c6c4",
+        "color8": "#6b725d",
+        "color9": "#867834",
+        "color10": "#8D7259",
+        "color11": "#93893A",
+        "color12": "#9B8C59",
+        "color13": "#9F9993",
+        "color14": "#96A9AD",
+        "color15": "#c5c6c4"
+    }
+}

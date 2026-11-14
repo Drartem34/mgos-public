@@ -1,0 +1,28 @@
+{
+    "checksum": "223076ae8775422a659f5dc65f976005",
+    "wallpaper": "/home/doki/Pictures/wallpapers/Microsoft_1975.jpg",
+    "alpha": "100",
+    "special": {
+        "background": "#1a0b0b",
+        "foreground": "#c5c2c2",
+        "cursor": "#c5c2c2"
+    },
+    "colors": {
+        "color0": "#1a0b0b",
+        "color1": "#605F5E",
+        "color2": "#60605F",
+        "color3": "#6F6F6D",
+        "color4": "#807F7E",
+        "color5": "#80807F",
+        "color6": "#90908E",
+        "color7": "#c5c2c2",
+        "color8": "#6f5a5a",
+        "color9": "#605F5E",
+        "color10": "#60605F",
+        "color11": "#6F6F6D",
+        "color12": "#807F7E",
+        "color13": "#80807F",
+        "color14": "#90908E",
+        "color15": "#c5c2c2"
+    }
+}

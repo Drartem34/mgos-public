@@ -1,0 +1,28 @@
+{
+    "checksum": "86fb5bf64128d05bbf633c176a2a8f51",
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_mylivewallpapers-com-Nissan-Skyline-Pink-Petals-4K_(1)-vmake.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#121016",
+        "foreground": "#c3c3c4",
+        "cursor": "#c3c3c4"
+    },
+    "colors": {
+        "color0": "#121016",
+        "color1": "#A4616E",
+        "color2": "#D9546E",
+        "color3": "#B1827D",
+        "color4": "#BE7784",
+        "color5": "#AA898A",
+        "color6": "#E29B9A",
+        "color7": "#c3c3c4",
+        "color8": "#5f5a6f",
+        "color9": "#A4616E",
+        "color10": "#D9546E",
+        "color11": "#B1827D",
+        "color12": "#BE7784",
+        "color13": "#AA898A",
+        "color14": "#E29B9A",
+        "color15": "#c3c3c4"
+    }
+}
