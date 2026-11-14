@@ -1,0 +1,9 @@
+# Розширення Firefox для kioskOS (ставляться через /etc/firefox/policies/policies.json,
+# лише якщо в інсталяторі увімкнено «Розширення Firefox»).
+# Формат: <ID розширення> <slug на addons.mozilla.org>
+# Особисті (VPN, Tampermonkey, Video DownloadHelper тощо) свідомо не додано.
+uBlock0@raymondhill.net                  ublock-origin
+{669407ff-70f0-4512-a010-ea4530c5e716}   the-tab-suspender
+sponsorBlocker@ajay.app                  sponsorblock
+{34daeb50-c2d2-4f14-886a-7160b24d66a4}   youtube-shorts-block
+uk-ua@dictionaries.addons.mozilla.org    ukrainian-dictionary

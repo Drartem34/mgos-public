@@ -1,0 +1,80 @@
+Архітектура та Візуал mgOS: Глибокий аналіз
+
+Цей документ містить детальний технічний опис візуальної частини вашої системи, включаючи всі шляхи, файли конфігурацій, принципи роботи кастомних віджетів та керування живленням. Звичайні програми виключені.
+
+---
+
+1. Кольори та Тематика (Pywal)
+Кольорова схема генерується динамічно на основі шпалер екрану за допомогою утиліти wal (пакет python-pywal).
+
+* Де лежить файл з акцентними кольорами:
+  - Основний файл, звідки віджети беруть кольори: ~/.cache/wal/colors.css
+  - Файл, звідки кольори бере Hyprland: ~/.cache/wal/colors-hyprland.conf
+* Як це працює: Ваші C++ віджети (dock, wallpapers, powermenu тощо) мають вбудований парсер, який читає ~/.cache/wal/colors.css і дістає звідти змінні --color5 (використовується як акцентний колір), --background, --foreground та інші. Вони автоматично оновлюються при зміні шпалер.
+* Утиліти для встановлення шпалер: swww, swaybg, mpvpaper (для відео-шпалер). Віджет шпалер шукає картинки у ~/Pictures/wallpapers.
+* Шрифти (критично для іконок UI): ttf-jetbrains-mono-nerd (іконки в панелях), noto-fonts, woff2-font-awesome.
+
+---
+
+2. Керування Живленням (Power Management)
+У вашій системі є два рівні керування живленням: системний (потужність процесора) та візуальний.
+
+* Програма, яка регулює потужність комп'ютера: power-profiles-daemon (використовує команду powerprofilesctl).
+  - Інтегрована у ваш Control Center (cc_osd). Вона перемикає 3 режими:
+    1. powerprofilesctl set power-saver (Економ-режим)
+    2. powerprofilesctl set balanced (Стандартний)
+    3. powerprofilesctl set performance (Продуктивний)
+* Візуальна економія заряду: Скрипт ~/.config/hypr/scripts/toggle-power-save.sh.
+  - Він вимикає анімації, блюр, тіні та заокруглення вікон у Hyprland, залишаючи лише базовий візуал для збереження батареї. Викликається комбінацією SUPER_SHIFT + F1.
+
+---
+
+3. Кастомні Віджети (SYSui)
+Ваша гордість — самописний UI на C++ (GTK Layer Shell), який лежить у ~/.config/SYSui/.
+Віджети спілкуються з системою через UNIX-сокети за допомогою socat (наприклад, echo "show" | socat - UNIX-CLIENT:~/.config/SYSui/volume.sock).
+
+Що вони роблять і куди звертаються (Залежності):
+1. topbar (Верхня панель):
+   - Керує гучністю (wpctl), викликає pulsemixer (через wezterm), керує мережею (через kitty -e nmtui), перемикає розкладки (hyprctl switchxkblayout), викликає меню вимкнення.
+2. cc (Control Center):
+   - Керує Bluetooth (bluetoothctl).
+   - Керує профілями живлення (powerprofilesctl).
+   - Керує медіа-плеєрами (playerctl play-pause, previous, next). Завантажує обкладинки пісень через wget у /tmp/cc_art_...png.
+   - Керує яскравістю (brightnessctl).
+   - Керує гучністю окремих додатків (pactl set-sink-input-volume).
+3. clipboard_osd (Буфер обміну):
+   - Звертається до cliphist (потребує cliphist wipe для очищення).
+4. wallpapers (Менеджер шпалер):
+   - Читає папку ~/Pictures/wallpapers. При виборі викликає wal -q -t -i для генерації кольорів та застосовує шпалеру.
+5. powermenu_osd (Меню вимкнення):
+   - Використовує systemctl poweroff, systemctl reboot тощо.
+6. dock (Нижня панель додатків):
+   - Відображає запущені програми.
+
+Що потрібно для їх компіляції та роботи на новому ПК:
+* base-devel, cmake, gcc (для збірки).
+* gtk3, gtk-layer-shell, pkgconf, nlohmann-json (бібліотеки).
+* socat (для роботи сокетів передачі команд).
+
+---
+
+4. Системні Віджети та Лаунчери (Ignis, Dunst)
+Компоненти, які відповідають за меню, керування та додаткові панелі, що не написані на C++.
+* Конфіги Ignis: ~/.config/ignis/ (лаунчер, центр керування, меню вимкнення). Залежності: python-ignis-git, ignis-gvc.
+* Конфіги сповіщень: ~/.config/dunst/ (та скрипти volume_notify.sh, brightness_notify.sh). Залежність: dunst.
+
+---
+
+5. Віконний менеджер (Hyprland)
+Відповідає за позиціонування вікон, розмиття, тіні, анімації та гарячі клавіші.
+* Головний конфіг: ~/.config/hypr/hyprland.conf
+* Анімації: ~/.config/hypr/animations.hl
+* Допоміжні візуальні утиліти (скріншоти тощо): grim, slurp, wl-clipboard, hyprpicker.
+* Залежності: hyprland, xdg-desktop-portal-hyprland.
+
+---
+
+6. Інтерфейс терміналу та інші налаштування UI
+* Термінал та його вигляд: ~/.config/kitty/ (основний) та ~/.config/fastfetch/ (інформація про систему). Залежності: kitty, fastfetch.
+* Оболонка (Shell): ~/.config/fish/. Залежність: fish.
+* GTK-теми (для звичайних вікон): ~/.config/nwg-look/. Залежність: nwg-look.
