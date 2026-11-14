@@ -315,10 +315,7 @@ int main(int argc, char** argv) {
                   if (j.contains("wp_pixel_fps") && j["wp_pixel_fps"].is_number()) g_fps = std::clamp((int)j["wp_pixel_fps"].get<double>(), 2, 30); } catch (...) {}
             bool bat = on_battery();
             bh_monitor();
-            bool cover_pause = true;
-            try { std::ifstream f(sysui::settings_path()); nlohmann::json j; f >> j;
-                  if (j.contains("wp_pixel_pause_covered") && j["wp_pixel_pause_covered"].is_boolean()) cover_pause = j["wp_pixel_pause_covered"].get<bool>(); } catch (...) {}
-            bool covered = cover_pause && covered_fraction() >= 0.85;
+            bool covered = sysui::settings().wp_pause_covered && covered_fraction() >= 0.85;
             g_frozen = fullscreen_now() || covered || (bat && bm == "freeze");
             g_slow = bat && bm != "full";
             return G_SOURCE_CONTINUE;

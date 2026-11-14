@@ -3336,6 +3336,8 @@ class MeguminSettings(QWidget):
         self.hero(lay, "wallpapers", "Картинки, відео та динамічні шпалери, що змінюються протягом дня.")
         lay.addWidget(self.create_card([
             SettingRow("", "", "Пауза відео-шпалер", "Коли відкрите вікно на весь екран", self.sw("video_optimization")),
+            SettingRow("", "", "Пауза під вікнами", "Поки вікна закривають ≥85% екрана — відео й піксельні шпалери стоять, блюр «запікається»",
+                       MeguminSwitch("wp_pause_covered", bool(self.settings.get("wp_pause_covered", True)), self.save_setting)),
             SettingRow("", "", "Шейдери Anime4K", "Деблюр і апскейл «мильних» відео-шпалер", self.sw("wp_anime4k")),
             SettingRow("", "", "Швидкий вибір", "Super + W — панель шпалер поверх усіх вікон",
                        on_click=lambda: self.launch_app(f"echo show | socat - UNIX-CONNECT:{Path.home()}/.config/SYSui/wallpapers.sock")),
@@ -3392,8 +3394,8 @@ class MeguminSettings(QWidget):
                                          g("wp_pixel_theme", "auto"), lambda k, v: self.pixel_option(k, v))),
             SettingRow("", "", "Кадрів за секунду", "Плавніше — більше навантаження: 12 к/с ≈ 8–15% одного ядра, 30 к/с ≈ 20–40%",
                        MeguminSlider("wp_pixel_fps", g("wp_pixel_fps", 12), 2, 30, " к/с", self.save_setting)),
-            SettingRow("", "", "Пауза під вікнами", "Як у відео-шпалер: поки вікна закривають майже весь екран, анімація стоїть",
-                       MeguminSwitch("wp_pixel_pause_covered", bool(g("wp_pixel_pause_covered", True)), self.save_setting)),
+            SettingRow("", "", "Пауза під вікнами", "Поки вікна закривають ≥85% екрана, анімація стоїть (діє і на відео-шпалери)",
+                       MeguminSwitch("wp_pause_covered", bool(g("wp_pause_covered", True)), self.save_setting)),
             SettingRow("", "", "Від батареї", "Повільно — половина вибраних кадрів/с. На весь екран анімація завжди на паузі",
                        SegmentedSelector("wp_pixel_battery", [("slow", "Повільно"), ("full", "Як від мережі"), ("freeze", "Пауза")],
                                          g("wp_pixel_battery", "slow"), self.save_setting)),

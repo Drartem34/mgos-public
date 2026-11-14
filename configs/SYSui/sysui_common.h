@@ -267,6 +267,7 @@ struct Settings {
     bool eco_fs_blur = true;
     bool hyprland_blur = true;            // загальний перемикач розмиття з «Налаштувань»
     bool video_optimization = false;      // «Пауза відео-шпалер», поки вікно на весь екран
+    bool wp_pause_covered = true;         // «Пауза під вікнами»: шпалери (відео й піксельні) стоять, поки вікна закривають ≥85% екрана
     bool eco_effects = false;             // «Економ ефекти» (CC / Super+Shift+F1): без блюру, тіней і заокруглень
 };
 
@@ -300,6 +301,7 @@ inline const Settings& settings() {
             gb("watchdog", n.watchdog); gb("sys_popups", n.sys_popups); gs("osd_position", n.osd_position); gs("notify_position", n.notify_position);
             gb("topbar_power", n.topbar_power); gs("panel_font", n.panel_font); gs("pixel_style", n.pixel_style);
             gb("eco_fs_blur", n.eco_fs_blur); gb("hyprland_blur", n.hyprland_blur); gb("eco_effects", n.eco_effects); gb("video_optimization", n.video_optimization);
+            gb("wp_pause_covered", n.wp_pause_covered);
         }
     } catch (...) {}
     // «Економ ефекти»: блюру немає — напівпрозорі панелі без нього виглядають брудно, тож тимчасово

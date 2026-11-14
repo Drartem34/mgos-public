@@ -21,6 +21,7 @@
 #include <gio/gio.h>
 #include <glib-unix.h>
 #include "sysui_common.h"
+#include <array>
 
 using json = nlohmann::json;
 
@@ -383,12 +384,14 @@ static std::string mpv_ipc(const std::string& cmd) {
     close(fd);
     return out;
 }
-// Пауза відео-шпалери, поки вікно на весь екран («Пауза відео-шпалер» або «запечений» блюр).
-// Знімаємо паузу лише якщо ставили її ми — ручну паузу / паузу mgos-power не чіпаємо.
+// Пауза відео-шпалери: поки вікно на весь екран («Пауза відео-шпалер» або «запечений» блюр)
+// і поки вікна закривають ≥85% екрана («Пауза під вікнами»; як у піксельних шпалер).
+// Від батареї паузу ставить mgos-power. Знімаємо паузу лише якщо ставили її ми.
+static bool g_wp_covered = false;
 static void eco_wallpaper_pause(bool fs) {
     static bool we_paused = false;
     const auto& st = sysui::settings();
-    bool want = fs && (st.video_optimization || st.eco_fs_blur);
+    bool want = (fs && (st.video_optimization || st.eco_fs_blur)) || (g_wp_covered && st.wp_pause_covered);
     if (want && !we_paused) {
         if (mpv_ipc("{\"command\":[\"get_property\",\"pause\"]}").find("\"data\":false") != std::string::npos) {
             mpv_ipc("{\"command\":[\"set_property\",\"pause\",true]}");
@@ -1311,6 +1314,37 @@ static void activate(GtkApplication* app, gpointer user_data) {
     // Перевірка Pywal (раз на секунду — перебудова CSS лише при реальній зміні файлу)
     reload_wal_timer(nullptr);
     g_timeout_add_seconds(1, reload_wal_timer, nullptr);
+    // раз на секунду, лише коли грають відео-шпалери: чи закривають вікна ≥85% кожного монітора
+    g_timeout_add_seconds(1, [](gpointer) -> gboolean {
+        bool cov = false;
+        if (access("/tmp/mpv-socket", F_OK) == 0 && sysui::settings().wp_pause_covered) {
+            try {
+                json mons = json::parse(sysui::hypr_request("j/monitors")), cl = json::parse(sysui::hypr_request("j/clients"));
+                cov = !mons.empty();
+                for (auto& m : mons) {
+                    int mx = m.value("x", 0), my = m.value("y", 0), ws = m["activeWorkspace"].value("id", -1);
+                    double sc = m.value("scale", 1.0);
+                    double mw = m.value("width", 0) / sc, mh = m.value("height", 0) / sc;
+                    if (m.value("transform", 0) % 2) std::swap(mw, mh);
+                    std::vector<std::array<double, 4>> r;
+                    for (auto& c : cl) {
+                        if (!c.value("mapped", true) || c.value("hidden", false) || c["workspace"].value("id", -9) != ws) continue;
+                        double x = c["at"][0].get<double>() - mx, y = c["at"][1].get<double>() - my;
+                        r.push_back({x, y, x + c["size"][0].get<double>(), y + c["size"][1].get<double>()});
+                    }
+                    int hit = 0;
+                    for (int j = 0; j < 18; j++)
+                        for (int i = 0; i < 32; i++) {
+                            double px = (i + 0.5) * mw / 32, py = (j + 0.5) * mh / 18;
+                            for (auto& q : r) if (px >= q[0] && px < q[2] && py >= q[1] && py < q[3]) { hit++; break; }
+                        }
+                    if (hit < 0.85 * 32 * 18) { cov = false; break; }
+                }
+            } catch (...) { cov = false; }
+        }
+        if (cov != g_wp_covered) { g_wp_covered = cov; eco_wallpaper_pause(g_eco_fs); }
+        return G_SOURCE_CONTINUE;
+    }, nullptr);
 
     gtk_widget_set_visible(topbar_window, TRUE);
     update_fullscreen(nullptr);

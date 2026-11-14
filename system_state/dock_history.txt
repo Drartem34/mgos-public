@@ -1,4 +1,3 @@
-megumin-settings|preferences-system|sh
 spotify|spotify-launcher|spotify-launcher
 org.gnome.nautilus|org.gnome.Nautilus|nautilus
 ecotest|kitty|ecotest
