@@ -409,33 +409,106 @@ struct Waves {
     double bh_cx = -1e9, bh_cy = -1e9;     // курсор, у клітинках
     std::vector<uint32_t> bh_pal;          // 12 рівнів світла диска
     RGB bh_bg[16][4], bh_star, bh_acc, bh_rim, bh_cur;   // кольори на кадр (hsl_rgb на кожен піксель дорогий)
-    // «Засмоктування»: від кожного вікна до діри по спіралі летять його копії — меншають, витягуються
-    // вздовж радіуса (спагетифікація), прискорюються і гаснуть за горизонтом подій. Рахуються раз на кадр.
-    struct BHCopy { float cx, cy, ux, uy, hr, ht, bound2, a; };
-    std::vector<BHCopy> bh_copies;
-    void blackhole_copies(int cols, int rows) {
-        bh_copies.clear();
-        const double hx = cols * 0.5, hy = rows * 0.5, Rs = rows * 0.13;
-        int wi = 0;
+    // «Засмоктування»: від країв вікон, звернених до діри, відриваються пікселі (справжні кольори
+    // вікна — з маленького знімка екрана bh_shot, або синтетичні, якщо знімка нема) і по спіралі
+    // падають у діру, нагріваючись до кольору диска та гаснучи за горизонтом подій.
+    struct BHPart { float x, y, vx, vy, life; uint32_t c; };
+    std::vector<BHPart> bh_parts;
+    std::vector<uint32_t> bh_shot; int bh_shot_w = 0, bh_shot_h = 0;   // знімок екрана в сітці клітинок
+    double bh_last_t = -1, bh_spawn_acc = 0;
+    bool bh_draw_wins = false;   // прев'ю: малювати самі «вікна» (у системі на їхньому місці справжні)
+    uint32_t bh_win_color(const BHRect& w, double px, double py, int cols, int rows) const {
+        if (!bh_shot.empty() && cols > 0 && rows > 0) {
+            int sx = std::clamp((int)(px * bh_shot_w / cols), 0, bh_shot_w - 1), sy = std::clamp((int)(py * bh_shot_h / rows), 0, bh_shot_h - 1);
+            return bh_shot[sy * bh_shot_w + sx] | 0xFF000000u;
+        }
+        // синтетичне «вікно»: заголовок у кольорі акценту, тіло темне з рядками «тексту»
+        auto pk = [](RGB c) { return 0xFF000000u | (uint32_t)(c.r * 255) << 16 | (uint32_t)(c.g * 255) << 8 | (uint32_t)(c.b * 255); };
+        if (py - w.y0 < 2.5) return pk(bh_acc);
+        int ly = (int)(py - w.y0), lx = (int)(px - w.x0);
+        if (ly % 3 == 1 && lx > 2 && (hash(ly * 131 + (int)w.x0) % 40) + 5 > lx % 45) return pk(RGB{0.82, 0.82, 0.88});
+        return pk(RGB{0.11, 0.11, 0.14});
+    }
+    void blackhole_particles(int cols, int rows) {
+        double dt = t - bh_last_t;
+        if (bh_last_t < 0 || dt < 0 || dt > 0.5) dt = 0.05;
+        bh_last_t = t;
+        if (dt <= 0) return;
+        const double hx = cols * 0.5, hy = rows * 0.5, Rs = rows * 0.13, Rinf = rows * 1.1;
+        // народження: точки периметра, повернуті до діри; ближче вікно — більше пікселів
         for (const auto& w : bh_wins) {
-            double wcx = (w.x0 + w.x1) * 0.5, wcy = (w.y0 + w.y1) * 0.5;
-            double hw = (w.x1 - w.x0) * 0.5, hh = (w.y1 - w.y0) * 0.5;
-            double vx = wcx - hx, vy = wcy - hy, d0 = std::sqrt(vx * vx + vy * vy);
-            if (d0 < 1 || hw < 1 || hh < 1) { wi++; continue; }
-            double a0 = std::atan2(vy, vx);
-            for (int k = 0; k < 3; k++) {
-                double ph = std::fmod(t * 0.11 + k / 3.0 + wi * 0.37, 1.0);
-                double rr = d0 * std::pow(1 - ph, 1.35);
-                if (rr < Rs * 0.9) continue;                              // уже за горизонтом
-                double a = a0 + 3.2 * ph * ph;                             // спіраль, що прискорюється
-                double sc = 0.55 * std::pow(1 - ph, 1.1);
-                double ux = std::cos(a), uy = std::sin(a);
-                double hr = std::max(hw, hh) * sc * (1 + 1.8 * ph), ht = std::min(hw, hh) * sc * (1 - 0.55 * ph);
-                double fade = std::sin(3.14159265 * ph) * std::min(1.0, (rr - Rs * 0.9) / (Rs * 0.6));
-                bh_copies.push_back({(float)(hx + ux * rr), (float)(hy + uy * rr), (float)ux, (float)uy, (float)hr, (float)ht,
-                                     (float)((hr * hr + ht * ht) * 1.05), (float)(fade * (w.active ? 0.75 : 0.5))});
+            double nx = std::clamp(hx, (double)w.x0, (double)w.x1), ny = std::clamp(hy, (double)w.y0, (double)w.y1);
+            double d = std::hypot(nx - hx, ny - hy);
+            if (d < Rs) continue;                                    // діра під вікном
+            double strength = std::clamp((Rinf - d) / Rinf, 0.08, 1.0);
+            double per = 2 * ((w.x1 - w.x0) + (w.y1 - w.y0));
+            bh_spawn_acc += per * strength * strength * 2.8 * dt;
+            int n = (int)bh_spawn_acc; bh_spawn_acc -= n;
+            for (int i = 0; i < n * 3 && n > 0 && bh_parts.size() < 5000; i++) {
+                double u = rndf() * per, px, py, ex, ey;   // точка на периметрі і зовнішня нормаль
+                double W = w.x1 - w.x0, H = w.y1 - w.y0;
+                if (u < W) { px = w.x0 + u; py = w.y0; ex = 0; ey = -1; }
+                else if (u < W + H) { px = w.x1; py = w.y0 + (u - W); ex = 1; ey = 0; }
+                else if (u < 2 * W + H) { px = w.x1 - (u - W - H); py = w.y1; ex = 0; ey = 1; }
+                else { px = w.x0; py = w.y1 - (u - 2 * W - H); ex = -1; ey = 0; }
+                double tx = hx - px, ty = hy - py, tl = std::sqrt(tx * tx + ty * ty) + 1e-6;
+                double face = (ex * tx + ey * ty) / tl;
+                if (face <= 0.05 || rndf() > face) continue;          // лише боки, звернені до діри
+                if (--n < 0) break;
+                uint32_t c = bh_win_color(w, px - ex * 0.8, py - ey * 0.8, cols, rows);   // колір з краю вікна
+                double sp = 2 + 4 * rndf();
+                bh_parts.push_back({(float)(px + ex * 0.6), (float)(py + ey * 0.6),
+                                    (float)(tx / tl * sp - ty / tl * sp * 0.6), (float)(ty / tl * sp + tx / tl * sp * 0.6), 0, c});
             }
-            wi++;
+        }
+        // рух: тяжіння ~1/r^1.5 + закручування, легке гальмування — спіраль
+        int steps = dt > 0.06 ? 2 : 1; double h = dt / steps;
+        for (int st = 0; st < steps; st++)
+            for (auto& p : bh_parts) {
+                double rx = hx - p.x, ry = hy - p.y, r = std::sqrt(rx * rx + ry * ry) + 1e-6;
+                double a = 3800.0 / std::pow(std::max(r, Rs * 0.8), 1.5);
+                double ux = rx / r, uy = ry / r;
+                p.vx += (ux * a - uy * a * 0.55) * h; p.vy += (uy * a + ux * a * 0.55) * h;
+                double k = 1 - 0.25 * h; p.vx *= k; p.vy *= k;
+                double v = std::sqrt(p.vx * p.vx + p.vy * p.vy);
+                if (v > 140) { p.vx *= 140 / v; p.vy *= 140 / v; }
+                p.x += p.vx * h; p.y += p.vy * h; p.life += h;
+            }
+        bh_parts.erase(std::remove_if(bh_parts.begin(), bh_parts.end(), [&](const BHPart& p) {
+            double r = std::hypot(p.x - hx, p.y - hy);
+            return r < Rs || p.life > 14 || p.x < -20 || p.y < -20 || p.x > cols + 20 || p.y > rows + 20;
+        }), bh_parts.end());
+    }
+    void blackhole_draw_particles(unsigned char* data, int stride, int cols, int rows) const {
+        const double hx = cols * 0.5, hy = rows * 0.5, Rs = rows * 0.13;
+        RGB hot = hsl_rgb(hue0 + 35, 0.6, 0.88);
+        auto put = [&](int x, int y, uint32_t c, double a) {
+            if (x < 0 || y < 0 || x >= cols || y >= rows) return;
+            uint32_t* px = (uint32_t*)(data + y * stride) + x, o = *px;
+            auto ch = [&](int sh) { return (uint32_t)std::lround(((o >> sh) & 255) * (1 - a) + ((c >> sh) & 255) * a) << sh; };
+            *px = 0xFF000000u | ch(16) | ch(8) | ch(0);
+        };
+        if (bh_draw_wins)
+            for (const auto& w : bh_wins)
+                for (int y = std::max(0, (int)w.y0); y < std::min(rows, (int)w.y1); y++)
+                    for (int x = std::max(0, (int)w.x0); x < std::min(cols, (int)w.x1); x++)
+                        put(x, y, bh_win_color(w, x + 0.5, y + 0.5, cols, rows), 1);
+        for (const auto& p : bh_parts) {
+            double r = std::hypot(p.x - hx, p.y - hy);
+            double heat = std::clamp((Rs * 3.2 - r) / (Rs * 2.2), 0.0, 1.0);   // біля діри — розпечені
+            uint32_t c = p.c;
+            if (heat > 0) {
+                RGB o{((c >> 16) & 255) / 255.0, ((c >> 8) & 255) / 255.0, (c & 255) / 255.0};
+                RGB m{o.r + (hot.r - o.r) * heat, o.g + (hot.g - o.g) * heat, o.b + (hot.b - o.b) * heat};
+                c = 0xFF000000u | (uint32_t)(m.r * 255) << 16 | (uint32_t)(m.g * 255) << 8 | (uint32_t)(m.b * 255);
+            }
+            double fade = std::clamp((r - Rs) / (Rs * 0.4), 0.0, 1.0) * std::min(1.0, (double)p.life * 4);
+            put((int)p.x, (int)p.y, c, fade);
+            // хвіст — спагетифікація: що швидше, то довший
+            double v = std::hypot(p.vx, p.vy);
+            int tail = std::min(4, (int)(v / 25));
+            for (int k = 1; k <= tail; k++)
+                put((int)(p.x - p.vx / v * k), (int)(p.y - p.vy / v * k), c, fade * (0.6 - 0.12 * k));
         }
     }
     void blackhole_prepare(double hue, double s, double dim) {
@@ -535,27 +608,9 @@ struct Waves {
                 bg = mix(bg, sc, std::min(1.0, tw * (0.55 + 0.25 * mag)));
             }
 
-            // копії вікон, що падають у діру (у координатах джерела — їх теж викривляє лінза)
-            for (const auto& c : bh_copies) {
-                double ex = qx - c.cx, ey = qy - c.cy;
-                if (ex * ex + ey * ey > c.bound2) continue;
-                double lr = ex * c.ux + ey * c.uy, lt = -ex * c.uy + ey * c.ux;
-                double er = c.hr - std::fabs(lr), et = c.ht - std::fabs(lt);
-                if (er < 0 || et < 0) continue;
-                bool edge = std::min(er, et) < 0.9;
-                bg = mix(bg, edge ? bh_rim : bh_acc, c.a * (edge ? 1.0 : 0.45));
-            }
             // привиди вікон і курсора — лише там, де лінза помітно зсунула картинку
             double gw = std::clamp((shift - 1.5) / 4.0, 0.0, 1.0);
             if (gw > 0) {
-                const RGB& acc = bh_acc;
-                for (const auto& wr : bh_wins) {
-                    if (qx < wr.x0 || qx > wr.x1 || qy < wr.y0 || qy > wr.y1) continue;
-                    double e = std::min({qx - wr.x0, wr.x1 - qx, qy - wr.y0, wr.y1 - qy});
-                    double a = e < 1.0 ? 0.9 : (qy - wr.y0 < 2.2 ? 0.5 : 0.22);   // рамка, «заголовок», тіло
-                    if (!wr.active) a *= 0.6;
-                    bg = mix(bg, e < 1.0 ? bh_rim : acc, a * gw * std::min(1.6, mag) / 1.6);
-                }
                 double cd = fhyp(qx - bh_cx, qy - bh_cy);
                 if (cd < 3.2) bg = mix(bg, cd < 1.3 ? RGB{1, 0.97, 0.95} : bh_cur, (cd < 1.3 ? 1.0 : 0.5) * gw);
             }
@@ -703,7 +758,7 @@ struct Waves {
 
         if (sid == S_AURORA) aurora_prepare(cols, rows, hue, s, dim);
         if (sid == S_HORIZON) horizon_prepare(cols, rows);
-        if (sid == S_BLACKHOLE) { blackhole_prepare(hue, s, dim); blackhole_copies(cols, rows); swirl_t = 0.15 * std::sin(t * 0.2); }
+        if (sid == S_BLACKHOLE) { blackhole_prepare(hue, s, dim); blackhole_particles(cols, rows); swirl_t = 0.15 * std::sin(t * 0.2); }
         if (sid == S_VIRUS) cells_advance(cols, rows, 11);
         else if (sid == S_LIFE) cells_advance(cols, rows, 7);
         else if (!cells.empty()) { cells.clear(); cells.shrink_to_fit(); cells2.clear(); cells2.shrink_to_fit(); cells_style.clear(); }
@@ -730,6 +785,8 @@ struct Waves {
                 row[x] = pal[b][std::clamp((int)(vq * L), 0, L - 1)];
             }
         }
+        if (sid == S_BLACKHOLE) blackhole_draw_particles(data, stride, cols, rows);
+        else if (!bh_parts.empty()) { bh_parts.clear(); bh_parts.shrink_to_fit(); }
         cairo_surface_mark_dirty(surf);
     }
 

@@ -130,11 +130,50 @@ static double covered_fraction() {
         }
     return (double)hit / n;
 }
+// Кольори вікон для «засмоктування»: знімок екрана одразу в сітці клітинок (grim -s 1/cell,
+// ~320×180 px), лише коли вікна змінились або раз на 6 с, і лише коли є вікна. Тримається тільки в пам'яті цього процесу.
+static bool g_shot_busy = false;
+static void bh_capture() {
+    if (g_shot_busy || g_mon_w <= 0 || g_wv.bh_wins.empty()) return;
+    g_shot_busy = true;
+    char geo[64], sc[32];
+    snprintf(geo, sizeof geo, "%d,%d %dx%d", g_mon_x, g_mon_y, g_mon_w, g_mon_h);
+    snprintf(sc, sizeof sc, "%.4f", 1.0 / std::max(1, g_wv.cell));
+    for (char* c = sc; *c; c++) if (*c == ',') *c = '.';
+    GSubprocess* p = g_subprocess_new((GSubprocessFlags)(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_SILENCE), nullptr,
+                                      "grim", "-t", "ppm", "-s", sc, "-g", geo, "-", nullptr);
+    if (!p) { g_shot_busy = false; return; }
+    g_subprocess_communicate_async(p, nullptr, nullptr, [](GObject* o, GAsyncResult* r, gpointer) {
+        GBytes* out = nullptr;
+        if (g_subprocess_communicate_finish(G_SUBPROCESS(o), r, &out, nullptr, nullptr) && out) {
+            gsize n = 0; const char* d = (const char*)g_bytes_get_data(out, &n);
+            int w = 0, h = 0, mx = 0, off = 0;   // PPM P6: "P6\nW H\n255\n" + RGB
+            if (n > 16 && sscanf(d, "P6 %d %d %d%n", &w, &h, &mx, &off) == 3 && w > 0 && h > 0 && (gsize)(off + 1 + w * h * 3) <= n) {
+                const unsigned char* px = (const unsigned char*)d + off + 1;
+                std::vector<uint32_t> v((size_t)w * h);
+                for (int i = 0; i < w * h; i++) v[i] = 0xFF000000u | px[i * 3] << 16 | px[i * 3 + 1] << 8 | px[i * 3 + 2];
+                g_wv.bh_shot.swap(v); g_wv.bh_shot_w = w; g_wv.bh_shot_h = h;
+            }
+            g_bytes_unref(out);
+        }
+        g_object_unref(o);
+        g_shot_busy = false;
+    }, nullptr);
+}
 static void bh_update() {
     static int frame = 0;
     if (g_wv.style != "blackhole") {
         if (!g_wv.bh_wins.empty()) { g_wv.bh_wins.clear(); g_wv.bh_wins.shrink_to_fit(); }
+        if (!g_wv.bh_shot.empty()) { g_wv.bh_shot.clear(); g_wv.bh_shot.shrink_to_fit(); }
         return;
+    }
+    // знімок (~0.1–0.2 с CPU): коли вікна змінились (відкрили, перемістили, змінили розмір) або раз на 6 с
+    {
+        static gint64 last = 0; static size_t sig = 0;
+        size_t h = g_wv.bh_wins.size();
+        for (auto& w : g_wv.bh_wins) h = h * 31 + (size_t)(w.x0 * 7 + w.y0 * 13 + w.x1 * 17 + w.y1 * 19);
+        gint64 now = g_get_monotonic_time();
+        if ((h != sig && now - last > 1500000) || now - last > 6000000) { sig = h; last = now; bh_capture(); }
     }
     double c = std::max(1, g_wv.cell);
     try {
@@ -209,6 +248,11 @@ int main(int argc, char** argv) {
             g_wv.bh_wins = {{(float)(cols * 0.06), (float)(rows * 0.12), (float)(cols * 0.36), (float)(rows * 0.46), true},
                             {(float)(cols * 0.66), (float)(rows * 0.58), (float)(cols * 0.95), (float)(rows * 0.9), false}};
             g_wv.bh_cx = cols * 0.62; g_wv.bh_cy = rows * 0.34;
+            g_wv.bh_draw_wins = true;
+            // прогін симуляції: пікселі вікон уже встигли відірватися і закрутитися до діри
+            cairo_surface_t* tmp = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 8, 8);
+            for (double tt = 0; tt < 7.3; tt += 0.05) { g_wv.t = tt; g_wv.render(W, H); }
+            cairo_surface_destroy(tmp);
             g_wv.t = 7.3;
         }
         cairo_surface_t* s = cairo_image_surface_create(CAIRO_FORMAT_RGB24, W, H);
