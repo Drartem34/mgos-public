@@ -1,4 +1,4 @@
-// about_osd.cpp — «Про систему» Megumin OS 6 (заміна ignis/about.py).
+// about_osd.cpp — «Про систему» Megumin OS 6.5 (заміна ignis/about.py).
 // Super+I → echo toggle | socat - UNIX-CLIENT:~/.config/SYSui/about.sock
 //
 // Шапка: піксельні хвилі (вид згори) з градієнтом і дизерингом; відтінок
@@ -98,6 +98,7 @@ static void hide_about() { if (g_win) gtk_widget_set_visible(g_win, FALSE); }
 // ============================================================================
 static void draw_waves(GtkDrawingArea*, cairo_t* cr, int w, int h, gpointer) {
     g_wv.t = g_anim_t;
+    g_wv.style = sysui::settings().pixel_style;   // «Стиль піксельних шапок» у Налаштуваннях
     g_wv.draw(cr, w, h);
 }
 
@@ -651,7 +652,7 @@ static void activate(GtkApplication* app, gpointer) {
     gtk_widget_set_margin_start(tbox, 22); gtk_widget_set_margin_bottom(tbox, 10);
     GtkWidget* trow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_box_append(GTK_BOX(trow), label("Megumin OS", "title"));
-    GtkWidget* badge = label("6", "badge", 0.5);
+    GtkWidget* badge = label("6.5", "badge", 0.5);
     gtk_widget_set_valign(badge, GTK_ALIGN_CENTER);
     gtk_box_append(GTK_BOX(trow), badge);
     gtk_box_append(GTK_BOX(tbox), trow);

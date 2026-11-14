@@ -83,7 +83,7 @@ void apply_css() {
         window { background: transparent; }
         * { font-family: "JetBrainsMono Nerd Font", "SF Pro Display", sans-serif; outline: none; }
         
-        .osd-box {
+        .mus-box {
             background-color: rgba(20, 20, 20, 0.5); 
             border: 1px solid rgba(255, 255, 255, 0.2);
             border-radius: 17px;
@@ -169,16 +169,17 @@ static void activate(GtkApplication* app, gpointer) {
     osd_window = gtk_application_window_new(app);
     sysui::release_on_hide(osd_window);
     sysui::pop_on_show(osd_window, nullptr);
-    sysui::live_css(".osd-box { border-color: @ACCENT_A30@; }");
+    sysui::live_css(".mus-box { border-color: @ACCENT_A30@; }");
     gtk_layer_init_for_window(GTK_WINDOW(osd_window));
     gtk_layer_set_namespace(GTK_WINDOW(osd_window), "megumin_osd");
     gtk_layer_set_layer(GTK_WINDOW(osd_window), GTK_LAYER_SHELL_LAYER_OVERLAY);
 
     gtk_layer_set_anchor(GTK_WINDOW(osd_window), GTK_LAYER_SHELL_EDGE_BOTTOM, TRUE);
     gtk_layer_set_margin(GTK_WINDOW(osd_window), GTK_LAYER_SHELL_EDGE_BOTTOM, 120);
+    sysui::follow_osd_position(osd_window, false);   // «Налаштування → OSD»
 
     GtkWidget* osd_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-    gtk_widget_add_css_class(osd_box, "osd-box");
+    gtk_widget_add_css_class(osd_box, "mus-box");
     gtk_widget_set_size_request(osd_box, 200, 60);
     gtk_widget_set_halign(osd_box, GTK_ALIGN_CENTER);
 

@@ -358,8 +358,8 @@ static void activate(GtkApplication* app, gpointer) {
     GtkWidget* btn_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_widget_set_halign(btn_box, GTK_ALIGN_CENTER);
 
-    gtk_box_append(GTK_BOX(btn_box), create_button("system-shutdown-symbolic", "Вимкнути", "systemctl poweroff", "btn-danger", 0));
-    gtk_box_append(GTK_BOX(btn_box), create_button("system-reboot-symbolic", "Перезапуск", "systemctl reboot", "btn-warning", 1));
+    gtk_box_append(GTK_BOX(btn_box), create_button("system-shutdown-symbolic", "Вимкнути", "timeout 1.6 $HOME/.local/bin/mgos-sound desktop-logout; systemctl poweroff", "btn-danger", 0));
+    gtk_box_append(GTK_BOX(btn_box), create_button("system-reboot-symbolic", "Перезапуск", "timeout 1.6 $HOME/.local/bin/mgos-sound desktop-logout; systemctl reboot", "btn-warning", 1));
     gtk_box_append(GTK_BOX(btn_box), create_button("weather-clear-night-symbolic", "Сон", "systemctl suspend", "btn-accent", 2));
 
     gtk_box_append(GTK_BOX(card), btn_box);

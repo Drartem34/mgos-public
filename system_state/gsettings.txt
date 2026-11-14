@@ -1,0 +1,8 @@
+org.gnome.desktop.interface color-scheme 'prefer-dark'
+org.gnome.desktop.interface gtk-theme 'Adwaita'
+org.gnome.desktop.interface icon-theme 'MacTahoe-light'
+org.gnome.desktop.interface cursor-theme 'Bibata-Modern-Classic'
+org.gnome.desktop.interface cursor-size 21
+org.gnome.desktop.interface font-name 'SF-Pro-Text-Bold'
+org.gnome.desktop.interface monospace-font-name 'Adwaita Mono 11'
+org.gnome.desktop.interface document-font-name 'Adwaita Sans 12'

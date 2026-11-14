@@ -16,6 +16,7 @@ GtkWidget* sys_icon_image = nullptr;
 GtkWidget* file_icon_pic = nullptr;
 GtkWidget* sender_label = nullptr;
 GtkWidget* body_label = nullptr;
+GtkWidget* badge_image = nullptr;   // маленька іконка програми в куті (як у macOS)
 
 guint hide_timer_id = 0;
 std::string current_icon_url = "";
@@ -34,8 +35,9 @@ static std::string exec(const std::string& cmd) {
 
 struct NotifyData {
     std::string sender;
-    std::string icon;
+    std::string icon;       // аватарка/картинка (шлях, file://, http) або назва іконки
     std::string body;
+    std::string app, desktop, site, site_icon;
 };
 
 static NotifyData read_notify_data() {
@@ -47,56 +49,100 @@ static NotifyData read_notify_data() {
         if (line.rfind("SENDER=", 0) == 0) d.sender = line.substr(7);
         else if (line.rfind("ICON=", 0) == 0)   d.icon   = line.substr(5);
         else if (line.rfind("BODY=", 0) == 0)    d.body   = line.substr(5);
+        else if (line.rfind("APP=", 0) == 0)     d.app    = line.substr(4);
+        else if (line.rfind("DESKTOP=", 0) == 0) d.desktop = line.substr(8);
+        else if (line.rfind("SITE=", 0) == 0)    d.site   = line.substr(5);
+        else if (line.rfind("SITEICON=", 0) == 0) d.site_icon = line.substr(9);
     }
     return d;
 }
 
+// ================= ІКОНКИ =================
+// Іконка програми: .desktop із підказки desktop-entry → пошук за назвою програми → назва як іконка теми.
+static GIcon* app_gicon(const NotifyData& d) {
+    auto from_info = [](GDesktopAppInfo* info) -> GIcon* {
+        if (!info) return nullptr;
+        GIcon* ic = g_app_info_get_icon(G_APP_INFO(info));
+        if (ic) g_object_ref(ic);
+        g_object_unref(info);
+        return ic;
+    };
+    if (!d.desktop.empty()) {
+        std::string id = d.desktop;
+        if (id.size() < 8 || id.compare(id.size() - 8, 8, ".desktop") != 0) id += ".desktop";
+        if (GIcon* ic = from_info(g_desktop_app_info_new(id.c_str()))) return ic;
+        std::string low = id; std::transform(low.begin(), low.end(), low.begin(), ::tolower);
+        if (GIcon* ic = from_info(g_desktop_app_info_new(low.c_str()))) return ic;
+    }
+    if (!d.app.empty() && d.app != "notify-send") {
+        gchar*** res = g_desktop_app_info_search(d.app.c_str());
+        GIcon* found = nullptr;
+        if (res) {
+            if (res[0] && res[0][0]) found = from_info(g_desktop_app_info_new(res[0][0]));
+            for (gchar*** g = res; *g; ++g) g_strfreev(*g);
+            g_free(res);
+        }
+        if (found) return found;
+        std::string low = d.app; std::transform(low.begin(), low.end(), low.begin(), ::tolower);
+        GtkIconTheme* th = gtk_icon_theme_get_for_display(gdk_display_get_default());
+        if (gtk_icon_theme_has_icon(th, low.c_str())) return g_themed_icon_new(low.c_str());
+    }
+    return nullptr;
+}
+
+// Картинка з ICON: локальний файл, file:// або http(s) (качаємо без shell — адреса приходить ззовні)
+static std::string icon_file(const std::string& icon) {
+    if (icon.rfind("http://", 0) == 0 || icon.rfind("https://", 0) == 0) {
+        std::string path = "/tmp/notify_icon_" + std::to_string(std::hash<std::string>{}(icon)) + ".png";
+        if (access(path.c_str(), F_OK) != 0) {
+            const char* argv[] = {"curl", "-fsSL", "--max-time", "2", "--max-filesize", "2000000", "-o", path.c_str(), "--", icon.c_str(), nullptr};
+            g_spawn_sync(nullptr, (gchar**)argv, nullptr, G_SPAWN_SEARCH_PATH, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+        }
+        return access(path.c_str(), F_OK) == 0 ? path : "";
+    }
+    if (icon.rfind("file://", 0) == 0) return icon.substr(7);
+    if (!icon.empty() && icon[0] == '/') return access(icon.c_str(), F_OK) == 0 ? icon : "";
+    return "";
+}
+
 // ================= UI =================
 void update_notify_ui() {
-    if (!sender_label || !body_label || !osd_window || !sys_icon_image || !file_icon_pic) {
-        return;
-    }
+    if (!sender_label || !body_label || !osd_window || !sys_icon_image || !file_icon_pic || !badge_image) return;
 
     NotifyData d = read_notify_data();
+    gtk_label_set_text(GTK_LABEL(sender_label), d.sender.empty() ? (d.site.empty() ? "Сповіщення" : d.site.c_str()) : d.sender.c_str());
+    gtk_label_set_text(GTK_LABEL(body_label), d.body.c_str());
 
-    gtk_label_set_text(GTK_LABEL(sender_label), d.sender.empty() ? "Хтось пише..." : d.sender.c_str());
-    gtk_label_set_text(GTK_LABEL(body_label),   d.body.empty()   ? ""              : d.body.c_str());
+    GIcon* app_ic = app_gicon(d);
+    std::string pic = !d.site_icon.empty() && access(d.site_icon.c_str(), F_OK) == 0 ? d.site_icon : icon_file(d.icon);
 
-    std::string icon = d.icon;
-    if (icon != current_icon_url) {
-        current_icon_url = icon;
-
-        bool is_file = false;
-        std::string path = "";
-
-        if (icon.find("http://") == 0 || icon.find("https://") == 0) {
-            is_file = true;
-            std::string hash_str = std::to_string(std::hash<std::string>{}(icon));
-            path = "/tmp/notify_icon_" + hash_str + ".png";
-            std::ifstream chk(path);
-            if (!chk.good()) exec("curl -sL '" + icon + "' -o " + path);
-        } else if (icon.find("file://") == 0) {
-            is_file = true;
-            path = icon.substr(7);
-        } else if (!icon.empty() && icon[0] == '/') {
-            is_file = true;
-            path = icon;
-        }
-
-        if (is_file) {
-            gtk_widget_set_visible(sys_icon_image, FALSE);
-            gtk_widget_set_visible(file_icon_pic, TRUE);
-            gtk_picture_set_filename(GTK_PICTURE(file_icon_pic), path.c_str());
-        } else if (!icon.empty()) {
-            gtk_widget_set_visible(file_icon_pic, FALSE);
-            gtk_widget_set_visible(sys_icon_image, TRUE);
-            gtk_image_set_from_icon_name(GTK_IMAGE(sys_icon_image), icon.c_str());
-            gtk_image_set_pixel_size(GTK_IMAGE(sys_icon_image), 50); 
-        } else {
-            gtk_widget_set_visible(file_icon_pic, FALSE);
-            gtk_widget_set_visible(sys_icon_image, FALSE);
-        }
+    if (!pic.empty()) {
+        // головна — іконка сайту або аватарка, програма — бейджем у куті
+        gtk_widget_set_visible(sys_icon_image, FALSE);
+        gtk_widget_set_visible(file_icon_pic, TRUE);
+        // через gdk-pixbuf: він читає й .ico (favicon), чого не вміє завантажувач текстур GTK
+        const bool site = !d.site_icon.empty();
+        const int px = site ? 36 : 50;   // GtkPicture бере розмір текстури — вантажимо одразу в розмірі плашки
+        GdkPixbuf* pb = gdk_pixbuf_new_from_file_at_scale(pic.c_str(), px, px, TRUE, nullptr);
+        if (pb) {
+            GdkTexture* tx = gdk_texture_new_for_pixbuf(pb);
+            gtk_picture_set_paintable(GTK_PICTURE(file_icon_pic), GDK_PAINTABLE(tx));
+            g_object_unref(tx); g_object_unref(pb);
+        } else gtk_picture_set_filename(GTK_PICTURE(file_icon_pic), pic.c_str());
+        if (!d.site_icon.empty()) gtk_widget_add_css_class(file_icon_pic, "site");
+        else gtk_widget_remove_css_class(file_icon_pic, "site");
+        if (app_ic) gtk_image_set_from_gicon(GTK_IMAGE(badge_image), app_ic);
+        gtk_widget_set_visible(badge_image, app_ic != nullptr);
+    } else {
+        gtk_widget_set_visible(file_icon_pic, FALSE);
+        gtk_widget_set_visible(badge_image, FALSE);
+        gtk_widget_set_visible(sys_icon_image, TRUE);
+        if (app_ic) gtk_image_set_from_gicon(GTK_IMAGE(sys_icon_image), app_ic);
+        else gtk_image_set_from_icon_name(GTK_IMAGE(sys_icon_image), d.icon.empty() ? "dialog-information" : d.icon.c_str());
+        gtk_image_set_pixel_size(GTK_IMAGE(sys_icon_image), 46);
     }
+    if (app_ic) g_object_unref(app_ic);
+    current_icon_url = pic;
 }
 
 // ================= CSS =================
@@ -105,10 +151,13 @@ void apply_css() {
     std::string css = R"(
         window { background: transparent; }
         * { font-family: "JetBrainsMono Nerd Font", "SF Pro Display", sans-serif; outline: none; border: none; }
-        .osd-box { background-color: rgba(20, 20, 20, 0.55); border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 17px; padding: 5px 17px 5px 7px; }
+        .ntf-box { background-color: rgba(20, 20, 20, 0.55); border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 17px; padding: 5px 17px 5px 7px; }
         
-        .sys-icon { margin-right: 10px; }
-        .notify-file-pic { border-radius: 6px; margin-right: 17px; background-color: rgba(0,0,0,0.3); overflow: hidden; }
+        .sys-icon { }
+        .notify-file-pic { border-radius: 12px; background-color: rgba(0,0,0,0.3); }
+        .notify-file-pic.site { background-color: rgba(255,255,255,0.94); padding: 7px; }
+        .ntf-icon-wrap { margin-right: 12px; }
+        .ntf-badge { margin: 0 -4px -4px 0; }
         
         .sender-label { color: #ffffff; font-size: 11px; font-weight: 900; }
         .body-label { color: rgba(255, 255, 255, 0.72); font-size: 9px; font-weight: 500; }
@@ -183,15 +232,16 @@ static void activate(GtkApplication* app, gpointer) {
     osd_window = gtk_application_window_new(app);
     sysui::release_on_hide(osd_window);
     sysui::pop_on_show(osd_window, nullptr);
-    sysui::live_css(".osd-box { border-color: @ACCENT_A30@; }");
+    sysui::live_css(".ntf-box { border-color: @ACCENT_A30@; }");
     gtk_layer_init_for_window(GTK_WINDOW(osd_window));
     gtk_layer_set_namespace(GTK_WINDOW(osd_window), "notify_osd");
     gtk_layer_set_layer(GTK_WINDOW(osd_window), GTK_LAYER_SHELL_LAYER_OVERLAY);
     gtk_layer_set_anchor(GTK_WINDOW(osd_window), GTK_LAYER_SHELL_EDGE_BOTTOM, TRUE);
     gtk_layer_set_margin(GTK_WINDOW(osd_window), GTK_LAYER_SHELL_EDGE_BOTTOM, 120);
+    sysui::follow_osd_position(osd_window, true);   // «Налаштування → OSD → Сповіщення»
 
     GtkWidget* osd_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-    gtk_widget_add_css_class(osd_box, "osd-box");
+    gtk_widget_add_css_class(osd_box, "ntf-box");
     gtk_widget_set_size_request(osd_box, 260, 70);
     gtk_widget_set_halign(osd_box, GTK_ALIGN_CENTER);
 
@@ -199,6 +249,7 @@ static void activate(GtkApplication* app, gpointer) {
     
     sys_icon_image = gtk_image_new();
     gtk_widget_add_css_class(sys_icon_image, "sys-icon");
+    gtk_image_set_pixel_size(GTK_IMAGE(sys_icon_image), 46);
     gtk_widget_set_valign(sys_icon_image, GTK_ALIGN_CENTER);
     gtk_widget_set_size_request(sys_icon_image, 50, 50);
     
@@ -209,9 +260,22 @@ static void activate(GtkApplication* app, gpointer) {
     gtk_picture_set_content_fit(GTK_PICTURE(file_icon_pic), GTK_CONTENT_FIT_COVER);
     gtk_widget_set_size_request(file_icon_pic, 50, 50);
 
-    gtk_box_append(GTK_BOX(app_icon_box), sys_icon_image);
-    gtk_box_append(GTK_BOX(app_icon_box), file_icon_pic);
-    
+    GtkWidget* pics = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_box_append(GTK_BOX(pics), sys_icon_image);
+    gtk_box_append(GTK_BOX(pics), file_icon_pic);
+    GtkWidget* ov = gtk_overlay_new();
+    gtk_widget_add_css_class(ov, "ntf-icon-wrap");
+    gtk_widget_set_valign(ov, GTK_ALIGN_CENTER);
+    gtk_overlay_set_child(GTK_OVERLAY(ov), pics);
+    badge_image = gtk_image_new();
+    gtk_image_set_pixel_size(GTK_IMAGE(badge_image), 22);
+    gtk_widget_add_css_class(badge_image, "ntf-badge");
+    gtk_widget_set_halign(badge_image, GTK_ALIGN_END);
+    gtk_widget_set_valign(badge_image, GTK_ALIGN_END);
+    gtk_widget_set_visible(badge_image, FALSE);
+    gtk_overlay_add_overlay(GTK_OVERLAY(ov), badge_image);
+    gtk_box_append(GTK_BOX(app_icon_box), ov);
+
     gtk_box_append(GTK_BOX(osd_box), app_icon_box);
 
     GtkWidget* text_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);

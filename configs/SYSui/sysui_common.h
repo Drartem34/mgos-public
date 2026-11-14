@@ -16,13 +16,17 @@
 //   sysui::trim();                                  // після приховування вікна
 #pragma once
 
+#include <cmath>
+#include <algorithm>
 #include <gtk/gtk.h>
+#include <gtk4-layer-shell.h>
 #include <gdk-pixbuf/gdk-pixbuf.h>
 #include <malloc.h>
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/time.h>
@@ -242,10 +246,28 @@ struct Settings {
     std::string dock_files_source = "both"; // "downloads" | "clipboard" | "both"
     int  dock_files_count = 4;            // скільки файлів показувати
     int  dock_files_days = 3;             // завантаження не старші за N днів
+    bool dock_reserve = false;            // док завжди видно і він відсуває вікна (exclusive zone), а не лежить поверх
+    bool dock_minimize_drag = true;       // перетягнути вікно на док → сховати застосунок (special:mgos-dock)
+    std::string dock_stash_layout = "grid"; // сховище доку: "grid" — плитки прилипають до сітки, "free" — вільно
+    bool dock_stash_zram = true;          // сховані в сховище програми стискаються в zram (mgos-pageout)
+    bool dock_recent = true;              // показувати недавно закриті програми (секція після роздільника)
+    int  dock_recent_count = 15;          // скільки закритих програм показувати
     // Control Center
     int  cc_opacity = 78;
     bool watchdog = true;                 // стежити за модулями та перезапускати
     bool sys_popups = true;               // показувати системні сповіщення спливаючими
+    std::string osd_position = "bottom";    // плашки OSD (гучність, яскравість, музика): bottom|top|center|top-right|bottom-right
+    std::string notify_position = "bottom"; // плашка сповіщень — окремо
+    bool topbar_power = true;             // кнопка ⏻ у топбарі
+    // Шрифт усіх панелей. Значки (Nerd glyphs) беруться з легкого «Symbols Nerd Font».
+    std::string panel_font = "SF Pro Display";
+    // Піксельна анімація шапок (about, блок годинника): waves|virus|eq|rain|life
+    std::string pixel_style = "waves";
+    // Економія: «запечений» блюр на весь екран — блюр лишається, відео-шпалера на паузі (кеш блюру не скидається)
+    bool eco_fs_blur = true;
+    bool hyprland_blur = true;            // загальний перемикач розмиття з «Налаштувань»
+    bool video_optimization = false;      // «Пауза відео-шпалер», поки вікно на весь екран
+    bool eco_effects = false;             // «Економ ефекти» (CC / Super+Shift+F1): без блюру, тіней і заокруглень
 };
 
 inline const Settings& settings() {
@@ -273,10 +295,16 @@ inline const Settings& settings() {
             gb("dock_magnify", n.dock_magnify); gi("dock_magnify_pct", n.dock_magnify_pct, 110, 220);
             gi("cc_opacity", n.cc_opacity, 20, 100);
             gb("dock_files", n.dock_files); gs("dock_files_source", n.dock_files_source);
-            gi("dock_files_count", n.dock_files_count, 1, 8); gi("dock_files_days", n.dock_files_days, 1, 30);
-            gb("watchdog", n.watchdog); gb("sys_popups", n.sys_popups);
+            gi("dock_files_count", n.dock_files_count, 1, 8); gi("dock_files_days", n.dock_files_days, 1, 30); gb("dock_reserve", n.dock_reserve); gb("dock_minimize_drag", n.dock_minimize_drag); gs("dock_stash_layout", n.dock_stash_layout); gb("dock_stash_zram", n.dock_stash_zram);
+            gb("dock_recent", n.dock_recent); gi("dock_recent_count", n.dock_recent_count, 1, 15);
+            gb("watchdog", n.watchdog); gb("sys_popups", n.sys_popups); gs("osd_position", n.osd_position); gs("notify_position", n.notify_position);
+            gb("topbar_power", n.topbar_power); gs("panel_font", n.panel_font); gs("pixel_style", n.pixel_style);
+            gb("eco_fs_blur", n.eco_fs_blur); gb("hyprland_blur", n.hyprland_blur); gb("eco_effects", n.eco_effects); gb("video_optimization", n.video_optimization);
         }
     } catch (...) {}
+    // «Економ ефекти»: блюру немає — напівпрозорі панелі без нього виглядають брудно, тож тимчасово
+    // робимо їх суцільними (модулі перебудовують CSS за theme_stamp; збережені значення не чіпаємо).
+    if (n.eco_effects) { n.topbar_opacity = 100; n.dock_opacity = 100; n.cc_opacity = 100; }
     s = n;
     return s;
 }
@@ -319,10 +347,65 @@ inline std::string wal_color(const std::string& var, const std::string& fallback
 }
 
 // ЄДИНИЙ акцентний колір для всіх модулів.
+// Акцент зі шпалер. Раніше брали pywal --color5, але pywal кладе туди будь-який колір —
+// напр. на блакитних шпалерах (color1..6 сині/бірюзові) color5 = сіро-лавандовий #A38FB8,
+// і CC/хвилі/about були «чужого» кольору. Тепер: колір із ДОМІНАНТНОЇ групи відтінків палітри,
+// найнасиченіший і середньої яскравості; яскравість трохи затискаємо для читабельності.
+// Той самий алгоритм — у ~/.local/bin/mgos-accent (Налаштування, SDDM).
+namespace detail {
+inline void hex_hsl(const std::string& hx, double& h, double& s, double& l) {
+    unsigned v = 0; sscanf(hx.c_str() + 1, "%06x", &v);
+    double r = ((v >> 16) & 255) / 255.0, g = ((v >> 8) & 255) / 255.0, b = (v & 255) / 255.0;
+    double mx = std::max({r, g, b}), mn = std::min({r, g, b});
+    l = (mx + mn) / 2; h = s = 0;
+    if (mx == mn) return;
+    double d = mx - mn;
+    s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+    if (mx == r) h = (g - b) / d + (g < b ? 6 : 0); else if (mx == g) h = (b - r) / d + 2; else h = (r - g) / d + 4;
+    h *= 60;
+}
+inline std::string hsl_hex(double h, double s, double l) {
+    auto f = [&](double n) {
+        double k = std::fmod(n + h / 30.0, 12.0), a = s * std::min(l, 1 - l);
+        return l - a * std::max(-1.0, std::min({k - 3, 9 - k, 1.0}));
+    };
+    char b[8]; snprintf(b, sizeof b, "#%02x%02x%02x", (int)std::lround(f(0) * 255), (int)std::lround(f(8) * 255), (int)std::lround(f(4) * 255));
+    return b;
+}
+inline double hue_dist(double a, double b) { double d = std::fabs(a - b); return std::min(d, 360 - d); }
+}  // namespace detail
+
+inline std::string smart_wal_accent() {
+    static time_t last = -2;
+    static std::string cache;
+    time_t m = file_mtime(wal_css_path());
+    if (m == last && !cache.empty()) return cache;
+    last = m;
+    struct C { std::string hex; double h, s, l; };
+    std::vector<C> cs;
+    for (int i = 1; i <= 6; i++) {
+        std::string hx = wal_color("--color" + std::to_string(i), "");
+        if (!valid_hex(hx)) continue;
+        C c{hx, 0, 0, 0}; detail::hex_hsl(hx, c.h, c.s, c.l);
+        if (c.s < 0.15 || c.l < 0.15 || c.l > 0.9) continue;   // сірі/майже чорні/білі — не акцент
+        cs.push_back(c);
+    }
+    if (cs.empty()) return cache = wal_color("--color5", "#9929CF");
+    const C* best = nullptr; double bs = -1e9;
+    for (auto& c : cs) {
+        double support = 0;
+        for (auto& o : cs) if (&o != &c && detail::hue_dist(c.h, o.h) <= 35) support += o.s;
+        double score = support + c.s - std::fabs(c.l - 0.55) * 1.2;
+        if (score > bs) { bs = score; best = &c; }
+    }
+    double l = std::clamp(best->l, 0.45, 0.66), sat = std::max(best->s, 0.45);
+    return cache = (l == best->l && sat == best->s) ? best->hex : detail::hsl_hex(best->h, sat, l);
+}
+
 inline std::string accent() {
     const Settings& s = settings();
     if (s.accent_mode == "custom" && valid_hex(s.accent_color)) return s.accent_color;
-    return wal_color("--color5", "#9929CF");
+    return smart_wal_accent();
 }
 
 inline std::string rgba(const std::string& hex, double a) {
@@ -388,6 +471,29 @@ inline void apply_animation_setting() {
         g_object_set(gs, "gtk-enable-animations", (gboolean)settings().animations, NULL);
 }
 
+// Один шрифт на всі панелі. Раніше модулі змішували JetBrainsMono Nerd + SF Pro у кількох
+// накресленнях — кожне відкрите накреслення FreeType тримає ~1.5 МБ heap у КОЖНОМУ процесі.
+// Тепер текст — panel_font, а значки Nerd Font (PUA) — з «Symbols Nerd Font» (лише гліфи).
+// Пріоритет вищий за CSS модулів і live_css, тож перекриває їхні font-family.
+inline void apply_font_setting() {
+    static GtkCssProvider* fp = nullptr;
+    static std::string last;
+    std::string f = settings().panel_font;
+    std::string clean;
+    for (char c : f) if (c != '"' && c != '\\' && c != ';' && c != '{' && c != '}') clean += c;
+    if (clean.empty()) clean = "SF Pro Display";
+    if (fp && clean == last) return;
+    last = clean;
+    GdkDisplay* d = gdk_display_get_default();
+    if (!d) return;
+    if (!fp) {
+        fp = gtk_css_provider_new();
+        gtk_style_context_add_provider_for_display(d, GTK_STYLE_PROVIDER(fp), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 5);
+    }
+    std::string css = "* { font-family: \"" + clean + "\", \"Symbols Nerd Font\", sans-serif; }";
+    gtk_css_provider_load_from_string(fp, css.c_str());
+}
+
 inline void install_shared_style() {
     static GtkCssProvider* p = nullptr;
     if (p) return;
@@ -397,11 +503,12 @@ inline void install_shared_style() {
     gtk_css_provider_load_from_string(p, shared_css());
     gtk_style_context_add_provider_for_display(d, GTK_STYLE_PROVIDER(p), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION - 1);
     apply_animation_setting();
-    // Перемикач анімацій застосовується наживо
+    apply_font_setting();
+    // Перемикач анімацій і шрифт застосовуються наживо
     g_timeout_add_seconds(2, [](gpointer) -> gboolean {
         static long long last = -1;
         long long st = theme_stamp();
-        if (st != last) { last = st; apply_animation_setting(); }
+        if (st != last) { last = st; apply_animation_setting(); apply_font_setting(); }
         return G_SOURCE_CONTINUE;
     }, nullptr);
 }
@@ -468,6 +575,61 @@ inline void sys_notify(const std::string& level, const std::string& title, const
         ssize_t w = write(fd, msg.data(), msg.size()); (void)w;
     }
     close(fd);
+}
+
+// Плавний прогрес-бар OSD: замість ривка — доїзд до цілі за ~ms мс (ease-out cubic) на tick-callback кадрів.
+// Повторний виклик під час анімації просто змінює ціль — затиснута клавіша дає безперервний рух.
+struct FracAnim { double from = 0, to = 0, cur = 0; gint64 t0 = 0; int ms = 220; guint id = 0; };
+inline void animate_fraction(GtkWidget* bar, double target, int ms = 220) {
+    target = std::clamp(target, 0.0, 1.0);
+    auto* a = (FracAnim*)g_object_get_data(G_OBJECT(bar), "sysui-frac");
+    if (!a) {
+        a = new FracAnim();
+        a->cur = gtk_progress_bar_get_fraction(GTK_PROGRESS_BAR(bar));
+        g_object_set_data_full(G_OBJECT(bar), "sysui-frac", a, [](gpointer p) { delete (FracAnim*)p; });
+    }
+    // вікно сховане → анімувати нікому: ставимо одразу (перший показ не «виїжджає» з нуля)
+    if (!gtk_widget_get_mapped(bar)) {
+        if (a->id) { gtk_widget_remove_tick_callback(bar, a->id); a->id = 0; }
+        a->cur = a->to = target;
+        gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(bar), target);
+        return;
+    }
+    a->from = a->cur; a->to = target; a->ms = ms;
+    a->t0 = g_get_monotonic_time();
+    if (a->id) return;
+    a->id = gtk_widget_add_tick_callback(bar, [](GtkWidget* w, GdkFrameClock*, gpointer d) -> gboolean {
+        auto* a = (FracAnim*)d;
+        double k = std::min(1.0, (g_get_monotonic_time() - a->t0) / (a->ms * 1000.0));
+        double e = 1 - std::pow(1 - k, 3);
+        a->cur = a->from + (a->to - a->from) * e;
+        gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(w), a->cur);
+        if (k >= 1.0) { a->id = 0; return G_SOURCE_REMOVE; }
+        return G_SOURCE_CONTINUE;
+    }, a, nullptr);
+}
+
+// Розташування OSD-плашки (layer-shell). pos: bottom | top | center | top-right | bottom-right.
+// Поля рахуються від краю робочої області (топбар/док з exclusive zone уже враховані композитором).
+inline void place_osd(GtkWidget* win, const std::string& pos) {
+    GtkWindow* w = GTK_WINDOW(win);
+    bool top = pos == "top" || pos == "top-right";
+    bool bottom = pos == "bottom" || pos == "bottom-right" || (pos != "top" && pos != "top-right" && pos != "center");
+    bool right = pos == "top-right" || pos == "bottom-right";
+    gtk_layer_set_anchor(w, GTK_LAYER_SHELL_EDGE_TOP, top);
+    gtk_layer_set_anchor(w, GTK_LAYER_SHELL_EDGE_BOTTOM, bottom);
+    gtk_layer_set_anchor(w, GTK_LAYER_SHELL_EDGE_RIGHT, right);
+    gtk_layer_set_anchor(w, GTK_LAYER_SHELL_EDGE_LEFT, FALSE);
+    gtk_layer_set_margin(w, GTK_LAYER_SHELL_EDGE_TOP, top ? 14 : 0);
+    gtk_layer_set_margin(w, GTK_LAYER_SHELL_EDGE_BOTTOM, bottom ? (right ? 24 : 120) : 0);
+    gtk_layer_set_margin(w, GTK_LAYER_SHELL_EDGE_RIGHT, right ? 16 : 0);
+}
+// Перед кожною появою — свіжа позиція з налаштувань (kind: "osd" або "notify")
+inline void follow_osd_position(GtkWidget* win, bool notify) {
+    g_signal_connect(win, "show", G_CALLBACK(+[](GtkWidget* w, gpointer d) {
+        const auto& st = settings();
+        place_osd(w, d ? st.notify_position : st.osd_position);
+    }), notify ? GINT_TO_POINTER(1) : nullptr);
 }
 
 }  // namespace sysui

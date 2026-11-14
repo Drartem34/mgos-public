@@ -1,28 +1,29 @@
 {
-    "wallpaper": "/home/doki/.cache/ignis/sddm_frame.png",
+    "checksum": "847d92c39341e4ccf726d097d4914c2c",
+    "wallpaper": "/home/doki/.cache/megumin-os/wp_poster_pixel.png",
     "alpha": "100",
 
     "special": {
-        "background": "#0B0917",
-        "foreground": "#c3ccf0",
-        "cursor": "#c3ccf0"
+        "background": "#0c181d",
+        "foreground": "#c2c5c6",
+        "cursor": "#c2c5c6"
     },
     "colors": {
-        "color0": "#0B0917",
-        "color1": "#394595",
-        "color2": "#4F50A7",
-        "color3": "#6074D8",
-        "color4": "#817EDF",
-        "color5": "#7882B7",
-        "color6": "#6F89E9",
-        "color7": "#c3ccf0",
-        "color8": "#888ea8",
-        "color9": "#394595",
-        "color10": "#4F50A7",
-        "color11": "#6074D8",
-        "color12": "#817EDF",
-        "color13": "#7882B7",
-        "color14": "#6F89E9",
-        "color15": "#c3ccf0"
+        "color0": "#0c181d",
+        "color1": "#3A4B60",
+        "color2": "#1F3997",
+        "color3": "#24439C",
+        "color4": "#424EC2",
+        "color5": "#7C8CF1",
+        "color6": "#939EF8",
+        "color7": "#c2c5c6",
+        "color8": "#5c6970",
+        "color9": "#3A4B60",
+        "color10": "#1F3997",
+        "color11": "#24439C",
+        "color12": "#424EC2",
+        "color13": "#7C8CF1",
+        "color14": "#939EF8",
+        "color15": "#c2c5c6"
     }
 }

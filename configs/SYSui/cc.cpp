@@ -174,7 +174,7 @@ struct CC {
 
     // стан
     bool wifi_on = false, bt_on = false, dnd = false, vol_muted = false, mic_muted = false, eco = false;
-    int eco_saved_rounding = 10;
+    int eco_saved_rounding = 15;   // = $windowRounding у hyprland.conf
     std::string pp;
     gint64 touch_vol = 0, touch_mic = 0, touch_bright = 0;
     bool ddc_ok = false;
@@ -491,8 +491,8 @@ struct Module {
 static std::vector<Module> g_modules = {
     {"dock", "Док", true}, {"topbar", "Топбар", true}, {"runner_osd", "Лаунчер", true},
     {"wallpapers", "Шпалери", false}, {"clipboard_osd", "Буфер обміну", true},
-    {"notify_osd", "Спливаючі сповіщення", true}, {"megumin_osd", "Музичний OSD", true},
-    {"powermenu_osd", "Меню живлення", true}, {"volume_osd", "OSD гучності", true},
+    {"osd_hub", "OSD: гучність, яскравість, сповіщення, музика", true},
+    {"powermenu_osd", "Меню живлення", true},
     {"controller_addon", "Геймпад", true}, {"about_osd", "Про систему", true},
 };
 static std::string sysui_dir() { return sysui::home() + "/.config/SYSui/"; }
@@ -952,9 +952,11 @@ static void poll_status() {
         });
 }
 
+// Стан «Економ ефекти» — власний прапорець у settings.json, а НЕ blur:enabled: блюр тепер ще й
+// вимикається сам, коли вікно на весь екран (topbar, eco_fs_blur), і CC плутав це з економ-режимом —
+// перемикання ставило rounding 0 назавжди («вікна квадратні»).
 static void read_eco_state() {
-    std::string r = sysui::hypr_request("j/getoption decoration:blur:enabled");
-    try { cc.eco = json::parse(r).value("int", 1) == 0; } catch (...) {}
+    cc.eco = sysui::settings().eco_effects;
     set_on(cc.eco_btn, cc.eco);
 }
 
@@ -1248,13 +1250,14 @@ static GtkWidget* build_main_page() {
     gtk_box_append(GTK_BOX(sq), square_btn("applications-graphics-symbolic", "Економ ефекти", G_CALLBACK(+[](GtkButton*, gpointer) {
         cc.eco = !cc.eco;
         set_on(cc.eco_btn, cc.eco);
+        sysui::settings_set("eco_effects", cc.eco);   // topbar теж бачить: блюр лишається вимкненим
         if (cc.eco) {
-            try { cc.eco_saved_rounding = json::parse(sysui::hypr_request("j/getoption decoration:rounding")).value("int", 10); } catch (...) {}
             sysui::hypr_request("keyword decoration:blur:enabled 0");
             sysui::hypr_request("keyword decoration:rounding 0");
             sysui::hypr_request("keyword decoration:shadow:enabled 0");
         } else {
-            sysui::hypr_request("keyword decoration:blur:enabled 1");
+            // заокруглення — з конфігу ($windowRounding), а не «збережене» (могло бути 0)
+            sysui::hypr_request("keyword decoration:blur:enabled " + std::string(sysui::settings().hyprland_blur ? "1" : "0"));
             sysui::hypr_request("keyword decoration:rounding " + std::to_string(cc.eco_saved_rounding));
             sysui::hypr_request("keyword decoration:shadow:enabled 1");
         }
@@ -1820,7 +1823,14 @@ static void sound_refresh() {
                 if (s.mute) gtk_widget_add_css_class(m.mute, "muted"); else gtk_widget_remove_css_class(m.mute, "muted");
             }
             for (auto it = sp.rows.begin(); it != sp.rows.end();) {
-                if (!alive.count(it->first)) { gtk_widget_unparent(it->second.root); it = sp.rows.erase(it); }
+                if (!alive.count(it->first)) {
+                    gtk_widget_unparent(it->second.root);
+                    // звільняємо обмежувач потоку, що зник (раніше лишався назавжди)
+                    auto th = sp.th.find(it->first);
+                    if (th != sp.th.end()) { if (th->second->timer) g_source_remove(th->second->timer); delete th->second; sp.th.erase(th); }
+                    sp.touch.erase(it->first);
+                    it = sp.rows.erase(it);
+                }
                 else ++it;
             }
             GtkWidget* empty = (GtkWidget*)g_object_get_data(G_OBJECT(sp.mixer), "empty");
@@ -2145,7 +2155,10 @@ static void notif_ui_added(const Notif& n) {
     GtkWidget* c = notif_card(n);
     gtk_box_prepend(GTK_BOX(nfp.list), c);
     gtk_widget_set_visible(nfp.empty, FALSE);
-    g_idle_add([](gpointer r) -> gboolean { gtk_revealer_set_reveal_child(GTK_REVEALER(r), TRUE); return G_SOURCE_REMOVE; }, c);
+    g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, [](gpointer r) -> gboolean {
+        if (gtk_widget_get_parent(GTK_WIDGET(r))) gtk_revealer_set_reveal_child(GTK_REVEALER(r), TRUE);
+        return G_SOURCE_REMOVE;
+    }, g_object_ref(c), g_object_unref);
 }
 
 static GtkWidget* build_notif_page() {
@@ -2156,8 +2169,13 @@ static GtkWidget* build_notif_page() {
     g_signal_connect(clear, "clicked", G_CALLBACK(+[](GtkButton*, gpointer) {
         // Каскадне згортання карток, потім очищення
         int i = 0;
+        // Таймери тримають власне посилання на картку: якщо список перебудують раніше
+        // (перемикач «Усі/Системні», закриття CC), картка не стане висячим вказівником.
         for (GtkWidget* c = gtk_widget_get_first_child(nfp.list); c; c = gtk_widget_get_next_sibling(c), i++)
-            g_timeout_add(i * 35, [](gpointer r) -> gboolean { gtk_revealer_set_reveal_child(GTK_REVEALER(r), FALSE); return G_SOURCE_REMOVE; }, c);
+            g_timeout_add_full(G_PRIORITY_DEFAULT, i * 35, [](gpointer r) -> gboolean {
+                if (gtk_widget_get_parent(GTK_WIDGET(r))) gtk_revealer_set_reveal_child(GTK_REVEALER(r), FALSE);
+                return G_SOURCE_REMOVE;
+            }, g_object_ref(c), g_object_unref);
         if (nfp.only_sys) { for (auto it = g_notifs.begin(); it != g_notifs.end();) it = it->sys ? g_notifs.erase(it) : it + 1; }
         else g_notifs.clear();
         g_unseen_sys_err = 0;

@@ -1,6 +1,6 @@
-# mgOS — Megumin OS 6 installer
+# mgOS — Megumin OS 6.5 installer
 
-Інсталятор Megumin OS 6 (Hyprland + панелі SYSui) і енергоощадної сесії kioskOS для Arch Linux.
+Інсталятор Megumin OS 6.5 (Hyprland + панелі SYSui) і енергоощадної сесії kioskOS для Arch Linux.
 
 ## Найпростіше: з чистого Arch (TTY)
 

@@ -1,0 +1,13 @@
+megumin-settings|preferences-system|sh
+spotify|spotify-launcher|spotify-launcher
+org.gnome.nautilus|org.gnome.Nautilus|nautilus
+ecotest|kitty|ecotest
+sddm-greeter-qt6|application-x-executable|sddm-greeter-qt6
+mgos-animtest|kitty|mgos-animtest
+mgos-zram-setup|kitty|mgos-zram-setup
+io.github.seadve.kooha|io.github.seadve.Kooha|kooha
+kooha|io.github.seadve.Kooha|kooha
+antigravity-ide|antigravity-ide|/usr/bin/antigravity-ide
+mgos-sddm-test|application-x-executable|mgos-sddm-test
+org.telegram.desktop|org.telegram.desktop|Telegram
+hyprland-share-picker|application-x-executable|hyprland-share-picker

@@ -38,6 +38,12 @@ GtkWidget* results_scroll = nullptr;
 GtkWidget* results_revealer = nullptr;
 GtkWidget* search_box = nullptr;
 GtkCssProvider* g_css_provider = nullptr;
+// CROSSFADE-ревілер не стискається після приховування (на відміну від SLIDE) —
+// без цього під полем пошуку лишався порожній блок, а layer-поверхня не зменшувалась.
+static void set_results_revealed(gboolean on) {
+    if (on) gtk_widget_set_visible(results_revealer, TRUE);
+    gtk_revealer_set_reveal_child(GTK_REVEALER(results_revealer), on);
+}
 
 bool is_expanded = false;
 bool is_tv_mode = false;
@@ -122,16 +128,16 @@ void apply_css() {
             outline: none;
             padding: 8px;
             margin: 2px;
-            border-radius: 16px;
-            transition: all 0.2s ease;
+            border-radius: 12px;
+            /* рамка є ЗАВЖДИ (прозора) — розмір плитки не змінюється при виборі, сітка не «пливе» */
+            border: 2px solid transparent;
+            transition: background-color 160ms ease, border-color 160ms ease;
         }
         window .main-container .results-list flowboxchild:selected,
         window .main-container .results-list flowboxchild:focus,
         window .main-container .results-list flowboxchild:hover {
             background-color: rgba(255, 255, 255, 0.25);
-            border: 2px solid rgba(255, 255, 255, 0.8);
-            border-radius: 12px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+            border-color: rgba(255, 255, 255, 0.8);
             outline: none;
         }
         
@@ -140,7 +146,6 @@ void apply_css() {
             border: 1px solid rgba(255, 255, 255, 0.1);
             border-radius: 36px;
             padding: 6px 12px;
-            transition: all 0.2s ease-out;
         }
 
         .search-entry {
@@ -168,7 +173,7 @@ void apply_css() {
             min-height: 36px;
             padding: 0;
             border: 1px solid rgba(255,255,255,0.3);
-            transition: all 0.2s ease;
+            transition: background-color 160ms ease;
         }
         .expand-btn label {
             margin-top: 2px;
@@ -201,7 +206,7 @@ void apply_css() {
             padding: 8px 16px;
             font-weight: 600;
             border: 1px solid rgba(255,255,255,0.2);
-            transition: all 0.2s ease;
+            transition: background-color 160ms ease;
         }
         .controller-btn:hover {
             background-color: rgba(255,255,255,0.25);
@@ -562,7 +567,33 @@ void add_file_to_list(const std::string& filepath) {
     gtk_flow_box_append(GTK_FLOW_BOX(results_list), row);
 }
 
+// locate у фоні (раніше — синхронний popen на КОЖНУ літеру: UI зависав на 50–200 мс)
+static std::string g_query_now;
+static void search_files_async(const std::string& query) {
+    if (query.length() < 3) return;
+    GSubprocess* sp = g_subprocess_new((GSubprocessFlags)(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_SILENCE), nullptr,
+                                       "locate", "-i", "-l", "5", "--", query.c_str(), nullptr);
+    if (!sp) return;
+    g_subprocess_communicate_utf8_async(sp, nullptr, nullptr, [](GObject* src, GAsyncResult* res, gpointer d) {
+        std::string* q = static_cast<std::string*>(d);
+        char* out = nullptr;
+        if (g_subprocess_communicate_utf8_finish(G_SUBPROCESS(src), res, &out, nullptr, nullptr) && out && *q == g_query_now) {
+            GtkWidget* raw = gtk_widget_get_last_child(results_list);   // рядок «виконати команду» лишаємо останнім
+            if (raw) g_object_ref(raw), gtk_flow_box_remove(GTK_FLOW_BOX(results_list), raw);
+            std::istringstream ss(out);
+            std::string line;
+            while (std::getline(ss, line)) if (!line.empty()) add_file_to_list(line);
+            if (raw) { gtk_flow_box_append(GTK_FLOW_BOX(results_list), raw); g_object_unref(raw); }
+            if (gtk_widget_get_first_child(results_list)) set_results_revealed(TRUE);
+        }
+        g_free(out);
+        g_object_unref(src);
+        delete q;
+    }, new std::string(query));
+}
+
 void update_results(const std::string& query) {
+    g_query_now = query;
     GtkWidget* child = gtk_widget_get_first_child(results_list);
     while (child) {
         GtkWidget* next = gtk_widget_get_next_sibling(child);
@@ -590,12 +621,12 @@ void update_results(const std::string& query) {
             gtk_widget_grab_focus(first);
         }
         
-        gtk_revealer_set_reveal_child(GTK_REVEALER(results_revealer), TRUE);
+        set_results_revealed(TRUE);
     } else {
         gtk_widget_set_visible(search_box, TRUE);
         
         if (query.empty() && !is_expanded) {
-            gtk_revealer_set_reveal_child(GTK_REVEALER(results_revealer), FALSE);
+            set_results_revealed(FALSE);
             return;
         }
 
@@ -637,19 +668,13 @@ void update_results(const std::string& query) {
             }
         }
         
-        if (!query.empty() && app_count < 15) {
-            std::vector<std::string> files = search_files(query);
-            for (const auto& file : files) {
-                add_file_to_list(file);
-                app_count++;
-            }
-        }
+        if (!query.empty() && app_count < 15) search_files_async(query);   // результати доберуться самі, UI не блокується
         
         if (app_count > 0) {
             if (!query.empty()) add_raw_cmd_to_list(query);
-            gtk_revealer_set_reveal_child(GTK_REVEALER(results_revealer), TRUE);
+            set_results_revealed(TRUE);
         } else {
-            gtk_revealer_set_reveal_child(GTK_REVEALER(results_revealer), FALSE);
+            set_results_revealed(FALSE);
         }
     }
 }
@@ -658,10 +683,23 @@ void update_results(const std::string& query) {
 void trigger_nav(guint keyval);
 void trigger_enter();
 
+static guint g_search_debounce = 0;
 static void on_search_changed(GtkEditable* editable, gpointer user_data) {
+    // Дебаунс 60 мс: при швидкому наборі сітка перебудовується один раз, а не на кожну літеру
+    if (g_search_debounce) g_source_remove(g_search_debounce);
+    g_search_debounce = g_timeout_add(60, [](gpointer) -> gboolean {
+        g_search_debounce = 0;
+        std::string query(gtk_editable_get_text(GTK_EDITABLE(search_entry)));
+        update_results(query);
+        if (query.length() > 0 || is_tv_mode || is_expanded) {
+            GtkFlowBoxChild* row = gtk_flow_box_get_child_at_index(GTK_FLOW_BOX(results_list), 0);
+            if (row) gtk_flow_box_select_child(GTK_FLOW_BOX(results_list), row);
+        }
+        return G_SOURCE_REMOVE;
+    }, nullptr);
+    return;
     const char* text = gtk_editable_get_text(editable);
     std::string query(text);
-    
     update_results(query);
     
     if (query.length() > 0 || is_tv_mode || is_expanded) {
@@ -673,12 +711,12 @@ static void on_search_changed(GtkEditable* editable, gpointer user_data) {
 static void on_expand_clicked(GtkWidget* btn, gpointer user_data) {
     is_expanded = !is_expanded;
     if (is_expanded) {
-        gtk_revealer_set_reveal_child(GTK_REVEALER(results_revealer), TRUE);
+        set_results_revealed(TRUE);
         update_results(""); 
     } else {
         const char* text = gtk_editable_get_text(GTK_EDITABLE(search_entry));
         if (strlen(text) == 0) {
-            gtk_revealer_set_reveal_child(GTK_REVEALER(results_revealer), FALSE);
+            set_results_revealed(FALSE);
         } else {
             update_results(text);
         }
@@ -808,7 +846,7 @@ gboolean on_socket_message(GIOChannel *source, GIOCondition condition, gpointer 
                     apply_css();
                     gtk_editable_set_text(GTK_EDITABLE(search_entry), "");
                     is_expanded = true;
-                    gtk_revealer_set_reveal_child(GTK_REVEALER(results_revealer), TRUE);
+                    set_results_revealed(TRUE);
                     update_results("");
                     
                     gtk_widget_set_visible(runner_window, TRUE);
@@ -945,10 +983,15 @@ static void activate(GtkApplication* app, gpointer) {
     gtk_widget_set_margin_top(results_scroll, 15);
 
     results_revealer = gtk_revealer_new();
-    gtk_revealer_set_transition_type(GTK_REVEALER(results_revealer), GTK_REVEALER_TRANSITION_TYPE_SLIDE_DOWN);
-    gtk_revealer_set_transition_duration(GTK_REVEALER(results_revealer), 250);
+    // CROSSFADE замість SLIDE_DOWN: слайд змінював розмір layer-поверхні щокадру (ривки на Wayland)
+    gtk_revealer_set_transition_type(GTK_REVEALER(results_revealer), GTK_REVEALER_TRANSITION_TYPE_CROSSFADE);
+    gtk_revealer_set_transition_duration(GTK_REVEALER(results_revealer), 180);
     gtk_revealer_set_child(GTK_REVEALER(results_revealer), results_scroll);
-    gtk_revealer_set_reveal_child(GTK_REVEALER(results_revealer), FALSE);
+    g_signal_connect(results_revealer, "notify::child-revealed", G_CALLBACK(+[](GObject* r, GParamSpec*, gpointer) {
+        if (!gtk_revealer_get_reveal_child(GTK_REVEALER(r)) && !gtk_revealer_get_child_revealed(GTK_REVEALER(r)))
+            gtk_widget_set_visible(GTK_WIDGET(r), FALSE);
+    }), nullptr);
+    gtk_widget_set_visible(results_revealer, FALSE);
 
     results_list = gtk_flow_box_new();
     gtk_flow_box_set_max_children_per_line(GTK_FLOW_BOX(results_list), 6);
