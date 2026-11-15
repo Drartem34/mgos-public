@@ -1070,6 +1070,7 @@ static const Extra EXTRAS[] = {
     {"steam", "Steam"}, {"obs-studio", "OBS Studio"}, {"libreoffice-fresh", "LibreOffice"}, {"discord", "Discord"},
     {"telegram-desktop", "Telegram"}, {"vlc", "VLC"}, {"gimp", "GIMP"}, {"krita", "Krita"}, {"blender", "Blender"},
     {"code", "Code - OSS"}, {"chromium", "Chromium"}, {"thunderbird", "Thunderbird"},
+    {"artcraft", "ArtCraft"},   // не в репозиторіях Arch — бекенд ставить Flatpak із getartcraft.com
 };
 static std::string mgos_preview() {
     for (const char* d : {"/usr/share/mgos/edition-mgos.png", "/opt/mgos/recovery/arch-installer/edition-mgos.png"})

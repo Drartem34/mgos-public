@@ -53,7 +53,7 @@ say()  { echo "@@MSG $*"; }
 pct()  { echo "@@PCT $1"; }
 warn() { echo "@@WARN $*"; }
 die()  { echo "@@FAIL $*"; cleanup_mounts; exit 1; }
-run()  { if [ "$DRY_RUN" = 1 ]; then echo "[dry] $*"; [ -n "${DRY_DELAY:-}" ] && sleep "$DRY_DELAY"; else "$@"; fi; }
+run()  { if [ "$DRY_RUN" = 1 ]; then echo "[dry] $*"; [ -z "${DRY_DELAY:-}" ] || sleep "$DRY_DELAY"; else "$@"; fi; }
 inch() { if [ "$DRY_RUN" = 1 ]; then echo "[dry chroot] $*"; else arch-chroot "$MNT" "$@"; fi; }
 
 # step <id> <функція> — обгортка: @@STEP/@@DONE, помилка → @@FAIL
@@ -156,7 +156,7 @@ s_prepare() {
     if [ "$EDITION" = mgos ] && [ ! -d "$MGOS_SRC/gui" ]; then echo "Немає файлів mgOS у $MGOS_SRC"; return 1; fi
     pct 20
     say "Перевіряю інтернет"
-    if ! curl -fsI --max-time 8 https://archlinux.org >/dev/null 2>&1; then
+    if ! retry curl -fsI --max-time 8 https://archlinux.org >/dev/null 2>&1; then
         echo "Немає інтернету — пакети встановлюються з дзеркал Arch"; return 1
     fi
     pct 40
@@ -413,9 +413,14 @@ HYPR_PKGS=(hyprland xdg-desktop-portal-hyprland xdg-desktop-portal-gtk hyprpolki
 # лише «Arch + Hyprland»: у mgOS панелі, меню й мережа — власні (SYSui)
 HYPR_ONLY_PKGS=(waybar wofi network-manager-applet)
 s_desktop() {
-    local p=("${HYPR_PKGS[@]}") x
+    local p=("${HYPR_PKGS[@]}") x artcraft=0
     [ "$EDITION" = hyprland ] && p+=("${HYPR_ONLY_PKGS[@]}")
-    for x in $EXTRA_PKGS; do p+=("$x"); done
+    for x in $EXTRA_PKGS; do
+        case $x in
+            artcraft) artcraft=1; p+=(flatpak) ;;   # Flatpak, не пакет pacman
+            *) p+=("$x") ;;
+        esac
+    done
     # Steam і Wine — лише з multilib
     if [[ " $EXTRA_PKGS " == *" steam "* ]]; then
         say "Вмикаю multilib (для Steam)"
@@ -425,6 +430,13 @@ s_desktop() {
     say "Hyprland і програми"
     run retry inch pacman -S --noconfirm --needed "${p[@]}" 2>&1 | pkg_progress || return 1
     inch systemctl enable sddm >/dev/null 2>&1
+    if [ "$artcraft" = 1 ]; then
+        # ArtCraft (getartcraft.com): офіційне Flatpak-сховище, лаунчер ставить і оновлює решту Craft-програм
+        say "ArtCraft (Flatpak)"
+        inch flatpak remote-add --if-not-exists artcraft-oci https://getartcraft.com/artcraft-oci.flatpakrepo \
+            && inch flatpak install -y --noninteractive artcraft-oci ai.storyteller.artcraft-launcher \
+            || warn "ArtCraft не встановився — можна поставити пізніше: flatpak install artcraft-oci ai.storyteller.artcraft-launcher"
+    fi
     local H="/home/$USERNAME"
     if [ "$EDITION" = hyprland ]; then
         # стартовий конфіг Hyprland + наша розкладка клавіатури
