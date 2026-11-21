@@ -1,0 +1,52 @@
+{
+  "enabled": true,
+  "columns": 3,
+  "position": "center",
+  "only_empty": false,
+  "widgets": [
+    {
+      "type": "clock",
+      "seconds": false,
+      "date": true
+    },
+    {
+      "type": "system",
+      "cpu": true,
+      "ram": true,
+      "disk": true,
+      "battery": true,
+      "temp": false,
+      "disk_path": "/"
+    },
+    {
+      "type": "weather",
+      "city": "",
+      "interval_min": 30
+    },
+    {
+      "type": "music"
+    },
+    {
+      "type": "actions",
+      "items": [
+        "terminal",
+        "files",
+        "browser",
+        "settings",
+        "screenshot",
+        "lock"
+      ]
+    },
+    {
+      "type": "network"
+    },
+    {
+      "type": "notes",
+      "height": 130,
+      "enabled": false
+    },
+    {
+      "type": "calendar"
+    }
+  ]
+}

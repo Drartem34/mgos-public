@@ -1,0 +1,11 @@
+# Завантаження картинки в пам'ять (виправлено розширення на .png)
+preload = /home/doki/Pictures/walpers/hyprland_kath.png
+
+# Призначення завантаженої картинки твоєму монітору HDMI-A-1
+wallpaper = HDMI-A-1,/home/doki/Pictures/walpers/hyprland_kath.png
+
+# Вимкнути сплеш-текст при старті
+splash = false
+
+# Увімкнути IPC
+ipc = on

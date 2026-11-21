@@ -1,0 +1,389 @@
+@import url("file:///home/doki/.cache/wal/colors.css");
+
+/* --- ЗМІННІ ТЕМ (Графіт за замовчуванням) --- */
+:root {
+    --bg-color: rgba(24, 24, 24, 0.8);
+    --surface: #2a2a2a;
+    --surface-hover: #3b3b3b;
+    --surface-active: #4a4a4a;
+    
+    --text-main: #e0e0e0;
+    --text-sub: #888888;
+    --text-inverse: #121212; 
+    
+    --border-color: #3f3f3f;
+    --danger: #d75f5f;
+    --danger-hover: #e06c6c;
+    --success: #87af87;
+    --warning: #d7af5f;
+    
+    --overlay-bg: rgba(30, 30, 30, 0.8); 
+    --overlay-hover: rgba(255, 255, 255, 0.1);
+
+    /* ДИНАМІЧНІ АКЦЕНТИ З ОБОЇВ (якщо pywal ще не спрацював, буде старий синій) */
+    --accent: var(--color2, #C86FA3);
+    --accent-blue: var(--color5, #9929CF);
+    --border-color: var(--color5, #9929CF); 
+}
+
+/* Світла тема */
+window.light-theme {
+    --bg-color: rgba(245, 245, 245, 0.6);
+    --surface: #ffffff;
+    --surface-hover: #e8e8e8;
+    --surface-active: #d0d0d0;
+    
+    --text-main: #121212;
+    --text-sub: #666666;
+    --text-inverse: #ffffff; 
+    
+    /* --border-color: #cccccc; */
+    --danger: #e74c3c;
+    --danger-hover: #c0392b;
+    --success: #2ecc71;
+    --warning: #f1c40f;
+    
+    --overlay-bg: rgba(255, 255, 255, 0.7);
+    --overlay-hover: rgba(0, 0, 0, 0.1);
+
+    /* ТІ САМІ ДИНАМІЧНІ АКЦЕНТИ ДЛЯ СВІТЛОЇ ТЕМИ */
+    --accent: var(--color2, #C86FA3);
+    --accent-blue: var(--color1, #9929CF);
+    --border-color: var(--color1, #9929CF); 
+}
+
+/* --- БАЗА --- */
+* { font-family: "JetBrainsMono Nerd Font", sans-serif; outline: none; }
+.unset-window { background-color: transparent; }
+
+/* --- НОВІ КЛАСИ ДЛЯ КНОПОК БЕЗ ХАРДКОДУ --- */
+.btn-text-inverse { font-weight: bold; color: var(--text-inverse); }
+.btn-text-main { font-weight: bold; color: var(--text-main); }
+.text-danger { font-weight: bold; color: var(--danger); }
+.icon-inverse { color: var(--text-inverse); }
+
+.rounded-icon-btn { border-radius: 12px; padding: 4px; min-width: 26px; min-height: 26px; margin-right: 8px; }
+.danger-bg-btn { background-color: var(--danger); transition: 0.2s; }
+.danger-bg-btn:hover { background-color: var(--danger-hover); }
+.accent-bg-btn { background-color: var(--accent-blue); transition: 0.2s; }
+.accent-bg-btn:hover { opacity: 0.8; }
+.wifi-password-entry { background-color: var(--surface-hover); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 8px; padding: 5px; }
+
+/* --- CONTROL CENTER --- */
+.main-bg { background-color: var(--bg-color); border: 1px solid var(--border-color); border-radius: 20px; padding: 20px; margin: 0px; min-width: 700px; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
+.block { border-radius: 14px; transition: 0.2s; }
+.dark { background-color: var(--surface); color: var(--text-main); }
+.dark:hover { background-color: var(--surface-hover); }
+.dark:active { background-color: var(--surface-active); }
+.active { background-color: var(--text-main); color: var(--bg-color); }
+.active:hover { background-color: var(--text-sub); }
+
+.std { padding: 12px 14px; }
+.wide { padding: 14px 16px; }
+
+.transparent-btn { background-color: transparent; border: none; padding: 0; margin: 0; box-shadow: none; }
+.header-btn { padding: 12px 14px; border-radius: 14px; }
+.header-btn:hover { background-color: var(--surface-hover); }
+
+.card-title { font-weight: 800; font-size: 14px; margin-right: 100px; color: var(--text-main); }
+.card-status { font-size: 11px; opacity: 0.7; color: var(--text-main); }
+.b-icon { font-size: 18px; color: var(--text-main); }
+.accent-icon { color: var(--accent-blue); }
+.dim-icon { color: var(--text-sub); }
+
+.power-btn { background-color: var(--surface); border-radius: 50%; min-width: 32px; min-height: 32px; padding: 0; margin-left: 5px; color: var(--text-main); }
+.power-btn:hover { background-color: var(--surface-hover); }
+.power-btn:active { background-color: var(--accent-blue); color: var(--bg-color); }
+
+.list-container { padding: 10px; background-color: var(--surface); border-radius: 0 0 14px 14px; border-top: 1px solid var(--border-color); }
+.list-item { background-color: transparent; border-radius: 8px; padding: 8px 12px; border: none; box-shadow: none; transition: 0.2s; color: var(--text-main); }
+.list-item:hover { background-color: var(--surface-hover); }
+.list-item-active { background-color: var(--surface-hover); border: 1px solid var(--accent-blue); }
+.list-item-normal { color: var(--text-main); }
+.list-label { font-size: 13px; font-weight: 600; color: var(--text-main); }
+.list-icon { margin-right: 10px; color: var(--text-sub); font-size: 14px; }
+.list-status { color: var(--success); font-weight: bold; }
+
+.music-box { background-color: var(--surface); border-radius: 18px; padding: 20px; border: 1px solid var(--border-color); }
+.music-art-icon { background-color: var(--surface-hover); color: var(--accent-blue); font-size: 32px; border-radius: 12px; min-width: 60px; min-height: 60px; padding: 14px; }
+.music-title { font-weight: 800; font-size: 15px; color: var(--text-main); }
+.music-artist { font-size: 12px; color: var(--text-sub); }
+
+.control-btn { background-color: transparent; padding: 10px; border-radius: 50%; color: var(--text-main); }
+.control-btn:hover { background-color: var(--surface-hover); }
+.play-btn { border-radius: 50%; min-width: 48px; min-height: 48px; padding: 0; color: var(--text-main); }
+.play-btn label { font-size: 20px; }
+
+.b-slider trough { background-color: var(--surface-hover); }
+.b-slider highlight { background-color: var(--accent-blue); }
+
+.wifi-connect-btn { background-color: var(--surface-hover); border-radius: 8px; padding: 4px 10px; margin-left: 5px; }
+.wifi-connect-btn:hover { background-color: var(--surface-active); }
+
+/* --- СПОВІЩЕННЯ --- */
+.dunst-block { background-color: var(--overlay-bg); border-radius: 16px; padding: 16px; border: 1px solid var(--border-color); }
+.dunst-header { font-weight: bold; color: var(--text-sub); font-size: 13px; }
+.clear-all { background-color: var(--surface-hover); padding: 4px 10px; border-radius: 8px; }
+.clear-all label { font-size: 11px; color: var(--text-main); }
+.b-subtext { color: var(--text-sub); font-size: 12px; }
+
+.notif-item { background-color: var(--surface); border-radius: 12px; padding: 12px; border: 1px solid var(--border-color); margin-bottom: 2px; }
+.notif-icon { color: var(--warning); font-size: 16px; }
+.notif-appname { font-size: 11px; color: var(--text-sub); font-weight: bold; }
+.notif-summary { font-weight: 800; font-size: 13px; color: var(--text-main); margin-bottom: 4px; }
+.notif-body { font-size: 12px; color: var(--text-main); opacity: 0.8; }
+
+/* --- ДОК --- */
+.dock-wrapper { margin-bottom: 10px; background-color: var(--overlay-bg); border: 1px solid var(--border-color); border-radius: 20px; padding: 8px 2px; }
+.dock-item { background-color: transparent; border: none; box-shadow: none; padding: 0; margin: 0 4px; transition: 0.2s; }
+.dock-item.active { background-color: var(--accent-blue); }
+.dock-item:hover { background-color: var(--overlay-hover); }
+.dock-icon { border-radius: 10px; }
+
+/* --- СИСТЕМНИЙ МОНІТОР --- */
+.sys-monitor { }
+.sys-text { font-size: 15px; font-weight: 800; color: var(--accent-blue); margin-right: 10px; }
+.sys-label { font-size: 12px; color: var(--text-sub); }
+.sys-value { font-size: 12px; font-weight: bold; color: var(--text-main); }
+.sys-bar trough { background-color: var(--surface-hover); min-height: 6px; }
+.sys-bar highlight { background-color: var(--accent-blue); }
+.sys-icon { color: var(--text-main); }
+
+/* --- ШПАЛЕРИ ТА СВІТЧЕР --- */
+.switcher-bg { background-color: transparent; }
+.switcher-container { background-color: var(--overlay-bg); border: 2px solid var(--border-color); border-radius: 20px; padding: 30px; }
+.wp-window { background-color: transparent; }
+.wp-container { background-color: var(--overlay-bg); border: 2px solid var(--border-color); border-radius: 20px; padding: 25px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); }
+.wp-title { font-size: 24px; font-weight: 800; color: var(--text-main); }
+.wp-close-btn { background-color: var(--danger); border-radius: 12px; padding: 8px 16px; transition: 0.2s; }
+.wp-close-btn:hover { background-color: var(--danger-hover); transform: scale(1.05); }
+.wp-close-label { color: var(--text-inverse); font-weight: bold; font-size: 14px; }
+.wp-scroll { margin-top: 15px; }
+.wp-card { min-width: 250px; min-height: 140px; border-radius: 14px; border: 2px solid transparent; transition: all 0.2s cubic-bezier(0.25, 1, 0.5, 1); }
+.wp-card:hover { transform: scale(1.05); border: 2px solid var(--accent-blue); box-shadow: 0 5px 15px rgba(0, 0, 0, 0.4); }
+.wp-label-box { background-color: var(--overlay-bg); border-radius: 0 0 12px 12px; padding: 6px 10px; }
+.wp-label { color: var(--text-main); font-size: 12px; font-weight: bold; }
+.wp-error { color: var(--danger); font-size: 16px; font-weight: bold; }
+.switcher-label-box { border-radius: 0 0 10px 10px; }
+.switcher-label { color: white; font-size: 11px; font-weight: bold; text-shadow: 0 1px 2px rgba(0,0,0,0.8); }
+.preview-image { min-width: 240px; min-height: 135px; background-size: cover; background-position: center; background-repeat: no-repeat; border-radius: 8px; margin-bottom: 8px; background-color: var(--surface); }
+.switcher-item { padding: 10px; border-radius: 12px; background-color: var(--overlay-hover); }
+.selected { background-color: rgba(137, 180, 250, 0.2); border: 2px solid var(--accent-blue); }
+
+/* Контейнер для кнопок, щоб вони не прилипали до інших елементів */
+.wp-tabs-box {
+    margin-bottom: 15px;
+}
+
+/* Самі кнопки-вкладки */
+.wp-tab-btn {
+    background-color: rgba(255, 255, 255, 0.1); /* Напівпрозорий фон */
+    border-radius: 12px; /* Заокруглені кути */
+    padding: 8px 20px; /* Відступи всередині, щоб текст дихав */
+    transition: all 0.2s ease-in-out; /* Плавна анімація */
+}
+
+/* Текст всередині кнопок */
+.wp-tab-label {
+    color: #e0e0e0; /* Світло-сірий колір тексту */
+    font-size: 16px;
+    font-weight: bold;
+}
+
+/* Ефект при наведенні мишки */
+.wp-tab-btn:hover {
+    background-color: rgba(255, 255, 255, 0.2); /* Робимо трохи світлішим */
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3); /* Додаємо легку тінь */
+}
+
+/* Якщо клікаєш по кнопці */
+.wp-tab-btn:active {
+    background-color: rgba(255, 255, 255, 0.15);
+}
+
+/* =======================================
+   IGNIS TOP BAR (Waybar Style)
+   ======================================= */
+@import url("file:///home/doki/.cache/wal/colors.css");
+
+.ignis-bar-window {
+    background-color: transparent;
+}
+
+.ignis-bar-inner {
+    padding: 5px 10px;
+    font-family: "JetBrainsMono Nerd Font", "SF Pro Display", sans-serif;
+    font-size: 14px;
+    color: var(--foreground);
+}
+
+/* Окремі плашки для модулів */
+.module-box {
+    background-color: rgba(30, 30, 46, 0.8);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+    padding: 0 10px;
+    min-height: 30px;
+    transition: all 0.2s ease;
+}
+
+/* Світла тема (перемикається з Control Center) */
+window.light-theme .module-box {
+    background-color: rgba(245, 245, 245, 0.9);
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    color: #121212;
+}
+
+.module-box:hover {
+    background-color: rgba(255, 255, 255, 0.15);
+}
+window.light-theme .module-box:hover {
+    background-color: rgba(0, 0, 0, 0.1);
+}
+
+
+/* Кнопки воркспейсів */
+.ws-btn label {
+    color: #6c7086;
+    padding: 0 6px;
+    margin: 3px 1px;
+    border-radius: 8px;
+    transition: all 0.2s ease;
+}
+.ws-btn.occupied label { color: var(--foreground); }
+.ws-btn.active label {
+    background-color: var(--color4);
+    color: var(--background);
+    font-weight: bold;
+    min-width: 25px;
+}
+window.light-theme .ws-btn.occupied label { color: #121212; }
+
+/* Іконки статусів */
+.wifi-icon { color: var(--color4); }
+.vol-icon { color: var(--color3); margin-right: 5px; }
+.clock-box { font-weight: bold; }
+.power-btn { color: #f38ba8; font-size: 16px; font-weight: bold; }
+.bat-box.critical { color: #f38ba8; }
+
+/* --- НОРМАЛЬНЕ КОНТЕКСТНЕ МЕНЮ ТРЕЮ --- */
+popover.tray-popover contents {
+    background-color: rgba(30, 30, 46, 0.95);
+    color: var(--foreground);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    padding: 8px;
+    box-shadow: 0px 5px 15px rgba(0, 0, 0, 0.5);
+}
+
+window.light-theme popover.tray-popover contents {
+    background-color: rgba(245, 245, 245, 0.98);
+    color: #121212;
+    border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+/* Прибираємо дефолтну стрілочку (хвостик) поповера */
+popover.tray-popover arrow {
+    background: none;
+    border: none;
+}
+
+.ws-btn.active {
+    background-color: transparent;
+}
+
+
+
+/* --- СКЛЯНІ СПОВІЩЕННЯ ТА OSD (DokiOS Style) --- */
+
+/* Спільний напівпрозорий фон і тонка світла рамка для ефекту скла */
+.notif-card, .osd-box {
+    background-color: rgba(10, 10, 33, 0.65); /* Твій колір 0a0a21 з альфа-каналом 65% */
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 10px 20px rgba(0, 0, 0, 0.5);
+}
+
+/* Специфічно для пушів */
+.notif-card {
+    border-radius: 16px;
+    padding: 15px;
+    margin-bottom: 15px;
+    min-width: 320px;
+    transition: all 0.2s ease;
+}
+
+/* Підсвітка рамки пуша твоїм акцентним кольором при наведенні мишки */
+.notif-card:hover {
+    border-color: var(--accent); 
+    background-color: rgba(10, 10, 33, 0.85);
+}
+
+/* Специфічно для плашки гучності/яскравості */
+.osd-box {
+    border-radius: 40px;
+    padding: 15px 25px;
+    min-width: 350px;
+}
+
+/* Стиль повзунка всередині OSD */
+.osd-bar trough {
+    background-color: rgba(255, 255, 255, 0.1);
+    min-height: 6px;
+    border-radius: 3px;
+}
+
+.osd-bar highlight {
+    background-color: var(--accent); /* Прогрес-бар бере колір з шпалери */
+    border-radius: 3px;
+    transition: all 0.1s ease;
+}
+
+/* Базовий квадратний стиль */
+.rounded-icon-btn, .power-profile-btn {
+    border-radius: 8px;
+    min-height: 40px;
+    transition: all 0.2s ease;
+}
+
+/* --- КОЛІР ТЕКСТУ ТА ІКОНОК --- */
+
+
+/* Коли кнопка ЗАЛИТА */
+.active-btn, .active-btn * { color: var(--text-inverse) !important; }
+.danger-bg-btn, .danger-bg-btn * { color: var(--text-inverse) !important; }
+.accent-bg-btn, .accent-bg-btn * { color: var(--text-inverse) !important; }
+
+/* Коли кнопка ТІЛЬКИ З РАМКОЮ */
+.outline-btn, .outline-btn * { color: var(--text-main) !important; }
+
+/* --- ФОНИ ТА РАМКИ --- */
+
+.active-btn { 
+    background-color: var(--accent-blue); 
+    border: 2px solid var(--accent-blue); 
+}
+
+.outline-btn { 
+    background-color: transparent; 
+    border: 2px solid var(--accent-blue); 
+}
+
+.danger-bg-btn { 
+    background-color: var(--danger); 
+    border: 2px solid var(--danger); 
+}
+
+.accent-bg-btn { 
+    background-color: var(--accent-blue); 
+    border: 2px solid var(--accent-blue); 
+}
+
+/* Ховер ефекти */
+.active-btn:hover, .danger-bg-btn:hover, .accent-bg-btn:hover { opacity: 0.8; }
+.outline-btn:hover { background-color: var(--overlay-hover); }
+
+
+
+.disk-ok highlight { background-color: var(--success); }
+.disk-warn highlight { background-color: var(--warning); }
+.disk-crit highlight { background-color: var(--danger); }
