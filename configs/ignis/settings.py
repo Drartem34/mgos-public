@@ -12,10 +12,10 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QHBoxLayout, QVBoxLayout, QG
                              QGraphicsOpacityEffect, QFileDialog, QDialog, QRubberBand,
                              QSlider, QScrollArea, QListView, QSizePolicy, QMenu,
                              QStyledItemDelegate, QStyle)
-from PyQt6.QtCore import (Qt, QPropertyAnimation, QVariantAnimation, QEasingCurve, QRect, QRectF, QPoint, QPointF,
+from PyQt6.QtCore import (Qt, QEvent,QPropertyAnimation, QVariantAnimation, QEasingCurve, QRect, QRectF, QPoint, QPointF,
                           QSize, QTimer, QAbstractListModel, QModelIndex, QRunnable, QThreadPool, pyqtSignal, QObject, QUrl)
 from PyQt6.QtGui import (QPainter, QColor, QBrush, QCursor, QIcon, QPixmap, QImage, QFont, QFontDatabase,
-                         QPainterPath, QPen, QLinearGradient, QRadialGradient, QFontMetrics)
+                         QPainterPath, QPen, QLinearGradient, QRadialGradient, QFontMetrics, QFontMetricsF, QPolygonF)
 import hashlib
 import shlex
 import threading
@@ -583,14 +583,22 @@ PANEL_DEFAULTS = {
 # Стилі піксельних шапок (SYSui/pixel_waves.h: about, блок годинника)
 # Піксельні шпалери: ті самі стилі + «Чорна діра» (лінзує курсор і вікна; для маленьких шапок віджетів не годиться)
 PIXEL_STYLES_WP = None  # заповнюється нижче
-PIXEL_STYLES = [("waves", "Хвилі"), ("aurora", "Аврора"), ("horizon", "Захід сонця"), ("virus", "Вірус"), ("eq", "Еквалайзер"), ("rain", "Піксельний дощ"), ("life", "Гра «Життя»")]
-PIXEL_STYLES_WP = PIXEL_STYLES + [("blackhole", "Чорна діра")]
+PIXEL_STYLES = [("waves", "Хвилі"), ("aurora", "Аврора"), ("horizon", "Захід сонця"), ("virus", "Вірус"), ("eq", "Еквалайзер"), ("rain", "Піксельний дощ"), ("life", "Гра «Життя»"),
+                ("lava", "Плазма-лампа"), ("abyss", "Біолюмінесценція"), ("skyline", "Skyline")]
+PIXEL_STYLES_WP = PIXEL_STYLES + [
+    ("blackhole", "Чорна діра"), ("neoncity", "Неонове місто"), ("rooftop", "Дах"),
+    ("vortex", "Гіперпростір"), ("synthwave", "Ретровейв"),
+    ("crystal", "Кристали"), ("attractor", "Дивний атрактор"), ("tower", "Вежа"),
+    ("riftportal", "Розлом"), ("voidfield", "Зоряна безодня"), ("torus", "Бублик"), ("knot", "Вузол"),
+    ("clouds", "Хмари")]
 
 # Тачпад: значення за замовчуванням = mgOS/kiosk (touchpad.conf + mgos-auto.conf)
 TP_DEFAULTS = {
     "tp_speed": 62, "tp_accel": "adaptive", "tp_tap": True, "tp_secondary": "fingers", "tp_tap_drag": True,
     "tp_drag_lock": False, "tp_dwt": False, "tp_middle": False, "tp_natural": False, "tp_scroll": 80,
     "tp_swipe_invert": False, "tp_swipe_dist": 300, "tp_swipe_new": True, "tp_swipe_forever": True,
+    # Три пальці вниз: minimize — вікно в док з анімацією, що йде за пальцями (SYSui/dock_genie.h) | runner | off
+    "tp_swipe_down": "minimize", "tp_min_dist": 300, "genie_squash": True, "genie_grow": True, "genie_speed": 100, "genie_anim": True, "tp_swipe_up": "fullscreen", "tp_tap3": "runner", "dock_stash_cards": True,
     "kb_delay": 250, "kb_rate": 35,
     # Миша (усі звичайні миші): значення = старий input-блок hyprland.conf (flat, 0.3)
     "ms_speed": 65, "ms_accel": "flat", "ms_natural": False, "ms_scroll": 100, "ms_left": False,
@@ -599,6 +607,10 @@ TP_DEFAULTS = {
     "mm_scroll": True, "mm_scroll_speed": 32, "mm_scroll_accel": True, "mm_middle": False, "mm_left": False,
 }
 MM_PARAMS = Path("/sys/module/hid_magicmouse/parameters")
+# Apple Magic Keyboard: параметри драйвера hid_apple (діють лише на клавіатури Apple)
+MK_DEFAULTS = {"mk_fnmode": 1, "mk_swap_opt_cmd": 0, "mk_swap_ctrl_cmd": 0, "mk_swap_fn_leftctrl": 0, "mk_iso_layout": -1}
+MK_PARAMS = Path("/sys/module/hid_apple/parameters")
+TP_DEFAULTS.update(MK_DEFAULTS)
 
 # Розмиття Hyprland: значення mgOS за замовчуванням (= hyprland.conf). Слайдери цілі → масштаб.
 BLUR_FILE = Path.home() / ".config" / "hypr" / "blur-user.conf"
@@ -1111,6 +1123,21 @@ class TouchpadBackend:
             f"    workspace_swipe_forever = {self._b('tp_swipe_forever')}",
             "}",
         ]
+        if self.g("tp_swipe_down") != "runner":
+            # «3 пальці вниз» з touchpad.conf (сховати Runner) знімаємо: жест читає док і сам веде анімацію
+            s += ["# Три пальці вниз: " + ("вікно в док (SYSui/dock_genie.h)" if self.g("tp_swipe_down") == "minimize" else "вимкнено"),
+                  "gesture = 3, down, unset"]
+        sock = Path.home() / ".config/SYSui/runner.sock"
+        up = self.g("tp_swipe_up")
+        s += ["# Три пальці вгору: " + {"fullscreen": "вікно на повний екран, коротко вниз — назад (SYSui/dock_genie.h)",
+                                        "maximize": "розгорнути вікно, коротко вниз — назад (SYSui/dock_genie.h)",
+                                        "runner": "Runner", "off": "вимкнено"}.get(up, up),
+              "gesture = 3, up, unset"]
+        if up == "runner":
+            s.append(f"gesture = 3, up, dispatcher, exec, echo toggle | socat - UNIX-CLIENT:{sock}")
+        if self.g("tp_tap3") != "runner":
+            # у touchpad.conf тап трьома пальцями (= середній клік) відкриває Runner — повертаємо звичайний клік
+            s += ["# Тап трьома пальцями: середній клік", "unbind = , mouse:274"]
         ct, cs = self.s.get("cursor_theme"), self.s.get("cursor_size")
         if ct and cs:
             s += [f"env = XCURSOR_THEME,{ct}", f"env = XCURSOR_SIZE,{int(cs)}", f"env = HYPRCURSOR_SIZE,{int(cs)}",
@@ -1175,6 +1202,16 @@ class TouchpadBackend:
             f"keyword input:scroll_factor {self.g('ms_scroll') / 100:.2f}",
             f"keyword input:left_handed {self._b('ms_left')}",
         ]
+        sock = Path.home() / ".config/SYSui/runner.sock"
+        kw.append("keyword gesture 3, down, unset")   # спершу знімаємо — інакше повторне застосування дублює жест
+        if self.g("tp_swipe_down") == "runner":
+            kw.append(f"keyword gesture 3, down, dispatcher, exec, echo hide | socat - UNIX-CLIENT:{sock}")
+        kw.append("keyword gesture 3, up, unset")
+        if self.g("tp_swipe_up") == "runner":
+            kw.append(f"keyword gesture 3, up, dispatcher, exec, echo toggle | socat - UNIX-CLIENT:{sock}")
+        kw.append("keyword unbind , mouse:274")
+        if self.g("tp_tap3") == "runner":
+            kw.append(f"keyword bind , mouse:274, exec, echo toggle | socat - UNIX-CLIENT:{sock}")
         for name in magic:
             kw += [f"keyword device[{name}]:sensitivity {tp_sensitivity(self.g('mm_speed'))}",
                    f"keyword device[{name}]:accel_profile {self.g('mm_accel')}",
@@ -1192,6 +1229,9 @@ class TrackpadPreview(QWidget):
         "pointer": "Курсор рухається за пальцем", "tap": "Торкніться одним пальцем", "secondary": "Клік двома пальцями",
         "drag": "Подвійний дотик і тягніть", "scroll": "Прокручуйте двома пальцями", "swipe": "Змахніть трьома пальцями",
         "runner": "Три пальці вгору — пошук", "typing": "Тачпад під час набору тексту",
+        "minimize": "Три пальці вниз — вікно в док. Не довели до кінця — повертається",
+        "fullscreen": "Три пальці вгору — вікно на весь екран, коротко вниз — назад",
+        "tap3": "Торкніться трьома пальцями — Runner",
     }
 
     def __init__(self, backend, parent=None):
@@ -1236,11 +1276,13 @@ class TrackpadPreview(QWidget):
         if m == "pointer":
             ang = t * 1.6 * speed
             dot(cx + 70 * math.cos(ang), cy + 38 * math.sin(2 * ang) / 1.2)
-        elif m in ("tap", "secondary"):
+        elif m in ("tap", "secondary", "tap3"):
             k = (t % 1.3) / 1.3
             s = 1.0 - 0.25 * math.sin(min(1, k * 3) * math.pi)
             al = 230 if k < 0.6 else int(230 * (1 - (k - 0.6) / 0.4))
             if m == "tap": dot(cx, cy, s, al)
+            elif m == "tap3":
+                for o in (-26, 0, 26): dot(cx + o, cy - abs(o) * 0.3, s, al)
             else: dot(cx - 16, cy, s, al); dot(cx + 16, cy, s, al)
         elif m == "drag":
             k = (t % 2.2) / 2.2
@@ -1258,11 +1300,52 @@ class TrackpadPreview(QWidget):
             x = cx + d * (-60 + 120 * k)
             al = int(230 * math.sin(k * math.pi))
             for o in (-26, 0, 26): dot(x + o, cy - abs(o) * 0.3, 1, al)
+        elif m == "fullscreen":
+            # вікно росте до країв, поки пальці йдуть угору; потім короткий змах униз — назад
+            cyc = (t % 3.2) / 1.6
+            up = cyc < 1
+            k = cyc % 1
+            q = min(1.0, k / 0.6); e = q * q * (3 - 2 * q)
+            g_ = e if up else 1 - e
+            ww, wh = 110 + (pw_ - 16 - 110) * g_, 62 + (ph - 16 - 62) * g_
+            p.setPen(QPen(tint(T["text"], 70), 1.2)); p.setBrush(tint(T["text"], 26))
+            p.drawRoundedRect(QRectF(pad.left() + cx - ww / 2, pad.top() + cy - wh / 2, ww, wh), 8, 8)
+            y = cy + (30 - 60 * k if up else -14 + 28 * k)
+            al = int(230 * math.sin(min(1.0, k / 0.6) * math.pi))
+            for o in (-26, 0, 26): dot(cx + o, y - abs(o) * 0.3, 1, al)
         elif m == "runner":
             k = (t % 1.5) / 1.5
             y = cy + 40 - 80 * k
             al = int(230 * math.sin(k * math.pi))
             for o in (-26, 0, 26): dot(cx + o, y - abs(o) * 0.3, 1, al)
+        elif m == "minimize":
+            # два цикли: довели жест до кінця → вікно стікає в док; кинули на півдорозі → пружинить назад
+            cyc = (t % 4.4) / 2.2
+            full = cyc < 1
+            k = cyc % 1
+            reach = 1.0 if full else 0.5
+            if k < 0.55: q = reach * (k / 0.55)                      # пальці ведуть
+            elif full: q = 1.0                                       # доведено — лишається в доці
+            else: q = reach * max(0.0, 1 - (k - 0.55) / 0.2)         # відпустили рано — назад
+            e = q * q * (3 - 2 * q)
+            dock = QRectF(pad.left() + cx - 46, pad.bottom() - 18, 92, 12)
+            p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(T["text"], 40)); p.drawRoundedRect(dock, 6, 6)
+            ic = QPointF(dock.center().x(), dock.center().y())
+            ww, wh = 120 * (1 - e) + 10 * e, 70 * (1 - e) + 8 * e
+            c0 = QPointF(pad.left() + cx, pad.top() + 52)
+            c = QPointF(c0.x() + (ic.x() - c0.x()) * e, c0.y() + (ic.y() - c0.y()) * e)
+            top_w, bot_w = ww, ww * (1 - 0.45 * math.sin(math.pi * min(1.0, q)))
+            poly = QPolygonF([QPointF(c.x() - top_w / 2, c.y() - wh / 2), QPointF(c.x() + top_w / 2, c.y() - wh / 2),
+                              QPointF(c.x() + bot_w / 2, c.y() + wh / 2), QPointF(c.x() - bot_w / 2, c.y() + wh / 2)])
+            if not (full and k > 0.6):
+                p.setBrush(tint(a, 70)); p.setPen(QPen(tint(a, 200), 1.2)); p.drawPolygon(poly)
+            if k < 0.6:
+                al = int(230 * math.sin(min(1.0, k / 0.6) * math.pi))
+                y = 30 + 70 * q   # пальці над «тачпадом» рухаються вниз разом із прогресом
+                for o in (-26, 0, 26): dot(cx + o, y - abs(o) * 0.3, 1, al)
+            f = QFont(FONT_UI); f.setPixelSize(10); p.setFont(f); p.setPen(QColor(T["text2"]))
+            p.drawText(QRectF(pad.left(), pad.top() + 4, pw_, 14), Qt.AlignmentFlag.AlignCenter,
+                       "доведено → у доці" if full else "кинули на півдорозі → назад")
         elif m == "typing":
             f = QFont(ICON_FONT); f.setPixelSize(44); p.setFont(f)
             p.setPen(tint(T["text"], 90 + int(60 * (0.5 + 0.5 * math.sin(t * 3)))))
@@ -1270,6 +1353,88 @@ class TrackpadPreview(QWidget):
         f = QFont(FONT_UI); f.setPixelSize(11); p.setFont(f)
         p.setPen(QColor(T["text2"]))
         p.drawText(QRectF(0, pad.bottom() + 6, W, 18), Qt.AlignmentFlag.AlignCenter, self.MODES.get(m, ""))
+
+
+class MagicKeyboardPreview(QWidget):
+    """Схема Magic Keyboard: верхній ряд (медіа чи F1–F12) і нижній ряд — що робить кожна клавіша з поточними налаштуваннями."""
+    MEDIA = ["\U000F00DE", "\U000F00DF", "\U000F0570", "\U000F0349", "\U000F030C", "\U000F030C",
+             "\U000F04AE", "\U000F040A", "\U000F04AD", "\U000F075F", "\U000F057F", "\U000F057E"]
+
+    def __init__(self, backend, parent=None):
+        super().__init__(parent)
+        self.backend = backend
+        self.mode = None
+        self.setFixedHeight(200)
+
+    def set_mode(self, m):
+        self.mode = m; self.update()
+
+    DEFAULT_ROLES = {"fn": "Fn", "control": "Ctrl", "option": "Alt", "command": "Super"}
+
+    def roles(self):
+        """Фізична клавіша → що вона робить (у тому ж порядку, як hid_apple міняє коди клавіш)."""
+        g = lambda k: int(self.backend.g(k))
+        r = dict(self.DEFAULT_ROLES)
+        if g("mk_swap_fn_leftctrl"): r["fn"], r["control"] = r["control"], r["fn"]
+        if g("mk_swap_ctrl_cmd"): r["control"], r["command"] = r["command"], r["control"]
+        if g("mk_swap_opt_cmd"): r["option"], r["command"] = r["command"], r["option"]
+        return [(k, r[k]) for k in ("fn", "control", "option", "command")]
+
+    def paintEvent(self, e):
+        p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        W = self.width(); a = accent()
+        bw = min(560, W - 40); x0 = (W - bw) / 2
+        body = QRectF(x0, 14, bw, 150)
+        p.setPen(QPen(T["card_border"], 1)); p.setBrush(QColor(T["card"]).lighter(112) if T is not LIGHT else QColor(238, 238, 242))
+        p.drawRoundedRect(body, 14, 14)
+        key = lambda r, hi=False: (p.setPen(QPen(tint(a, 220) if hi else T["card_border"], 1.4 if hi else 1)),
+                                   p.setBrush(tint(a, 45) if hi else tint(T["text"], 14)),
+                                   p.drawRoundedRect(r, 5, 5))
+        fkeys = int(self.backend.g("mk_fnmode")) == 2
+        # верхній ряд
+        kw = (bw - 24 - 13 * 4) / 13
+        for i in range(13):
+            r = QRectF(x0 + 12 + i * (kw + 4), 26, kw, 24)
+            key(r, self.mode == "fn" and i > 0)
+            p.setPen(QColor(T["text"]))
+            if i == 0:
+                f = QFont(FONT_UI); f.setPixelSize(9); p.setFont(f); p.drawText(r, Qt.AlignmentFlag.AlignCenter, "esc"); continue
+            if fkeys:
+                f = QFont(FONT_UI); f.setPixelSize(10); f.setBold(True); p.setFont(f)
+                p.drawText(r, Qt.AlignmentFlag.AlignCenter, f"F{i}")
+            else:
+                f = QFont(ICON_FONT); f.setPixelSize(13); p.setFont(f)
+                p.drawText(r, Qt.AlignmentFlag.AlignCenter, self.MEDIA[i - 1])
+        # середні ряди — просто сітка
+        for row in range(3):
+            n = 13 - row
+            kw2 = (bw - 24 - (n - 1) * 4) / n
+            for i in range(n):
+                key(QRectF(x0 + 12 + i * (kw2 + 4), 56 + row * 22, kw2, 18))
+        # нижній ряд: fn control option command [space] command option
+        y = 124; h = 30
+        roles = self.roles()
+        x = x0 + 12
+        hi_keys = {"fn": ("fn", "control"), "optcmd": ("option", "command"), "ctrlcmd": ("control", "command")}.get(self.mode, ())
+        def lbl(r, name, role):
+            key(r, name in hi_keys)
+            f = QFont(FONT_UI); f.setPixelSize(9); p.setFont(f); p.setPen(QColor(T["text2"]))
+            p.drawText(r.adjusted(0, 3, 0, 0), Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, name)
+            changed = role != self.DEFAULT_ROLES[name]   # змінені клавіші — кольором акценту
+            f.setPixelSize(10); f.setBold(True); p.setFont(f); p.setPen(tint(a, 255) if changed else QColor(T["text"]))
+            p.drawText(r.adjusted(0, 0, 0, -3), Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom, role)
+        for name, role in roles:
+            r = QRectF(x, y, 44 if name != "command" else 54, h); lbl(r, name, role); x += r.width() + 4
+        space = QRectF(x, y, bw - 24 - (x - x0 - 12) - 2 * 58, h); key(space); x += space.width() + 4
+        rr = dict(roles)
+        for name in ("command", "option"):
+            r = QRectF(x, y, 54, h); lbl(r, name, rr[name]); x += 58
+        f = QFont(FONT_UI); f.setPixelSize(11); p.setFont(f); p.setPen(QColor(T["text2"]))
+        txt = {"fn": "Верхній ряд: " + ("F1–F12, медіа — з Fn" if fkeys else "яскравість, звук, музика; F1–F12 — з Fn"),
+               "optcmd": "Під клавішею — що вона робить у Linux (Super — клавіша mgOS, як ⌘)",
+               "ctrlcmd": "Command працює як Ctrl — звичні ⌘C / ⌘V копіюють і вставляють",
+               "iso": "ISO-розкладка: міняє місцями клавіші ` і § / < >"}.get(self.mode, "Наведіть на пункт — тут видно, що він змінює")
+        p.drawText(QRectF(0, body.bottom() + 8, W, 18), Qt.AlignmentFlag.AlignCenter, txt)
 
 
 class MagicMousePreview(QWidget):
@@ -1508,6 +1673,117 @@ class AppearancePicker(QWidget):
             p.drawText(QRectF(r.left(), r.bottom() + 8, r.width(), 18), Qt.AlignmentFlag.AlignCenter, name)
 
 
+class HsvPlane(QWidget):
+    """Квадрат насиченість×яскравість + смуга відтінку для точного вибору кольору."""
+    changed = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self.h, self.s, self.v = 0.6, 0.8, 1.0
+        self.setFixedSize(240, 200)
+        self.drag = None
+        self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
+
+    def color(self): return QColor.fromHsvF(self.h, self.s, self.v)
+
+    def set_color(self, c):
+        h, s, v, _ = c.getHsvF()
+        self.h = max(h, 0.0) if h >= 0 else self.h
+        self.s, self.v = s, v
+        self.update()
+
+    def _plane(self): return QRectF(0, 0, 240, 170)
+    def _bar(self): return QRectF(0, 180, 240, 16)
+
+    def _apply(self, pos):
+        if self.drag == "sv":
+            r = self._plane()
+            self.s = min(1, max(0, (pos.x() - r.left()) / r.width()))
+            self.v = 1 - min(1, max(0, (pos.y() - r.top()) / r.height()))
+        elif self.drag == "h":
+            self.h = min(0.999, max(0, pos.x() / 240))
+        self.update(); self.changed.emit()
+
+    def mousePressEvent(self, e):
+        self.drag = "sv" if self._plane().contains(e.position()) else ("h" if e.position().y() >= 174 else None)
+        if self.drag: self._apply(e.position())
+
+    def mouseMoveEvent(self, e):
+        if self.drag: self._apply(e.position())
+
+    def mouseReleaseEvent(self, e): self.drag = None
+
+    def paintEvent(self, e):
+        p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = self._plane()
+        path = QPainterPath(); path.addRoundedRect(r, 8, 8); p.setClipPath(path)
+        p.fillRect(r, QColor.fromHsvF(self.h, 1, 1))
+        g = QLinearGradient(r.left(), 0, r.right(), 0); g.setColorAt(0, QColor(255, 255, 255)); g.setColorAt(1, QColor(255, 255, 255, 0))
+        p.fillRect(r, QBrush(g))
+        g = QLinearGradient(0, r.top(), 0, r.bottom()); g.setColorAt(0, QColor(0, 0, 0, 0)); g.setColorAt(1, QColor(0, 0, 0))
+        p.fillRect(r, QBrush(g)); p.setClipping(False)
+        b = self._bar(); bp = QPainterPath(); bp.addRoundedRect(b, 8, 8); p.setClipPath(bp)
+        g = QLinearGradient(b.left(), 0, b.right(), 0)
+        for i in range(7): g.setColorAt(i / 6, QColor.fromHsvF(min(i / 6, 0.999), 1, 1))
+        p.fillRect(b, QBrush(g)); p.setClipping(False)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        c = QPointF(r.left() + self.s * r.width(), r.top() + (1 - self.v) * r.height())
+        p.setPen(QPen(QColor("white"), 2)); p.drawEllipse(c, 7, 7)
+        p.setPen(QPen(QColor(0, 0, 0, 120), 1)); p.drawEllipse(c, 8.5, 8.5)
+        hx = self.h * 240
+        p.setPen(QPen(QColor("white"), 2)); p.setBrush(QColor.fromHsvF(self.h, 1, 1)); p.drawEllipse(QPointF(hx, b.center().y()), 8, 8)
+
+
+class AccentColorDialog(QDialog):
+    """Точний вибір акценту: HSV-квадрат, смуга відтінку, hex-поле, швидка сітка."""
+    GRID = ["#0a84ff", "#5e5ce6", "#bf5af2", "#a550a7", "#f74f9e", "#ff375f", "#ff5257", "#f7821b",
+            "#ffc600", "#a8d84a", "#62ba46", "#30d158", "#30b0c7", "#64d2ff", "#8c8c8c", "#ffffff"]
+
+    def __init__(self, start, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Свій акцентний колір")
+        self.setModal(True)
+        lay = QVBoxLayout(self); lay.setContentsMargins(20, 18, 20, 18); lay.setSpacing(12)
+        self.plane = HsvPlane(); lay.addWidget(self.plane, 0, Qt.AlignmentFlag.AlignHCenter)
+        row = QHBoxLayout(); row.setSpacing(10)
+        self.swatch = QLabel(); self.swatch.setFixedSize(40, 30)
+        self.hex = QLineEdit(); self.hex.setMaxLength(7); self.hex.setPlaceholderText("#rrggbb"); self.hex.setFixedWidth(110)
+        row.addWidget(self.swatch); row.addWidget(self.hex); row.addStretch()
+        lay.addLayout(row)
+        grid = QGridLayout(); grid.setSpacing(6)
+        for i, col in enumerate(self.GRID):
+            b = QPushButton(); b.setFixedSize(24, 24); b.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            b.setStyleSheet(f"QPushButton {{ background: {col}; border: 1px solid rgba(128,128,128,0.5); border-radius: 12px; }}")
+            b.clicked.connect(lambda _=False, c=col: self.set_hex(c))
+            grid.addWidget(b, i // 8, i % 8)
+        lay.addLayout(grid)
+        btns = QHBoxLayout(); btns.addStretch()
+        btns.addWidget(LinkButton("Скасувати", self.reject))
+        ok = QPushButton("Застосувати"); ok.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        ok.setStyleSheet(f"QPushButton {{ background: {ACCENT[0]}; color: white; border: none; border-radius: 13px; padding: 5px 16px; font-weight: 600; }}")
+        ok.clicked.connect(self.accept); btns.addWidget(ok)
+        lay.addLayout(btns)
+        self.plane.changed.connect(self._from_plane)
+        self.hex.editingFinished.connect(lambda: self.set_hex(self.hex.text()))
+        self.set_hex(start if re.fullmatch(r"#[0-9a-fA-F]{6}", start or "") else "#0a84ff")
+
+    def _show(self):
+        n = self.plane.color().name()
+        self.swatch.setStyleSheet(f"background: {n}; border-radius: 8px; border: 1px solid rgba(128,128,128,0.5);")
+        if not self.hex.hasFocus(): self.hex.setText(n)
+
+    def _from_plane(self): self._show()
+
+    def set_hex(self, text):
+        t = text.strip()
+        if re.fullmatch(r"[0-9a-fA-F]{6}", t): t = "#" + t
+        if re.fullmatch(r"#[0-9a-fA-F]{6}", t):
+            self.plane.set_color(QColor(t)); self.hex.setText(t.lower())
+        self._show()
+
+    def value(self): return self.plane.color().name()
+
+
 class AccentPicker(QWidget):
     """Ряд кольорових кружечків акценту як у macOS. Перший — «з шпалер» (pywal)."""
     COLORS = ["#0a84ff", "#a550a7", "#f74f9e", "#ff5257", "#f7821b", "#ffc600", "#62ba46", "#8c8c8c"]
@@ -1515,6 +1791,8 @@ class AccentPicker(QWidget):
     def __init__(self, owner, parent=None):
         super().__init__(parent)
         self.owner = owner
+        if not hasattr(owner, "accent_pickers"): owner.accent_pickers = []
+        owner.accent_pickers.append(self)
         self.setFixedSize(26 * (len(self.COLORS) + 2) + 4, 30)
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.setToolTip("Перший — колір із шпалер (pywal), останній — свій колір")
@@ -1526,7 +1804,7 @@ class AccentPicker(QWidget):
         if i == 0: self.owner.set_accent_from_wal("accent_mode", True)
         elif 1 <= i <= len(self.COLORS): self.owner.set_custom_accent(self.COLORS[i - 1])
         elif i == len(self.COLORS) + 1: self.owner.pick_accent_color()
-        self.update()
+        self.update(); self.owner.refresh_accent_views()
 
     def paintEvent(self, e):
         p = QPainter(self)
@@ -1978,6 +2256,15 @@ class SettingRow(QWidget):
             ch = QLabel(G["chev"]); ch.setProperty("role", "chev")
             lay.addWidget(ch)
 
+    def flash(self):
+        self._flash = True
+        self.update()
+        QTimer.singleShot(1800, self._unflash)
+
+    def _unflash(self):
+        self._flash = False
+        self.update()
+
     def update_theme(self, is_dark):
         if self.control is not None and hasattr(self.control, "update_styles"):
             self.control.update_styles()
@@ -1993,6 +2280,14 @@ class SettingRow(QWidget):
         self.update()
 
     def paintEvent(self, e):
+        if getattr(self, "_flash", False):
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setPen(Qt.PenStyle.NoPen)
+            c = QColor(ACCENT[0]); c.setAlpha(60)
+            p.setBrush(c)
+            p.drawRoundedRect(QRectF(self.rect()).adjusted(4, 2, -4, -2), 8, 8)
+            p.end()
         if self._hover and self.on_click_callback:
             p = QPainter(self)
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -2229,16 +2524,25 @@ class AccountCard(QWidget):
             self.name = os.environ.get("USER", "user")
         self.reload()
 
+    selected = False
+
     def reload(self):
         self.pix = QPixmap(str(Path.home() / ".face.icon"))
+        pn = profile_info().get("name")
+        if pn: self.name = pn
         self.update()
 
-    def mousePressEvent(self, e): self.on_click()
+    def mousePressEvent(self, e):
+        e.accept()   # не віддаємо клік вікну (інакше startSystemMove з'їдає дію)
+        self.on_click()
 
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        if self.selected:
+            p.setPen(Qt.PenStyle.NoPen); p.setBrush(T["hover"])
+            p.drawRoundedRect(QRectF(self.rect()).adjusted(6, 2, -6, -2), 10, 10)
         r = QRectF(14, 9, 36, 36)
         path = QPainterPath(); path.addEllipse(r)
         if not self.pix.isNull():
@@ -2258,6 +2562,100 @@ class AccountCard(QWidget):
         f.setPixelSize(11); f.setWeight(QFont.Weight.Normal); p.setFont(f)
         p.setPen(QColor(T["text2"]))
         p.drawText(QRectF(60, 27, self.width() - 64, 17), Qt.AlignmentFlag.AlignVCenter, "Обліковий запис mgOS")
+
+
+PROFILE_AVATAR = Path.home() / ".config" / "megumin-os" / "avatar.png"
+
+
+def profile_info():
+    """Профіль: ім'я/email/опис з settings.json (profile_*), решта — з системи."""
+    try:
+        with open(Path.home() / ".config" / "megumin-os" / "settings.json") as f:
+            s = json.load(f)
+    except Exception:
+        s = {}
+    try:
+        pw = pwd.getpwuid(os.getuid()); user = pw.pw_name
+        gecos = (pw.pw_gecos.split(",")[0] or "").strip()
+    except Exception:
+        user, gecos = os.environ.get("USER", "user"), ""
+    osname = "mgOS"
+    try:
+        for ln in open("/etc/os-release"):
+            if ln.startswith("PRETTY_NAME="): osname = ln.split("=", 1)[1].strip().strip('"'); break
+    except Exception:
+        pass
+    u = os.uname()
+    return {"name": (s.get("profile_name") or "").strip() or gecos or user, "user": user, "host": u.nodename,
+            "os": osname, "kernel": u.release, "email": (s.get("profile_email") or "").strip(),
+            "bio": (s.get("profile_bio") or "").strip()}
+
+
+class ProfileCard(QWidget):
+    """Велика картка профілю вгорі сторінки «Профіль»: кругла аватарка (клік — змінити), ім'я, user@host, опис."""
+    def __init__(self, on_avatar):
+        super().__init__()
+        self.on_avatar = on_avatar
+        self.setMinimumHeight(132)
+        self.setMouseTracking(True)
+        self.reload()
+
+    def reload(self):
+        self.info = profile_info()
+        src = PROFILE_AVATAR if PROFILE_AVATAR.exists() else Path.home() / ".face.icon"
+        self.pix = QPixmap(str(src))
+        self.update()
+
+    def _avatar_rect(self):
+        return QRectF(22, (self.height() - 92) / 2, 92, 92)
+
+    def mousePressEvent(self, e):
+        e.accept()
+        if self._avatar_rect().contains(e.position()): self.on_avatar()
+
+    def mouseMoveEvent(self, e):
+        on = self._avatar_rect().contains(e.position())
+        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor if on else Qt.CursorShape.ArrowCursor))
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing); p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        p.setPen(QPen(T["card_border"], 1)); p.setBrush(T["card"])
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 12, 12)
+        r = self._avatar_rect()
+        path = QPainterPath(); path.addEllipse(r)
+        if not self.pix.isNull():
+            p.save(); p.setClipPath(path)
+            p.drawPixmap(r.toRect(), self.pix.scaled(184, 184, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                                                     Qt.TransformationMode.SmoothTransformation))
+            p.restore()
+        else:
+            g = QLinearGradient(r.topLeft(), r.bottomLeft())
+            g.setColorAt(0, QColor("#a1a1a6")); g.setColorAt(1, QColor("#6e6e73"))
+            p.setPen(Qt.PenStyle.NoPen); p.setBrush(QBrush(g)); p.drawEllipse(r)
+            f = QFont(FONT_UI); f.setPixelSize(38); f.setBold(True); p.setFont(f); p.setPen(QColor("white"))
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, self.info["name"][:1].upper())
+        p.setPen(QPen(QColor(ACCENT[0]), 2.5)); p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(r.adjusted(-3, -3, 3, 3))
+        # значок «камера/олівець» у куті аватарки
+        b = QRectF(r.right() - 26, r.bottom() - 26, 28, 28)
+        p.setPen(QPen(T["card"], 2.5)); p.setBrush(QColor(ACCENT[0])); p.drawEllipse(b)
+        f = QFont(ICON_FONT)
+        f.setPixelSize(14); p.setFont(f); p.setPen(QColor("white"))
+        p.drawText(b, Qt.AlignmentFlag.AlignCenter, "\U000F03EB")
+        x, w = r.right() + 22, self.width() - r.right() - 40
+        i = self.info
+        f = QFont(FONT_UI); f.setPixelSize(22); f.setWeight(QFont.Weight.Bold); p.setFont(f); p.setPen(QColor(T["text"]))
+        y = self.height() / 2 - (40 if i["bio"] else 30)
+        p.drawText(QRectF(x, y, w, 28), Qt.AlignmentFlag.AlignVCenter, i["name"]); y += 30
+        f.setPixelSize(12); f.setWeight(QFont.Weight.Normal); p.setFont(f); p.setPen(QColor(T["text2"]))
+        sub = f"{i['user']}@{i['host']}" + (f"  ·  {i['email']}" if i["email"] else "")
+        p.drawText(QRectF(x, y, w, 18), Qt.AlignmentFlag.AlignVCenter, sub); y += 19
+        p.drawText(QRectF(x, y, w, 18), Qt.AlignmentFlag.AlignVCenter, f"{i['os']} · ядро {i['kernel']}"); y += 21
+        if i["bio"]:
+            p.setPen(QColor(T["text"]))
+            p.drawText(QRectF(x, y, w, 18), Qt.AlignmentFlag.AlignVCenter,
+                       p.fontMetrics().elidedText(i["bio"], Qt.TextElideMode.ElideRight, int(w)))
 
 
 class FadeStackedWidget(QStackedWidget):
@@ -2786,6 +3184,7 @@ PAGES = [
     ("look", "Іконки і курсор", "\U000F01BF", "#bf5af2", 1),
     ("dock", "Док", G["dock"], "#1c1c1e", 1),
     ("panels", "Панелі та віджети", G["panels"], "#ff9f0a", 1),
+    ("dashboard", "Дашборд", "\U000F056E", "#34c759", 1),
     ("osd", "OSD і сповіщення", "\U000F0E1E", "#30b0c7", 1),
     ("display", "Екран", G["monitor"], "#0a84ff", 2),
     ("sound", "Звук", G["sound"], "#ff375f", 2),
@@ -2794,12 +3193,14 @@ PAGES = [
     ("mouse", "Миша", "\U000F037D", "#8e8e93", 3),
     ("magicmouse", "Magic Mouse", "\U000F037D", "#c7c7cc", 3),
     ("keyboard", "Клавіатура", G["keyboard"], "#8e8e93", 3),
+    ("magickb", "Magic Keyboard", G["keyboard"], "#c7c7cc", 3),
     ("games", "Ігри", "\U000F0297", "#ff453a", 5),
     ("power", "Батарея", G["battery"], "#30d158", 4),
     ("system", "Система", G["cog"], "#8e8e93", 4),
     ("about", "Про систему", G["info"], "#8e8e93", 4),
     ("help", "Довідка", "\U000F02D7", "#0a84ff", 4),
     ("developer", "Розробник", "\U000F0169", "#636366", 4),
+    ("profile", "Профіль", G["account"], "#ff9f0a", 4),   # вхід — картка акаунта вгорі сайдбару (окремого пункту немає)
 ]
 PAGE_GROUPS = ["Мережа", "Оформлення", "Екран і звук", "Пристрої введення", "Система", "Ігри"]
 
@@ -2827,11 +3228,91 @@ class SideGroup(QWidget):
         p.drawRoundedRect(QRectF(self.box.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 10, 10)
 
 
+class ResultHeader(QWidget):
+    """Заголовок групи видачі пошуку: іконка розділу + назва."""
+    def __init__(self, glyph, color, title):
+        super().__init__()
+        self.glyph, self.color, self.title = glyph, color, title
+        self.setFixedHeight(30)
+
+    def paintEvent(self, e):
+        p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        draw_squircle_icon(p, QRectF(10, 6, 18, 18), self.glyph, self.color, 11)
+        f = QFont(FONT_UI); f.setPixelSize(11); f.setBold(True); p.setFont(f)
+        p.setPen(QColor(T["text2"]))
+        p.drawText(QRectF(36, 0, self.width() - 40, self.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                   self.title.upper())
+
+
+class ResultRow(QWidget):
+    """Рядок видачі: назва (збіг — жирним, акцентом) і сірий однорядковий опис."""
+    clicked = pyqtSignal()
+
+    def __init__(self, title, desc, query):
+        super().__init__()
+        self.title, self.desc, self.query = title, desc, query
+        self.active = False
+        self._hover = False
+        self.setFixedHeight(44)
+        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+
+    def set_active(self, v):
+        self.active = v; self.update()
+
+    def enterEvent(self, e): self._hover = True; self.update()
+    def leaveEvent(self, e): self._hover = False; self.update()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton: self.clicked.emit()
+
+    def paintEvent(self, e):
+        p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect()).adjusted(6, 1, -6, -1)
+        if self.active:
+            p.setPen(Qt.PenStyle.NoPen); p.setBrush(accent()); p.drawRoundedRect(r, 9, 9)
+        elif self._hover:
+            p.setPen(Qt.PenStyle.NoPen); p.setBrush(T["hover"]); p.drawRoundedRect(r, 9, 9)
+        white = QColor("white")
+        main = white if self.active else QColor(T["text"])
+        sub = QColor(255, 255, 255, 200) if self.active else QColor(T["text2"])
+        hit = white if self.active else accent()
+        x0, w = r.left() + 12, r.width() - 20
+        f = QFont(FONT_UI); f.setPixelSize(13)
+        fb = QFont(FONT_UI); fb.setPixelSize(13); fb.setBold(True)
+        # розбиваємо назву на частини: до збігу / збіг / після
+        i = self.title.lower().find(self.query) if self.query else -1
+        parts = [(self.title, False)] if i < 0 else [(self.title[:i], False), (self.title[i:i + len(self.query)], True), (self.title[i + len(self.query):], False)]
+        x = x0
+        y = QRectF(0, r.top() + 4, 0, 18)
+        for txt, bold in parts:
+            if not txt: continue
+            fnt = fb if bold else f
+            fm = QFontMetricsF(fnt)
+            avail = x0 + w - x
+            if avail <= 4: break
+            shown = fm.elidedText(txt, Qt.TextElideMode.ElideRight, avail)
+            p.setFont(fnt); p.setPen(hit if bold else main)
+            p.drawText(QRectF(x, y.top(), avail, 18), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, shown)
+            x += fm.horizontalAdvance(shown)
+        if self.desc:
+            f2 = QFont(FONT_UI); f2.setPixelSize(11); p.setFont(f2); p.setPen(sub)
+            d = QFontMetricsF(f2).elidedText(self.desc, Qt.TextElideMode.ElideRight, w)
+            p.drawText(QRectF(x0, r.top() + 22, w, 16), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, d)
+
+
 class MeguminSettings(QWidget):
     def __init__(self):
         super().__init__()
         self.config_dir = Path.home() / ".config" / "megumin-os"
         self.config_file = self.config_dir / "settings.json"
+        # повільні зовнішні виклики стартують паралельно (раніше йшли послідовно)
+        self._early = {}
+        try:
+            self._early["icon"] = subprocess.Popen(["gsettings", "get", "org.gnome.desktop.interface", "icon-theme"],
+                                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            self._early["accent"] = subprocess.Popen([str(Path.home() / ".local/bin/mgos-accent")],
+                                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        except Exception: pass
         self.setup_icon_theme()
         self.accent_color = self.get_wal_accent_color()
         ACCENT[0] = self.accent_color
@@ -2840,6 +3321,7 @@ class MeguminSettings(QWidget):
         self.history, self.hist_pos = [], -1
         self.page_words = {}
         self.all_rows = []
+        self.search_index = []   # (індекс сторінки, заголовок, підказка, віджет) — з реальних рядків
         T.clear(); T.update(DARK if self.settings.get("dark_theme", True) else LIGHT)
         apply_palette()
         QApplication.instance().setStyleSheet(build_qss())
@@ -2848,7 +3330,9 @@ class MeguminSettings(QWidget):
     # ---------------- стан системи ----------------
     def setup_icon_theme(self):
         try:
-            theme = subprocess.run("gsettings get org.gnome.desktop.interface icon-theme", shell=True, capture_output=True, text=True).stdout.strip().replace("'", "")
+            pr = self._early.get("icon")
+            theme = (pr.communicate(timeout=3)[0] if pr else subprocess.run(["gsettings", "get", "org.gnome.desktop.interface", "icon-theme"],
+                     capture_output=True, text=True).stdout).strip().replace("'", "")
             QIcon.setThemeName(theme if theme else "WhiteSur")
         except Exception:
             QIcon.setThemeName("WhiteSur")
@@ -2867,8 +3351,10 @@ class MeguminSettings(QWidget):
         except Exception: pass
         # акцент зі шпалер — той самий розумний вибір, що й у SYSui (не сирий pywal color5)
         try:
-            r = subprocess.run([str(Path.home() / ".local/bin/mgos-accent")], capture_output=True, text=True, timeout=3)
-            if re.fullmatch(r"#[0-9A-Fa-f]{6}", r.stdout.strip()): return r.stdout.strip()
+            pr = self._early.get("accent")
+            o = (pr.communicate(timeout=3)[0] if pr else subprocess.run([str(Path.home() / ".local/bin/mgos-accent")],
+                 capture_output=True, text=True, timeout=3).stdout).strip()
+            if re.fullmatch(r"#[0-9A-Fa-f]{6}", o): return o
         except Exception: pass
         return "#C86FA3"
 
@@ -2933,9 +3419,12 @@ class MeguminSettings(QWidget):
                 self.sddm_changed()
             if key == "dock_q_stash":
                 self.write_close_binds(bool(value))
-            if key.startswith(("tp_", "kb_", "ms_", "mm_")):
+            if key.startswith(("tp_", "kb_", "ms_", "mm_", "mk_")):
                 self.tp.apply()
                 if hasattr(self, "tp_preview"): self.tp_preview.update()
+                if key.startswith("mk_"):
+                    self.refresh_mk_status()
+                    if hasattr(self, "mk_preview"): self.mk_preview.update()
                 if key.startswith("mm_"):
                     self.refresh_mm_status()
                     if hasattr(self, "mm_preview"):   # бік кліку / прокрутка змінились — перемалювати жест
@@ -3016,9 +3505,17 @@ class MeguminSettings(QWidget):
         self.apply_ui_theme()
 
     def pick_accent_color(self):
-        color = QColorDialog.getColor(QColor(self.accent_color), self, "Свій акцентний колір")
-        if color.isValid():
-            self.set_custom_accent(color.name())
+        dlg = AccentColorDialog(self.accent_color, self)
+        if dlg.exec():
+            self.set_custom_accent(dlg.value())
+
+    def refresh_accent_views(self):
+        """Єдине джерело акценту: обидва блоки («Вигляд» і «Піксельні шпалери») перемальовуються й оновлюють прев'ю."""
+        for w in getattr(self, "accent_pickers", []):
+            try: w.update()
+            except RuntimeError: pass
+        if hasattr(self, "pixel_sig"): self.render_pixel_previews()
+        if self.pixel_active(): self.pixel_sync_system()
 
     def set_accent_from_wal(self, key, value):
         self.save_setting("accent_mode", "wal" if value else "custom")
@@ -3040,6 +3537,12 @@ class MeguminSettings(QWidget):
                 cropped.save(str(Path.home() / ".face"), "PNG")
                 self.install_sddm_avatar(cropped)
                 self.account.reload()
+                try:
+                    PROFILE_AVATAR.parent.mkdir(parents=True, exist_ok=True)
+                    cropped.save(str(PROFILE_AVATAR), "PNG")
+                except Exception:
+                    pass
+                if hasattr(self, "profile_card"): self.profile_card.reload()
                 subprocess.Popen(["notify-send", "Аватарку встановлено", "Наступного разу в SDDM буде нове фото"])
             except Exception as e:
                 subprocess.Popen(["notify-send", "-u", "critical", "Помилка", f"Деталі: {e}"])
@@ -3106,12 +3609,14 @@ class MeguminSettings(QWidget):
         self.search = QLineEdit(); self.search.setObjectName("search"); self.search.setPlaceholderText("Пошук")
         self.search.textChanged.connect(self.filter_sidebar)
         self.search.setFocusPolicy(Qt.FocusPolicy.ClickFocus)   # як у macOS: пошук не фокусується сам
+        self._res_rows, self._res_cur = [], -1
+        self.search.installEventFilter(self)
         swl.addWidget(self.search)
         ico = QLabel(G["search"], self.search); ico.setProperty("role", "chev"); ico.move(9, 6)
         sw.setFixedHeight(42)   # не даємо layout'у стискати пошук і аватарку, коли пунктів багато
         sl.addWidget(sw)
 
-        self.account = AccountCard(self.set_sddm_avatar)
+        self.account = AccountCard(lambda: self.open_page("profile"))
         sl.addWidget(self.account)
         sl.addSpacing(4)
 
@@ -3122,10 +3627,15 @@ class MeguminSettings(QWidget):
         side_scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; border: none; }")
         items_w = QWidget(); il = QVBoxLayout(items_w); il.setContentsMargins(4, 0, 6, 6); il.setSpacing(10)
         self.side_items, self.side_gaps, self.side_groups = [], [], {}
+        self.results_box = QWidget(); self.results_lay = QVBoxLayout(self.results_box)
+        self.results_lay.setContentsMargins(0, 0, 0, 0); self.results_lay.setSpacing(2)
+        self.results_box.setVisible(False)
+        il.addWidget(self.results_box)
         for i, (_, title, glyph, color, grp) in enumerate(PAGES):
             if grp not in self.side_groups:
                 sg = SideGroup(PAGE_GROUPS[grp] if grp < len(PAGE_GROUPS) else "")
                 self.side_groups[grp] = sg; il.addWidget(sg)
+            if PAGES[i][0] == "profile": continue   # профіль відкривається карткою акаунта
             it = SidebarItem(i, glyph, color, title)
             it.clicked.connect(self.go)
             self.side_groups[grp].add(it)
@@ -3152,10 +3662,11 @@ class MeguminSettings(QWidget):
         self.pages = FadeStackedWidget()
         builders = dict(wifi=self.create_wifi_page, bluetooth=self.create_bluetooth_page, appearance=self.create_appearance_page,
                         wallpapers=self.create_wallpapers_page, pixelwp=self.create_pixelwp_page, display=self.create_display_page, sound=self.create_audio_page,
-                        trackpad=self.create_trackpad_page, mouse=self.create_mouse_page, magicmouse=self.create_magicmouse_page, look=self.create_look_page, keyboard=self.create_keyboard_page, dock=self.create_dock_page, panels=self.create_panels_page,
+                        trackpad=self.create_trackpad_page, mouse=self.create_mouse_page, magicmouse=self.create_magicmouse_page, magickb=self.create_magickb_page, look=self.create_look_page, keyboard=self.create_keyboard_page, dock=self.create_dock_page, panels=self.create_panels_page,
                         power=self.create_power_page, system=self.create_system_page,
                         sounds=self.create_sounds_page, login=self.create_login_page, about=self.create_about_page, games=self.create_games_page, help=self.create_help_page, osd=self.create_osd_page,
-                        developer=self.create_developer_page)
+                        developer=self.create_developer_page, profile=self.create_profile_page,
+                        dashboard=self.create_dashboard_page)
         for i, (pid, *_r) in enumerate(PAGES):
             self._building = i
             self.page_words[i] = [PAGES[i][1].lower()]
@@ -3193,6 +3704,8 @@ class MeguminSettings(QWidget):
                 QTimer.singleShot(0, lambda w=it: self.side_scroll.ensureWidgetVisible(w, 0, 8))
         self.pages.setCurrentIndex(index)
         self.page_title.setText(PAGES[index][1])
+        if hasattr(self, "account"):
+            self.account.selected = PAGES[index][0] == "profile"; self.account.update()
         if record:
             self.history = self.history[:self.hist_pos + 1] + [index]
             self.hist_pos = len(self.history) - 1
@@ -3223,7 +3736,80 @@ class MeguminSettings(QWidget):
         for g in self.side_gaps: g.setVisible(not q)
         for sg in getattr(self, "side_groups", {}).values():
             sg.setVisible(any(not it.isHidden() for it in sg.items))
-        if q and first is not None: self.go(first)
+        self.show_search_results(q)
+        if q and first is not None and not self._res_hits: self.go(first)
+
+    _res_hits = 0
+
+    def show_search_results(self, q):
+        while self.results_lay.count():
+            w = self.results_lay.takeAt(0).widget()
+            if w: w.deleteLater()
+        self._res_rows, self._res_cur = [], -1
+        hits, seen = [], set()
+        if q:
+            # спершу збіги в назві, потім — в описі
+            for by_title in (True, False):
+                for pg, title, desc, w in self.search_index:
+                    key = (pg, title)
+                    if key in seen: continue
+                    if (q in title.lower()) if by_title else (q in desc.lower()):
+                        seen.add(key); hits.append((pg, title, desc, w))
+                        if len(hits) >= 10: break
+                if len(hits) >= 10: break
+        self._res_hits = len(hits)
+        self.results_box.setVisible(bool(q))
+        if not q: return
+        if not hits:
+            e = QLabel("Нічого не знайдено"); e.setProperty("role", "value"); e.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            e.setFixedHeight(56)
+            self.results_lay.addWidget(e)
+            return
+        hits.sort(key=lambda h: h[0])   # групуємо за розділами (стабільно: порядок релевантності лишається всередині)
+        last = None
+        for pg, title, desc, w in hits:
+            if pg != last:
+                last = pg
+                _, ptitle, glyph, color, _g = PAGES[pg]
+                if self._res_rows:
+                    sep = QFrame(); sep.setFixedHeight(1)
+                    sep.setStyleSheet(f"background: {T['sep'].name(QColor.NameFormat.HexArgb)}; margin: 3px 12px;")
+                    self.results_lay.addWidget(sep)
+                self.results_lay.addWidget(ResultHeader(glyph, color, ptitle))
+            row = ResultRow(title, desc if desc else PAGES[pg][1], q)
+            row.clicked.connect(lambda pg=pg, w=w: self.open_result(pg, w))
+            row._target = (pg, w)
+            self.results_lay.addWidget(row)
+            self._res_rows.append(row)
+        self._res_move(0)
+
+    def _res_move(self, i):
+        if not self._res_rows: return
+        i %= len(self._res_rows)
+        if 0 <= self._res_cur < len(self._res_rows): self._res_rows[self._res_cur].set_active(False)
+        self._res_cur = i
+        self._res_rows[i].set_active(True)
+        QTimer.singleShot(0, lambda: self.side_scroll.ensureWidgetVisible(self._res_rows[i], 0, 30) if i < len(self._res_rows) else None)
+
+    def eventFilter(self, obj, ev):
+        if obj is self.search and ev.type() == QEvent.Type.KeyPress and self._res_rows:
+            k = ev.key()
+            if k == Qt.Key.Key_Down: self._res_move(self._res_cur + 1); return True
+            if k == Qt.Key.Key_Up: self._res_move(self._res_cur - 1); return True
+            if k in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self._res_cur >= 0:
+                self.open_result(*self._res_rows[self._res_cur]._target); return True
+        return super().eventFilter(obj, ev)
+
+    def open_result(self, pg, w):
+        self.go(pg)
+        def reveal():
+            try:
+                sa = w.parent()
+                while sa is not None and not isinstance(sa, QScrollArea): sa = sa.parent()
+                if sa is not None: sa.ensureWidgetVisible(w, 0, 80)
+                if hasattr(w, "flash"): w.flash()
+            except RuntimeError: pass
+        QTimer.singleShot(60, reveal)
 
     # перетягування вікна за тулбар / порожнє місце (Wayland — системний move)
     def mousePressEvent(self, event):
@@ -3255,10 +3841,12 @@ class MeguminSettings(QWidget):
         l = QLabel(title); l.setProperty("role", "section")
         lay.addSpacing(6)
         lay.addWidget(l)
+        self.search_index.append((self._building, title, "", l))
 
     def create_card(self, rows):
         for r in rows:
             self.all_rows.append(r)
+            self.search_index.append((self._building, r.title, r.description, r))
             self.page_words[self._building] += [r.title.lower(), r.description.lower()]
         return GroupCard(rows)
 
@@ -3270,6 +3858,47 @@ class MeguminSettings(QWidget):
 
     def seg(self, k, opts, **kw):
         return SegmentedSelector(k, opts, self.settings.get(k, PANEL_DEFAULTS.get(k, TP_DEFAULTS.get(k))), self.save_setting, **kw)
+
+    # --- Профіль ---
+    def create_profile_page(self):
+        page, lay = self.page_base("profile")
+        self.profile_card = ProfileCard(self.set_sddm_avatar)
+        lay.addWidget(self.profile_card)
+        self.page_words[self._building] += ["профіль", "аватар", "ім'я", "email", "обліковий запис"]
+        info = profile_info()
+
+        def field(key, val, ph, width=280):
+            e = QLineEdit(val); e.setPlaceholderText(ph); e.setFixedWidth(width)
+            def done(e=e, key=key):
+                self.save_setting(key, e.text().strip())
+                self.profile_card.reload(); self.account.reload()
+            e.editingFinished.connect(done)
+            return e
+
+        self.section(lay, "Особисте")
+        lay.addWidget(self.create_card([
+            SettingRow("", "", "Ім'я", "Показується в Налаштуваннях і на картці профілю",
+                       control=field("profile_name", info["name"], info["user"])),
+            SettingRow("", "", "Email", "Необов'язково", control=field("profile_email", info["email"], "name@example.com")),
+            SettingRow("", "", "Опис", "Коротко про себе", control=field("profile_bio", info["bio"], "Напр.: люблю піксель-арт")),
+        ]))
+        self.section(lay, "Аватарка")
+        lay.addWidget(self.create_card([
+            SettingRow("", "", "Змінити фото", "Кругла аватарка тут, в SDDM і ~/.face",
+                       on_click=self.set_sddm_avatar),
+        ]))
+        self.section(lay, "Система")
+
+        def val(t):
+            l = QLabel(t); l.setProperty("role", "value"); l.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            return l
+        lay.addWidget(self.create_card([
+            SettingRow("", "", "Користувач", control=val(info["user"])),
+            SettingRow("", "", "Ім'я хоста", control=val(info["host"])),
+            SettingRow("", "", "Система", control=val(info["os"])),
+            SettingRow("", "", "Ядро", control=val(info["kernel"])),
+        ]))
+        return page
 
     # --- Wi-Fi / Bluetooth ---
     def create_wifi_page(self):
@@ -3387,8 +4016,10 @@ class MeguminSettings(QWidget):
                                   "Поки вікно на весь екран, анімація на паузі.")
         g = lambda k, d: self.settings.get(k, d)
         lay.addWidget(self.create_card([
-            SettingRow("", "", "Колір шпалер", "Перший — як акцент системи",
-                       PixelColorPicker(g("wp_pixel_color", ""), lambda c: self.pixel_option("wp_pixel_color", c))),
+            SettingRow("", "", "Колір шпалер", "Це акцент системи — той самий, що в «Вигляд»; шпалери його лише беруть",
+                       AccentPicker(self)),
+            SettingRow("", "", "Колір з обкладинки альбому", "Поки грає музика, шпалери плавно беруть колір обкладинки; на паузі — назад до акценту",
+                       MeguminSwitch("wp_pixel_album_color", bool(g("wp_pixel_album_color", False)), self.save_setting)),
             SettingRow("", "", "Тема шпалер", "Авто — як оформлення системи",
                        SegmentedSelector("wp_pixel_theme", [("auto", "Авто"), ("light", "Світла"), ("dark", "Темна")],
                                          g("wp_pixel_theme", "auto"), lambda k, v: self.pixel_option(k, v))),
@@ -3399,8 +4030,6 @@ class MeguminSettings(QWidget):
             SettingRow("", "", "Від батареї", "Повільно — половина вибраних кадрів/с. На весь екран анімація завжди на паузі",
                        SegmentedSelector("wp_pixel_battery", [("slow", "Повільно"), ("full", "Як від мережі"), ("freeze", "Пауза")],
                                          g("wp_pixel_battery", "slow"), self.save_setting)),
-            SettingRow("", "", "Змінювати акцент системи", "Свій колір шпалер стає акцентом усіх панелей",
-                       MeguminSwitch("wp_pixel_sync_accent", bool(g("wp_pixel_sync_accent", True)), self.save_setting)),
             SettingRow("", "", "Змінювати тему системи", "Світла/темна тема шпалер вмикає таку ж тему системи",
                        MeguminSwitch("wp_pixel_sync_theme", bool(g("wp_pixel_sync_theme", True)), self.save_setting)),
         ]))
@@ -3428,12 +4057,12 @@ class MeguminSettings(QWidget):
 
     def render_pixel_previews(self):
         """Прев'ю малює сам pixel_wallpaper --poster (той самий код, що й шпалери) — у фоні, з кешем."""
-        col = self.settings.get("wp_pixel_color", "") or self.get_wal_accent_color()
+        col = self.accent_color
         th = self.pixel_theme_now()
         cache = Path.home() / ".cache/megumin-os/pixel_previews"; cache.mkdir(parents=True, exist_ok=True)
         sig = self.pixel_sig
         def work():
-            for sid, _ in PIXEL_STYLES:
+            for sid, _ in PIXEL_STYLES_WP:   # WP — щоб прев'ю мали й стилі лише для шпалер (чорна діра, місто)
                 out = cache / f"{sid}_{col.lstrip('#')}_{th}.png"
                 if not out.exists():
                     subprocess.run([str(self.PIXEL_BIN), "--poster", str(out), "400x224", "--style", sid,
@@ -3458,11 +4087,7 @@ class MeguminSettings(QWidget):
         QTimer.singleShot(300, self.pixel_sync_system)
 
     def pixel_sync_system(self):
-        """Шпалери задають систему: свій колір → акцент, своя тема → тема; потім постер, pywal і SDDM."""
-        col = self.settings.get("wp_pixel_color", "")
-        if self.settings.get("wp_pixel_sync_accent", True) and col:
-            if self.settings.get("accent_mode") != "custom" or self.accent_color.lower() != col.lower():
-                self.set_custom_accent(col)
+        """Шпалери НЕ змінюють акцент (він єдиний: accent_mode/accent_color); лише тема → потім постер, pywal і SDDM."""
         th = self.settings.get("wp_pixel_theme", "auto")
         if self.settings.get("wp_pixel_sync_theme", True) and th in ("light", "dark"):
             if bool(self.settings.get("dark_theme", True)) != (th == "dark"):
@@ -3695,6 +4320,11 @@ class MeguminSettings(QWidget):
                            "Fn + F9. Контролер ноутбука вміє лише 3 рівні + вимкнено — більше рівнів залізо не підтримує",
                            self.kbd_light_control()),
             ]))
+        self.section(lay, "Apple Magic Keyboard")
+        lay.addWidget(self.create_card([
+            SettingRow("", "", "Apple Magic Keyboard", "Окрема сторінка: верхній ряд F1–F12, Command / Option, Fn",
+                       on_click=lambda: self.open_page("magickb")),
+        ]))
         t = QLineEdit(); t.setPlaceholderText("Перевірте повтор клавіш тут…")
         lay.addWidget(t)
         return page
@@ -3745,7 +4375,24 @@ class MeguminSettings(QWidget):
             R("Довжина змаху", "Скільки треба провести, щоб перемкнути стіл", self.sl("tp_swipe_dist", 150, 600, " px", width=220), "swipe"),
             R("Створювати новий стіл", "Змах за останній стіл відкриває новий", self.sw("tp_swipe_new", True), "swipe"),
             R("Кілька столів одним змахом", "Не зупинятися на сусідньому столі", self.sw("tp_swipe_forever", True), "swipe"),
-            R("Пошук (Runner)", "Три пальці вгору — відкрити, вниз — сховати", None, "runner"),
+            R("Три пальці вгору", "«Повний екран» — вікно на весь екран, короткий змах трьома пальцями вниз повертає назад. "
+              "«Розгорнути» — те саме, але панель і док лишаються. У відкритому просторі жест угору повертає вікно під курсором на стіл",
+              self.seg("tp_swipe_up", [("fullscreen", "Повний екран"), ("maximize", "Розгорнути"), ("runner", "Runner"), ("off", "Нічого")]), "fullscreen"),
+            R("Тап трьома пальцями", "Відкрити / сховати пошук (Runner). Увага: середній клік мишею теж відкриватиме Runner",
+              self.seg("tp_tap3", [("runner", "Runner"), ("middle", "Середній клік")]), "tap3"),
+            R("Три пальці вниз", "«Вікно в док» — як Super+Q, але вікно стікає в док за пальцями; на повноекранному вікні короткий змах лише виходить з повного екрана; "
+              "не довели жест до кінця — вікно повертається на місце (захист від випадкового згортання)",
+              self.seg("tp_swipe_down", [("minimize", "Вікно в док"), ("runner", "Сховати Runner"), ("off", "Нічого")]), "minimize"),
+            R("Довжина жесту «вікно в док»", "Скільки провести вниз; вікно ховається, лише якщо пройдено ~¾ шляху",
+              self.sl("tp_min_dist", 150, 600, " px", width=220), "minimize"),
+            R("Анімація джина (зжаття вікна)", "Увімкнено — вікно стікає «лійкою» в іконку. Вимкнено — просто плавно зменшується в іконку (без вигину). Без анімацій / в еко-режимі — миттєво зникає",
+              self.sw("genie_anim", True), "minimize"),
+            R("«Здача» вікна в іконку","Закриття/згортання (Super+Q, жест): вікно стискається в іконку програми в доці, а іконка пружно вдавлюється й відскакує. Без анімацій / в еко-режимі — просто зникає",
+              self.sw("genie_squash", True), "minimize"),
+            R("Відкриття з іконки", "Запуск програми з доку: вікно виростає з її іконки (зворотно до «здачі»). Без анімацій / в еко-режимі — з'являється миттєво",
+              self.sw("genie_grow", True), "minimize"),
+            R("Швидкість «здачі»", "Тривалість анімації вікно → іконка",
+              self.sl("genie_speed", 50, 200, "%", width=220), "minimize"),
         ])
         self.tp_stack = QStackedWidget()
         for c in (point, scroll, gest):
@@ -3872,6 +4519,108 @@ class MeguminSettings(QWidget):
             SettingRow("", "", "Що це", "Прокрутка дотиком, інерція і середній клік — параметри драйвера hid_magicmouse "
                        "(потрібен пароль один раз); швидкість, прискорення й бік кліку застосовуються одразу"),
             self.mm_status_row,
+        ]))
+        return page
+
+    # --- Magic Keyboard ---
+    @staticmethod
+    def magic_keyboards():
+        try:
+            out = subprocess.run(["hyprctl", "devices", "-j"], capture_output=True, text=True, timeout=1).stdout
+            return [k["name"] for k in json.loads(out).get("keyboards", [])
+                    if "magic" in k["name"].lower() or ("apple" in k["name"].lower() and "keyboard" in k["name"].lower())]
+        except Exception:
+            return []
+
+    def mk_wanted(self):
+        g = self.tp.g
+        return {"fnmode": str(int(g("mk_fnmode"))), "swap_opt_cmd": str(int(g("mk_swap_opt_cmd"))),
+                "swap_ctrl_cmd": str(int(g("mk_swap_ctrl_cmd"))), "swap_fn_leftctrl": str(int(g("mk_swap_fn_leftctrl"))),
+                "iso_layout": str(int(g("mk_iso_layout")))}
+
+    def mk_driver_status(self):
+        want = self.mk_wanted()
+        line = "options hid_apple " + " ".join(f"{k}={v}" for k, v in want.items())
+        try:
+            saved = Path("/etc/modprobe.d/mgos-magickeyboard.conf").read_text().strip() == line
+        except Exception:
+            saved = False
+        if not MK_PARAMS.exists():
+            return saved, "Збережено — спрацює, щойно клавіатура підключиться" if saved else "Ще не застосовано (потрібен пароль)"
+        try:
+            live = all((MK_PARAMS / k).read_text().strip() == v for k, v in want.items())
+        except Exception:
+            live = False
+        ok = saved and live
+        return ok, "Драйвер налаштовано" if ok else "Є незастосовані зміни (потрібен пароль)"
+
+    def refresh_mk_status(self, *_):
+        if hasattr(self, "mk_status_row"):
+            ok, text = self.mk_driver_status()
+            self.mk_status_row.desc_lbl.setText(("✓ " if ok else "• ") + text)
+
+    def apply_mk_driver(self):
+        """Параметри модуля hid_apple: назавжди (/etc/modprobe.d) і наживо (/sys/module/...). Діють лише на клавіатури Apple."""
+        want = self.mk_wanted()
+        opts = " ".join(f"{k}={v}" for k, v in want.items())
+        live = "; ".join(f"echo {v} > /sys/module/hid_apple/parameters/{k}" for k, v in want.items())
+        root = (f"echo 'options hid_apple {opts}' > /etc/modprobe.d/mgos-magickeyboard.conf && "
+                f"if [ -d /sys/module/hid_apple ]; then {live}; fi; true")
+        cmd = (f"echo 'Apple Magic Keyboard: застосовую параметри драйвера (потрібен пароль)'; "
+               f"sudo sh -c {json.dumps(root)} && echo '✓ Готово' || echo '✗ Не вдалося'; sleep 1.2")
+        subprocess.Popen(["kitty", "--class", "mgos-recovery", "-e", "bash", "-c", cmd], start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        QTimer.singleShot(4000, self.refresh_mk_status)
+        QTimer.singleShot(15000, self.refresh_mk_status)
+
+    def mk_battery(self):
+        try:
+            for dev in subprocess.run(["upower", "-e"], capture_output=True, text=True, timeout=2).stdout.split():
+                if "keyboard" not in dev: continue
+                info = subprocess.run(["upower", "-i", dev], capture_output=True, text=True, timeout=2).stdout
+                if "magic" not in info.lower() and "apple" not in info.lower(): continue
+                m = re.search(r"percentage:\s*(\d+)", info)
+                if m: return int(m.group(1))
+        except Exception:
+            pass
+        return None
+
+    def create_magickb_page(self):
+        page, lay = self.page_base("magickb")
+        kbs = self.magic_keyboards()
+        if kbs:
+            bat = self.mk_battery()
+            state = "Підключено: " + ", ".join(kbs) + (f" · заряд {bat}%" if bat is not None else "")
+        else:
+            state = "Не підключена — увімкніть клавіатуру й підключіть у Bluetooth або кабелем"
+        self.hero(lay, "magickb", "Apple Magic Keyboard: верхній ряд, клавіші Command / Option / Control і Fn. "
+                  "Наведіть на пункт — схема покаже, що зміниться.",
+                  LinkButton("Bluetooth", lambda: self.launch_app("blueman-manager")))
+        P = self.mk_preview = MagicKeyboardPreview(self.tp)
+        lay.addWidget(GroupCard([P]))
+        row = lambda title, desc, ctl, mode: SettingRow("", "", title, desc, ctl, preview=P, preview_mode=mode)
+        lay.addWidget(self.create_card([row("Стан", state, None, None)]))
+        self.section(lay, "Клавіші")
+        lay.addWidget(self.create_card([
+            row("Верхній ряд", "Що натискається без Fn: медіа (яскравість, звук, музика) чи F1–F12",
+                self.seg("mk_fnmode", [(1, "Медіа"), (2, "F1–F12")]), "fn"),
+            row("Command і Option", "«Як на PC» — клавіша біля пробілу стає Alt, як на звичайній клавіатурі",
+                self.seg("mk_swap_opt_cmd", [(0, "Як на Mac"), (1, "Як на PC")]), "optcmd"),
+            row("Command як Ctrl", "⌘C, ⌘V, ⌘Z працюють як у macOS (Command = Ctrl, Control = Super)",
+                self.seg("mk_swap_ctrl_cmd", [(0, "Ні"), (1, "Так")]), "ctrlcmd"),
+            row("Поміняти Fn і Control", "Ctrl у лівому нижньому куті, як на ноутбуках з Windows",
+                self.seg("mk_swap_fn_leftctrl", [(0, "Ні"), (1, "Так")]), "fn"),
+            row("ISO-розкладка", "Клавіші ` і § / < > на європейських Magic Keyboard",
+                self.seg("mk_iso_layout", [(-1, "Авто"), (0, "Ні"), (1, "Так")]), "iso"),
+        ]))
+        self.section(lay, "Драйвер")
+        ok, text = self.mk_driver_status()
+        self.mk_status_row = SettingRow("", "", "Застосувати до драйвера", ("✓ " if ok else "• ") + text,
+                                        LinkButton("Застосувати", self.apply_mk_driver))
+        lay.addWidget(self.create_card([
+            SettingRow("", "", "Що це", "Усе тут — параметри драйвера hid_apple: діють лише на клавіатури Apple, "
+                       "вбудована клавіатура ноутбука не зміниться. Потрібен пароль один раз"),
+            self.mk_status_row,
         ]))
         return page
 
@@ -4004,6 +4753,9 @@ class MeguminSettings(QWidget):
         self.zram_row = SettingRow("", "", "Стискати сховані програми (zram)", self.zram_status_text(),
                                    self.sw("dock_stash_zram", True))
         lay.addWidget(self.create_card([
+            SettingRow("", "", "Вікна рядом, як в Android",
+                       "Сховані вікна стоять в ряд карток, під кожною — кнопка «На робочий стіл». "
+                       "Три пальці вгору над карткою теж повертають вікно", self.sw("dock_stash_cards", True)),
             SettingRow("", "", "Super+Q ховає програму в сховище",
                        "Вікно зникає, програма лишається відкритою — повернути кліком по іконці в доку або Super+A. "
                        "Закрити назовсім — Shift+Super+Q", self.sw("dock_q_stash", False)),
@@ -4104,6 +4856,14 @@ class MeguminSettings(QWidget):
         ]))
         return page
 
+    # --- Дашборд робочого столу 1 (логіка — dashboard_settings.py) ---
+    def create_dashboard_page(self):
+        page, lay = self.page_base("dashboard")
+        self.hero(lay, "dashboard", "Віджети на робочому столі 1: годинник, система, мережа, погода, музика, нотатки, швидкі дії, календар.")
+        import dashboard_settings
+        dashboard_settings.build_page(self, lay, SettingRow, MeguminSwitch, SegmentedSelector, GroupCard)
+        return page
+
     # --- Батарея ---
     def create_power_page(self):
         page, lay = self.page_base("power")
@@ -4126,6 +4886,10 @@ class MeguminSettings(QWidget):
                        "Поки вікно на весь екран, відео-шпалери на паузі — розмиття не перераховується і майже нічого не коштує, "
                        "а після виходу перехід непомітний",
                        self.sw("eco_fs_blur", True)),
+            SettingRow("", "", "Запечений блюр віджетів",
+                       "Віджети (годинник, док, runner…) малюють розмиті шпалери самі, коли на столі немає вікон. "
+                       "Вимкни — повернеться звичайне живе розмиття Hyprland",
+                       self.sw("baked_blur", True)),
         ]))
         self.section(lay, "Кулер")
         self.fan_selector = SegmentedSelector("fan_mode", [("auto", "Авто"), ("quiet", "Тихий"), ("balanced", "Баланс"),
@@ -4578,6 +5342,8 @@ def headless_apply(keys):
                 set_gtk_ini("gtk-sound-theme-name", th)
             elif key == "power_profile" and v:
                 subprocess.run(["powerprofilesctl", "set", v], stdout=DN, stderr=DN)
+            elif key.startswith(("tp_", "kb_", "ms_", "mm_")):   # тачпад/жести → touchpad-user.conf + hyprctl
+                TouchpadBackend(data).apply()
             elif key in ("ui_font", "ui_font_size"):
                 fam = data.get("ui_font") or "Inter"; size = int(data.get("ui_font_size") or 11)
                 subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "font-name", f"{fam} {size}"], stdout=DN, stderr=DN)
@@ -4600,4 +5366,24 @@ if __name__ == '__main__':
         try: ex.open_page(sys.argv[sys.argv.index("--page") + 1])
         except IndexError: pass
     ex.show()
+    # Живе оновлення: змінився код «Налаштувань» (або pixel_waves.h/welcome — ні, лише цей файл) → перезапуск у тій самій сторінці.
+    try:
+        from PyQt6.QtCore import QFileSystemWatcher
+        _src = os.path.abspath(__file__)
+        _w = QFileSystemWatcher([_src]); _t = QTimer(); _t.setSingleShot(True)
+        def _reload():
+            try: compile(open(_src, encoding='utf-8').read(), _src, 'exec')   # напівготовий файл — не перезапускаємось
+            except Exception: return
+            pid = [pg[0] for pg in PAGES][ex.pages.currentIndex()] if 0 <= ex.pages.currentIndex() < len(PAGES) else None
+            args = [a for a in sys.argv[1:] if a != "--page"]
+            if "--page" in sys.argv:
+                i = sys.argv.index("--page"); args = sys.argv[1:i] + sys.argv[i + 2:]
+            os.execv(sys.executable, [sys.executable, _src] + args + (["--page", pid] if pid else []))
+        _t.timeout.connect(_reload)
+        def _changed(_):
+            if _src not in _w.files(): _w.addPath(_src)   # редактори замінюють файл — підписуємось знову
+            _t.start(500)
+        _w.fileChanged.connect(_changed)
+    except Exception as e:
+        print(f"live-reload: {e}", file=sys.stderr)
     sys.exit(app.exec())

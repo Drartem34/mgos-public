@@ -23,7 +23,8 @@ chrome-ibblmnobmgdmpoeblocemifbpglakpoi-Default.desktop 0
 chrome-npgpepoiokofcmcdclijlefgaaaaohlo-Default.desktop 0
 cmake-gui.desktop 0
 code.desktop 0
-com.megumin.installer.desktop 0
+com.megumin.installer.desktop 1
+com.obsproject.Studio.desktop 0
 electron27.desktop 0
 electron36.desktop 0
 eos-apps-info.desktop 0

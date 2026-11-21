@@ -393,6 +393,8 @@ void reload_ui() {
 }
 
 // ================= IPC =================
+#include "wp_ribbon.h"
+
 gboolean on_socket_message(GIOChannel *source, GIOCondition condition, gpointer data) {
     int server_fd = g_io_channel_unix_get_fd(source);
     int client_fd = accept(server_fd, NULL, NULL);
@@ -410,6 +412,37 @@ gboolean on_socket_message(GIOChannel *source, GIOCondition condition, gpointer 
                 close(client_fd);
                 return G_SOURCE_CONTINUE;
             }
+            // «ribbon X Y W H CONNECTOR» — стрічка шпалер з бульбашки годинника topbar
+            if (command.rfind("ribbon", 0) == 0) {
+                double x = 0, y = 0, w = 0, h = 0; char conn[64] = {0};
+                sscanf(command.c_str() + 6, "%lf %lf %lf %lf %63s", &x, &y, &w, &h, conn);
+                ribbon::open_ribbon(x, y, w, h, conn);
+                close(client_fd);
+                return G_SOURCE_CONTINUE;
+            }
+            // Super+W («toggle»/«show») → «Стрічка шпалер» розростається з бульбашки годинника topbar
+            // (геометрія — $XDG_RUNTIME_DIR/mgos_clock_bubble, пише topbar). Старе вікно — «grid»/«grid-toggle».
+            if (command == "toggle" || command == "show") {
+                if (ribbon::opened && ribbon::p_target > 0) { if (command == "toggle") ribbon::close_ribbon(); }
+                else {
+                    double x = 0, y = 0, w = 0, h = 0; char conn[64] = "-";
+                    const char* rt = getenv("XDG_RUNTIME_DIR");
+                    if (FILE* fp = fopen((std::string(rt ? rt : "/tmp") + "/mgos_clock_bubble").c_str(), "r")) {
+                        if (fscanf(fp, "%lf %lf %lf %lf %63s", &x, &y, &w, &h, conn) < 4) w = h = 0;
+                        fclose(fp);
+                    }
+                    ribbon::open_ribbon(x, y, w, h, conn);
+                }
+                close(client_fd);
+                return G_SOURCE_CONTINUE;
+            }
+            if (command.rfind("hide", 0) == 0) {   // інший оверлей відкрився (sysui::close_other_overlays)
+                ribbon::close_ribbon();
+                if (gtk_widget_get_visible(wp_window)) gtk_widget_set_visible(wp_window, FALSE);
+                close(client_fd);
+                return G_SOURCE_CONTINUE;
+            }
+            if (command.rfind("grid", 0) == 0) command = command == "grid" ? "show" : "toggle";
             if (command.find("toggle") != std::string::npos || command.find("show") != std::string::npos) {
                 bool is_vis = gtk_widget_get_visible(wp_window);
                 if (!is_vis || command.find("show") != std::string::npos) {
@@ -741,12 +774,15 @@ static void activate(GtkApplication* app, gpointer) {
     // ВАЖЛИВО: realize без показу — реєструє layer-shell surface в Wayland
     // Без цього gtk_widget_set_visible(TRUE) не спрацює після FALSE
     g_signal_connect(wp_window, "hide", G_CALLBACK(on_wp_hide), nullptr);
+    sysui::exclusive_overlay(wp_window, "wallpapers");
     sysui::release_on_hide(wp_window);
     gtk_widget_realize(wp_window);
     gtk_widget_set_visible(wp_window, FALSE);
+    ribbon::init(app);
 }
 
 int main(int argc, char** argv) {
+    if (argc > 2 && std::string(argv[1]) == "--ribbon-shot") return ribbon::shot(argv[2], argc > 3 ? argv[3] : "dark");
     sysui::mem_init();
     GtkApplication* app = gtk_application_new("com.megumin.wallpapers", G_APPLICATION_DEFAULT_FLAGS);
     g_signal_connect(app, "activate", G_CALLBACK(activate), nullptr);

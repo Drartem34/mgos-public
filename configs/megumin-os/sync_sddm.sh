@@ -104,6 +104,11 @@ if [ -f "$U_HOME/.cache/megumin-os/wp_poster.src" ]; then
         mp4|webm|gif|mkv|mov|MP4|WEBM) [ -f "$U_HOME/.cache/megumin-os/wp_poster.jpg" ] && BG="$U_HOME/.cache/megumin-os/wp_poster.jpg" ;;
     esac
 fi
+# піксельні живі шпалери (pixel:<стиль>): фон входу — їхній постер (малює pixel_wallpaper в акценті системи)
+LASTWP=$(head -1 "$U_HOME/.cache/ignis/last_wallpaper.txt" 2>/dev/null)
+case "$LASTWP" in
+    pixel:*) [ -f "$U_HOME/.cache/megumin-os/wp_poster_pixel.png" ] && BG="$U_HOME/.cache/megumin-os/wp_poster_pixel.png" ;;
+esac
 [ -z "$BG" ] && BG=$(walget wallpaper)
 # лише справжні файли з дому користувача (root не має копіювати чужі файли через посилання)
 [ -n "$BG" ] && BG=$(realpath -e -- "$BG" 2>/dev/null)

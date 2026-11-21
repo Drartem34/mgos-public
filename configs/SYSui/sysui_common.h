@@ -32,6 +32,7 @@
 #include <sys/time.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <functional>
 #include <fstream>
 #include <sstream>
 #include <nlohmann/json.hpp>
@@ -223,6 +224,13 @@ inline time_t file_mtime(const std::string& p) {
     struct stat st;
     return stat(p.c_str(), &st) == 0 ? st.st_mtime : 0;
 }
+// mtime з наносекундами: два записи settings.json за одну секунду (accent_mode + accent_color)
+// інакше давали однаковий штамп — і новий акцент не підхоплювався до наступної зміни.
+inline long long file_mtime_ns(const std::string& p) {
+    struct stat st;
+    if (stat(p.c_str(), &st) != 0) return 0;
+    return (long long)st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec + (long long)st.st_size * 7919LL;
+}
 
 struct Settings {
     // Загальне
@@ -249,6 +257,14 @@ struct Settings {
     bool dock_reserve = false;            // док завжди видно і він відсуває вікна (exclusive zone), а не лежить поверх
     bool dock_minimize_drag = true;       // перетягнути вікно на док → сховати застосунок (special:mgos-dock)
     std::string dock_stash_layout = "grid"; // сховище доку: "grid" — плитки прилипають до сітки, "free" — вільно
+    std::string tp_swipe_down = "minimize"; // 3 пальці вниз: minimize (вікно в док, dock_genie.h) | runner | off
+    bool genie_anim = true;               // джин (зжаття вікна); false — плавне зменшення в іконку
+    bool genie_grow = true;              // запуск з доку: вікно «виростає» з іконки (зворотна здача, dock_genie.h)
+    bool genie_squash = true;           // «здача» вікна в іконку: знімок стискається, іконка пружно вдавлюється (dock_genie.h)
+    int  genie_speed = 100;               // швидкість анімації вікно→іконка, % (50…200)
+    int tp_min_dist = 300;                // довжина жесту згортання, px тачпада
+    std::string tp_swipe_up = "fullscreen"; // 3 пальці вгору: fullscreen | maximize (вікно на весь екран, dock_genie.h) | runner | off
+    bool dock_stash_cards = true;         // простір: сховані вікна рядом карток (як «Недавні» в Android) + кнопка «На робочий стіл»
     bool dock_stash_zram = true;          // сховані в сховище програми стискаються в zram (mgos-pageout)
     bool dock_recent = true;              // показувати недавно закриті програми (секція після роздільника)
     int  dock_recent_count = 15;          // скільки закритих програм показувати
@@ -268,13 +284,14 @@ struct Settings {
     bool hyprland_blur = true;            // загальний перемикач розмиття з «Налаштувань»
     bool video_optimization = false;      // «Пауза відео-шпалер», поки вікно на весь екран
     bool wp_pause_covered = true;         // «Пауза під вікнами»: шпалери (відео й піксельні) стоять, поки вікна закривають ≥85% екрана
+    bool baked_blur = true;               // «запечений» блюр: віджети самі малюють заздалегідь розмиті шпалери (замість layerrule blur)
     bool eco_effects = false;             // «Економ ефекти» (CC / Super+Shift+F1): без блюру, тіней і заокруглень
 };
 
 inline const Settings& settings() {
     static Settings s;
-    static time_t last = -1;
-    time_t m = file_mtime(settings_path());
+    static long long last = -1;
+    long long m = file_mtime_ns(settings_path());
     if (m == last) return s;
     last = m;
     Settings n;
@@ -296,12 +313,12 @@ inline const Settings& settings() {
             gb("dock_magnify", n.dock_magnify); gi("dock_magnify_pct", n.dock_magnify_pct, 110, 220);
             gi("cc_opacity", n.cc_opacity, 20, 100);
             gb("dock_files", n.dock_files); gs("dock_files_source", n.dock_files_source);
-            gi("dock_files_count", n.dock_files_count, 1, 8); gi("dock_files_days", n.dock_files_days, 1, 30); gb("dock_reserve", n.dock_reserve); gb("dock_minimize_drag", n.dock_minimize_drag); gs("dock_stash_layout", n.dock_stash_layout); gb("dock_stash_zram", n.dock_stash_zram);
+            gi("dock_files_count", n.dock_files_count, 1, 8); gi("dock_files_days", n.dock_files_days, 1, 30); gb("dock_reserve", n.dock_reserve); gb("dock_minimize_drag", n.dock_minimize_drag); gs("dock_stash_layout", n.dock_stash_layout); gb("dock_stash_zram", n.dock_stash_zram); gs("tp_swipe_down", n.tp_swipe_down); gi("tp_min_dist", n.tp_min_dist, 120, 800); gs("tp_swipe_up", n.tp_swipe_up); gb("dock_stash_cards", n.dock_stash_cards); gb("genie_squash", n.genie_squash); gb("genie_grow", n.genie_grow); gb("genie_anim", n.genie_anim); gi("genie_speed", n.genie_speed, 50, 200);
             gb("dock_recent", n.dock_recent); gi("dock_recent_count", n.dock_recent_count, 1, 15);
             gb("watchdog", n.watchdog); gb("sys_popups", n.sys_popups); gs("osd_position", n.osd_position); gs("notify_position", n.notify_position);
             gb("topbar_power", n.topbar_power); gs("panel_font", n.panel_font); gs("pixel_style", n.pixel_style);
             gb("eco_fs_blur", n.eco_fs_blur); gb("hyprland_blur", n.hyprland_blur); gb("eco_effects", n.eco_effects); gb("video_optimization", n.video_optimization);
-            gb("wp_pause_covered", n.wp_pause_covered);
+            gb("wp_pause_covered", n.wp_pause_covered); gb("baked_blur", n.baked_blur);
         }
     } catch (...) {}
     // «Економ ефекти»: блюру немає — напівпрозорі панелі без нього виглядають брудно, тож тимчасово
@@ -421,10 +438,207 @@ inline std::string rgba(const std::string& hex, double a) {
 
 // Змінюється, коли змінилась тема pywal або settings.json.
 inline long long theme_stamp() {
-    return (long long)file_mtime(wal_css_path()) * 1000003LL + (long long)file_mtime(settings_path());
+    // unsigned — переповнення визначене і не страшне (штамп лише порівнюється)
+    return (long long)((unsigned long long)file_mtime_ns(wal_css_path()) * 1000003ULL + (unsigned long long)file_mtime_ns(settings_path()));
 }
 
 inline bool is_light_theme() { return color_scheme() != "prefer-dark"; }
+
+// ---------- «Запечений» блюр (mgos-bakeblur) ----------
+// ~/.cache/mgos/baked_blur_<монітор>.png — розмиті шпалери на весь монітор (логічний розмір).
+// Віджет малює шматок цього зображення під своєю напівпрозорою плашкою замість живого блюру Hyprland.
+// Якщо файла нема або налаштування вимкнене — bb::paint нічого не малює (лишається живий блюр).
+namespace bb {
+struct Cache { cairo_surface_t* s = nullptr; time_t mtime = 0; std::string mon; double k = 1; gint64 chk = 0, used = 0; };
+inline Cache& cache() { static Cache c; return c; }
+inline std::string& mon_name() { static std::string m; return m; }
+// Монітор, на якому живе вікно віджета (для кількох моніторів).
+inline void set_monitor(GdkMonitor* m) {
+    const char* c = m ? gdk_monitor_get_connector(m) : nullptr;
+    mon_name() = c ? c : "";
+}
+inline bool enabled() {
+    const auto& st = settings();
+    return st.baked_blur && st.hyprland_blur && !st.eco_effects;
+}
+// Лишаємо в пам'яті не більше ~10 с після останнього малювання (1/2 роздільності ≈ 2 МБ).
+inline void release() { Cache& c = cache(); if (c.s) { cairo_surface_destroy(c.s); c.s = nullptr; c.mtime = 0; } }
+inline std::string path_for(const std::string& mon) { return home() + "/.cache/mgos/baked_blur_" + mon + ".png"; }
+inline std::string resolve() {
+    std::string mon = mon_name();
+    std::string p = mon.empty() ? "" : path_for(mon);
+    if (mon.empty()) {   // монітор не задано — беремо перший наявний файл
+        if (GDir* d = g_dir_open((home() + "/.cache/mgos").c_str(), 0, nullptr)) {
+            while (const char* n = g_dir_read_name(d)) {
+                std::string s = n;
+                if (s.rfind("baked_blur_", 0) == 0 && s.size() > 15 && s.compare(s.size() - 4, 4, ".png") == 0) { p = home() + "/.cache/mgos/" + s; break; }
+            }
+            g_dir_close(d);
+        }
+    }
+    return p;
+}
+// mtime файла блюру для поточного монітора (0 — нема): для перемальовування, коли шпалери змінились.
+inline time_t current_mtime() { std::string p = resolve(); return p.empty() ? 0 : file_mtime(p); }
+inline cairo_surface_t* surface() {
+    Cache& c = cache();
+    gint64 now = g_get_monotonic_time();
+    if (c.s && now - c.chk < 1500000) { c.used = now; return c.s; }   // mtime перевіряємо не частіше, ніж раз на 1.5 с
+    c.chk = now; c.used = now;
+    std::string p = resolve();
+    time_t m = p.empty() ? 0 : file_mtime(p);
+    if (!m) { release(); return nullptr; }
+    if (c.s && m == c.mtime && p == c.mon) return c.s;
+    release();
+    int fw = 0, fh = 0;
+    if (!gdk_pixbuf_get_file_info(p.c_str(), &fw, &fh) || fw < 2 || fh < 2) return nullptr;
+    // 1/2 роздільності: блюр гладкий, втрат майже нема, пам'яті вдвічі·вдвічі менше
+    int hw = std::max(1, fw / 2), hh = std::max(1, fh / 2);
+    GdkPixbuf* pb = gdk_pixbuf_new_from_file_at_scale(p.c_str(), hw, hh, FALSE, nullptr);
+    if (!pb) return nullptr;
+    cairo_surface_t* s = cairo_image_surface_create(CAIRO_FORMAT_RGB24, hw, hh);
+    cairo_t* cc = cairo_create(s);
+    gdk_cairo_set_source_pixbuf(cc, pb, 0, 0);
+    cairo_paint(cc);
+    cairo_destroy(cc);
+    g_object_unref(pb);
+    c.s = s; c.mtime = m; c.mon = p; c.k = (double)hw / fw;
+    return s;
+}
+// Малює шматок блюру. cr — у системі координат віджета (початок = його лівий верхній кут);
+// x,y — позиція цього кута в координатах МОНІТОРА (для layer-shell на весь екран = позиція у вікні + маржини);
+// w,h — розмір ділянки; radius ≥ 0 — клип із закругленням (радіус < 0 — без клипу).
+// Повертає true, якщо щось намальовано.
+inline bool paint(cairo_t* cr, double x, double y, double w, double h, double radius = -1) {
+    if (!enabled() || w <= 0 || h <= 0) return false;
+    cairo_surface_t* s = surface();
+    if (!s) return false;
+    Cache& c = cache();
+    cairo_save(cr);
+    if (radius >= 0) {
+        double r = std::min({radius, w / 2, h / 2});
+        cairo_new_path(cr);
+        cairo_arc(cr, w - r, r, r, -M_PI / 2, 0);
+        cairo_arc(cr, w - r, h - r, r, 0, M_PI / 2);
+        cairo_arc(cr, r, h - r, r, M_PI / 2, M_PI);
+        cairo_arc(cr, r, r, r, M_PI, 1.5 * M_PI);
+        cairo_close_path(cr);
+        cairo_clip(cr);
+    } else {
+        cairo_rectangle(cr, 0, 0, w, h);
+        cairo_clip(cr);
+    }
+    cairo_translate(cr, -x, -y);
+    cairo_scale(cr, 1.0 / c.k, 1.0 / c.k);
+    cairo_set_source_surface(cr, s, 0, 0);
+    cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
+    cairo_pattern_set_extend(cairo_get_source(cr), CAIRO_EXTEND_PAD);
+    cairo_paint(cr);
+    cairo_restore(cr);
+    return true;
+}
+// Викликати після приховування вікна (разом з trim): звільняє зображення, якщо давно не малювали.
+inline void trim() {
+    Cache& c = cache();
+    if (c.s && g_get_monotonic_time() - c.used > 10000000) release();
+}
+
+// ---- Підложка для вікон-шарів, що не на весь монітор (OSD, runner, dock, буфер...) ----
+// bb::underlay(win, child, "namespace", radius [, plates]) повертає GtkOverlay, який треба поставити
+// замість child як дочірній віджет вікна. Під child малюється блюр у межах плашок (за замовчуванням — сам child).
+// Позицію шару на моніторі підказує Hyprland (hyprctl layers) після показу вікна.
+struct Under {
+    GtkWidget *area = nullptr, *win = nullptr, *child = nullptr;
+    std::string ns, mon;
+    double radius = 0, ox = 0, oy = 0, lw = 0, lh = 0;   // lw/lh — розмір шару на момент визначення позиції
+    bool cx = false, bot = false;   // шар центрований по горизонталі / притиснутий до низу: при зміні розміру зсув рахуємо самі
+    bool known = false, empty = true;   // empty — на моніторі немає вікон: тоді малюємо запечений блюр
+    guint pending = 0;
+    std::function<void(std::vector<GtkWidget*>&)> plates;
+};
+inline bool under_locate(Under* u) {
+    try {
+        auto L = nlohmann::json::parse(hypr_request("j/layers"));
+        auto M = nlohmann::json::parse(hypr_request("j/monitors"));
+        for (auto it = L.begin(); it != L.end(); ++it) {
+            if (!it.value().contains("levels")) continue;
+            for (auto lv = it.value()["levels"].begin(); lv != it.value()["levels"].end(); ++lv)
+                for (auto& l : lv.value()) {
+                    if (l.value("namespace", "") != u->ns) continue;
+                    double mx = 0, my = 0;
+                    for (auto& m : M) if (m.value("name", "") == it.key()) { mx = m.value("x", 0); my = m.value("y", 0); }
+                    u->ox = l.value("x", 0.0) - mx; u->oy = l.value("y", 0.0) - my; u->mon = it.key();
+                    u->lw = l.value("w", 0.0); u->lh = l.value("h", 0.0);
+                    try {
+                        int ws = -1;
+                        for (auto& m : M) if (m.value("name", "") == it.key()) ws = m["activeWorkspace"].value("id", -1);
+                        u->empty = true;
+                        for (auto& c : nlohmann::json::parse(hypr_request("j/clients")))
+                            if (c.value("mapped", false) && !c.value("hidden", false) && c["workspace"].value("id", -2) == ws) { u->empty = false; break; }
+                    } catch (...) { u->empty = false; }
+                    return true;
+                }
+        }
+    } catch (...) {}
+    return false;
+}
+inline void under_schedule(Under* u, int ms) {
+    if (u->pending) g_source_remove(u->pending);
+    u->pending = g_timeout_add(ms, [](gpointer d) -> gboolean {
+        Under* u = (Under*)d; u->pending = 0;
+        if (gtk_widget_get_mapped(u->win) && under_locate(u)) { u->known = true; gtk_widget_queue_draw(u->area); }
+        return G_SOURCE_REMOVE;
+    }, u);
+}
+inline void under_draw(GtkDrawingArea*, cairo_t* cr, int, int, gpointer d) {
+    Under* u = (Under*)d;
+    if (!enabled() || !u->known) return;
+    if (!u->empty) return;   // поверх програм — живий блюр Hyprland (запечений дає xray)
+    mon_name() = u->mon;
+    std::vector<GtkWidget*> v;
+    if (u->plates) u->plates(v); else v.push_back(u->child);
+    double ax = 0, ay = 0;   // зсув шару відносно моменту визначення (вікно змінило розмір, поки Hyprland ще не відповів)
+    if (u->cx) ax = (u->lw - gtk_widget_get_width(u->win)) / 2.0;
+    if (u->bot) ay = u->lh - gtk_widget_get_height(u->win);
+    for (GtkWidget* p : v) {
+        graphene_rect_t r;
+        if (!gtk_widget_get_mapped(p) || !gtk_widget_compute_bounds(p, u->area, &r)) continue;
+        cairo_save(cr);
+        cairo_translate(cr, r.origin.x, r.origin.y);
+        paint(cr, u->ox + ax + r.origin.x, u->oy + ay + r.origin.y, r.size.width, r.size.height, u->radius);
+        cairo_restore(cr);
+    }
+}
+inline GtkWidget* underlay(GtkWidget* win, GtkWidget* child, const char* ns, double radius,
+                           std::function<void(std::vector<GtkWidget*>&)> plates = nullptr,
+                           bool center_x = false, bool bottom = false) {
+    Under* u = new Under;
+    u->cx = center_x; u->bot = bottom;
+    u->win = win; u->child = child; u->ns = ns; u->radius = radius; u->plates = std::move(plates);
+    GtkWidget* ov = gtk_overlay_new();
+    u->area = gtk_drawing_area_new();
+    gtk_widget_set_can_target(u->area, FALSE);
+    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(u->area), under_draw, u, nullptr);
+    gtk_overlay_set_child(GTK_OVERLAY(ov), u->area);
+    gtk_overlay_add_overlay(GTK_OVERLAY(ov), child);
+    gtk_overlay_set_measure_overlay(GTK_OVERLAY(ov), child, TRUE);
+    g_signal_connect(win, "map", G_CALLBACK(+[](GtkWidget*, gpointer d) {
+        Under* u = (Under*)d;
+        u->known = false;
+        if (!enabled()) return;
+        under_schedule(u, 35);
+        g_timeout_add(250, [](gpointer d) -> gboolean { Under* u = (Under*)d; if (gtk_widget_get_mapped(u->win) && under_locate(u)) { u->known = true; gtk_widget_queue_draw(u->area); } return G_SOURCE_REMOVE; }, u);
+    }), u);
+    g_signal_connect(win, "unmap", G_CALLBACK(+[](GtkWidget*, gpointer) {
+        g_timeout_add_seconds(11, [](gpointer) -> gboolean { trim(); return G_SOURCE_REMOVE; }, nullptr);
+    }), u);
+    g_signal_connect(u->area, "resize", G_CALLBACK(+[](GtkDrawingArea*, int, int, gpointer d) {
+        Under* u = (Under*)d;
+        if (u->known && gtk_widget_get_mapped(u->win)) under_schedule(u, 30);
+    }), u);
+    return ov;
+}
+}  // namespace bb
 
 // ---------- Спільні «живі» анімації ----------
 // Класи, які модулі вішають на свої віджети:
@@ -453,6 +667,16 @@ inline const char* shared_css() {
 .sysui-pop      { animation: sysui-pop 320ms cubic-bezier(0.22, 1, 0.36, 1); }
 .sysui-pop-down { animation: sysui-pop-down 320ms cubic-bezier(0.22, 1, 0.36, 1); }
 .bounce         { animation: sysui-bounce 1100ms cubic-bezier(0.3, 0.7, 0.4, 1) 2; }
+/* «здача» вікна в іконку: вдавлюється (плющиться), відскакує з перебігом, вгамовується */
+@keyframes sysui-genie-squash {
+    0%   { -gtk-icon-transform: none; opacity: 1; }
+    16%  { -gtk-icon-transform: translateY(4px) scale(1.22, 0.62); opacity: 0.8; }
+    38%  { -gtk-icon-transform: translateY(-5px) scale(0.9, 1.16); opacity: 1; }
+    58%  { -gtk-icon-transform: translateY(1px) scale(1.06, 0.95); }
+    78%  { -gtk-icon-transform: scale(0.98, 1.02); }
+    100% { -gtk-icon-transform: none; opacity: 1; }
+}
+.genie-squash   { animation: sysui-genie-squash 520ms cubic-bezier(0.25, 0.8, 0.4, 1); }
 
 .live, .live-soft {
     transition: transform 320ms cubic-bezier(0.34, 1.56, 0.64, 1),
@@ -577,6 +801,32 @@ inline void sys_notify(const std::string& level, const std::string& title, const
         ssize_t w = write(fd, msg.data(), msg.size()); (void)w;
     }
     close(fd);
+}
+
+// Взаємне закриття оверлеїв: щойно відкривається один (шпалери, годинник, CC, буфер, runner, powermenu, about),
+// решта згортаються своєю звичайною анімацією. Без демонів: одноразовий неблокуючий «hide» у сокети модулів
+// (топбар — «clock-close» у topbar.sock). Хто не запущений — connect просто не вдається.
+inline void overlay_sock_send(const std::string& name, const char* msg) {
+    std::string path = home() + "/.config/SYSui/" + name + ".sock";
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+    if (fd < 0) return;
+    struct sockaddr_un addr; memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, path.c_str(), sizeof(addr.sun_path) - 1);
+    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == 0) { ssize_t w = write(fd, msg, strlen(msg)); (void)w; }
+    close(fd);
+}
+// self — свій ідентифікатор ("wallpapers", "clock", "cc", "clipboard", "runner", "powermenu", "about");
+// keep — ще один, який не чіпати (напр. стрічка шпалер, відкрита кнопкою з годинника, не закриває годинник).
+inline void close_other_overlays(const char* self, const char* keep = "") {
+    static const char* socks[] = {"wallpapers", "cc", "clipboard", "runner", "powermenu", "about"};
+    for (const char* s : socks)
+        if (strcmp(s, self) && strcmp(s, keep)) overlay_sock_send(s, "hide");
+    if (strcmp(self, "clock") && strcmp(keep, "clock")) overlay_sock_send("topbar", "clock-close");
+}
+// Зручно для простих вікон: щоразу, коли вікно показується — закрити інші.
+inline void exclusive_overlay(GtkWidget* win, const char* self) {
+    g_signal_connect(win, "show", G_CALLBACK(+[](GtkWidget*, gpointer d) { close_other_overlays((const char*)d); }), (gpointer)self);
 }
 
 // Плавний прогрес-бар OSD: замість ривка — доїзд до цілі за ~ms мс (ease-out cubic) на tick-callback кадрів.

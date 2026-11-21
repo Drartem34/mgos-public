@@ -51,10 +51,13 @@ CLEAN_BODY=$(printf '%s' "$BODY" | sed -e 's/<[^>]*>//g' | tr '\n' ' ' | sed -e 
 } > /tmp/notify_osd_data.tmp && mv -f /tmp/notify_osd_data.tmp /tmp/notify_osd_data
 
 # звук сповіщення (вимикається в Налаштування → Системні звуки)
+# повідомлення про помилку (іконка dialog-error або слова в тексті) — звук попередження, навіть якщо терміновість звичайна
+is_err=0
+if [[ "${ICON,,}" == *error* ]] || printf '%s %s' "$SUMMARY" "$BODY" | grep -qiE 'помилк|збій|не вдал|error|failed|failure|не вдалося'; then is_err=1; fi
 case "${5^^}" in   # $5 — терміновість від dunst
     CRITICAL) "$HOME/.local/bin/mgos-sound" dialog-warning & ;;
-    LOW) ;;          # тихі (фонові) — без звуку, як у macOS
-    *) "$HOME/.local/bin/mgos-sound" message-new-instant & ;;
+    LOW) ;;
+    *) if [ "$is_err" = 1 ]; then "$HOME/.local/bin/mgos-sound" dialog-warning & else "$HOME/.local/bin/mgos-sound" message-new-instant & fi ;;
 esac
 
 echo "show" | socat - UNIX-CLIENT:"$HOME/.config/SYSui/notify.sock"

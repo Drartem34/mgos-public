@@ -1,15 +1,32 @@
 #!/bin/bash
 # mgOS: Super+Q у режимі «ховати в сховище» (Налаштування → Док).
-# Вікно плавно гасне (~0,2 с, як згортання в macOS) і їде в сховище special:mgos-dock — програма лишається
+# Вікно стікає «джином» в іконку доку (як згортання в macOS) і їде в сховище special:mgos-dock — програма лишається
 # відкритою (і стискається в zram); повернути — клік по іконці в доку або Super+A.
-# Якщо вікно вже в сховищі — закриваємо його. Закрити назовсім будь-де — Shift+Super+Q.
+# Відкритий простір (Super+A): Super+Q закриває вікно-картку під курсором (або сфокусовану картку) — фокус у просторі
+# часто лишається на вікні робочого столу, і раніше Super+Q ховав його, а картки не закривались.
+# Закрити назовсім будь-де — Shift+Super+Q.
+space=$(hyprctl monitors -j 2>/dev/null | jq -r '.[] | select(.focused) | .specialWorkspace.name')
+if [ "$space" = "special:mgos-dock" ]; then
+    read -r cx cy < <(hyprctl cursorpos -j | jq -r '"\(.x) \(.y)"')
+    target=$(hyprctl clients -j | jq -r --argjson x "$cx" --argjson y "$cy" '
+        [.[] | select(.workspace.name == "special:mgos-dock")] as $s
+        | ([$s[] | select($x >= .at[0] and $x < .at[0] + .size[0] and $y >= .at[1] and $y < .at[1] + .size[1])][0].address)
+          // empty')
+    if [ -z "$target" ]; then
+        target=$(hyprctl activewindow -j | jq -r 'select(.workspace.name == "special:mgos-dock") | .address // empty')
+    fi
+    [ -n "$target" ] && hyprctl dispatch closewindow "address:$target" >/dev/null
+    exit 0
+fi
 read -r addr ws < <(hyprctl activewindow -j 2>/dev/null | jq -r '"\(.address // "") \(.workspace.name // "")"')
 case "$ws" in
     "") exit 0 ;;
     special:mgos-dock) exec hyprctl dispatch killactive ;;
 esac
-# Миттєвий перенос у приховане сховище = вікно просто зникає, а сусіди в цей час їдуть на його місце —
-# це й давало ривок. Спершу гасимо (анімація fadeSwitch в animations.hl), потім переносимо.
+# Анімацію «джин» малює док (SIGUSR2 → dock_genie.h: знімок вікна стікає в іконку на GPU, потім перенос у сховище).
+rm -f "${XDG_RUNTIME_DIR:-/tmp}/mgos-dock-restore"   # інакше dock вважає сигнал Alt+Tab-відновленням
+pkill -USR2 -x dock && exit 0
+# Дока нема — старе згасання. Миттєвий перенос дає ривок (сусіди їдуть на місце вікна), тому спершу гасимо.
 hyprctl dispatch setprop "address:$addr" opacity 0.0 override >/dev/null
 sleep 0.2
 hyprctl --batch "dispatch movetoworkspacesilent special:mgos-dock,address:$addr ; dispatch setprop address:$addr opacity 1.0" >/dev/null

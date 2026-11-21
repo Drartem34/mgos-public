@@ -926,6 +926,7 @@ static void activate(GtkApplication* app, gpointer) {
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(g_css_provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 
     runner_window = gtk_application_window_new(app);
+    sysui::exclusive_overlay(runner_window, "runner");   // показ → інші оверлеї згортаються
     sysui::release_on_hide(runner_window);
     sysui::pop_on_show(runner_window, nullptr, "sysui-pop-down");
     sysui::live_css(".main-container { border-color: @ACCENT_A30@; }"
@@ -1007,7 +1008,7 @@ static void activate(GtkApplication* app, gpointer) {
     gtk_box_append(GTK_BOX(main_box), search_box);
     gtk_box_append(GTK_BOX(main_box), results_revealer);
 
-    gtk_window_set_child(GTK_WINDOW(runner_window), main_box);
+    gtk_window_set_child(GTK_WINDOW(runner_window), sysui::bb::underlay(runner_window, main_box, "runner", 36, nullptr, true, false));   // запечений блюр
 
     GtkEventController* win_keys = gtk_event_controller_key_new();
     g_signal_connect(win_keys, "key-pressed", G_CALLBACK(+[](GtkEventControllerKey*, guint keyval, guint, GdkModifierType, gpointer) -> gboolean {

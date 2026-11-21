@@ -47,6 +47,8 @@ GtkWidget* vol_label;
 GtkWidget* tray_box;
 GtkWidget* mouse_box = nullptr;
 GtkWidget* mouse_label = nullptr;
+GtkWidget* tray_module = nullptr;   // ховається, коли в треї нічого немає
+GtkWidget* periph_box = nullptr;    // заряд Bluetooth-пристроїв (Magic Mouse / Keyboard / Trackpad…)
 
 std::map<std::string, std::string> pseudo_tray_apps = {
     {"telegram-desktop", "telegram"},
@@ -231,6 +233,10 @@ window.light-theme.dots .ws-btn.active { background-color: $COLOR4; }
 .vol-lbl { color: $COLOR3; }
 .overvol { color: #f38ba8 !important; }
 .bat-lbl { color: $FG; }
+.periph-lbl { color: $FG; font-weight: bold; }
+.periph-lbl.bat-chg { color: #a6e3a1; }
+.periph-lbl.bat-low { color: $COLOR3; }
+.periph-lbl.bat-crit { color: $DANGER; }
 .bat-lbl.bat-chg { color: #a6e3a1; }
 .bat-lbl.bat-low { color: $COLOR3; }
 .bat-lbl.bat-crit { color: $DANGER; }
@@ -342,7 +348,7 @@ static int  g_eco_applied = -1;                      // що ми востанн
 
 static bool eco_is_overlay(const std::string& ns) {
     static const char* L[] = {"control_center", "clipboard", "megumin_osd", "volume_osd", "brightness_osd",
-                              "notify_osd", "powermenu", "runner", "about", "wallpapers", "clock_popover", "dock_stash"};
+                              "notify_osd", "powermenu", "runner", "about", "wallpapers", "clock_popover", "dock_stash", "wp_ribbon"};
     for (const char* n : L) if (ns == n) return true;
     return false;
 }
@@ -435,9 +441,15 @@ static void eco_layer_event(const std::string& ns, bool open) {
 static gboolean check_theme(gpointer user_data) {
     // налаштування змінились (кнопка ⏻, економія блюру) — застосовуємо наживо
     static long long last_stamp = -1;
-    long long stamp = sysui::theme_stamp();
+    long long stamp = sysui::theme_stamp() ^ ((long long)sysui::file_mtime(sysui::home() + "/.cache/ignis/last_wallpaper.txt") << 20);
     if (stamp != last_stamp) {
         last_stamp = stamp;
+        // «запечений блюр»: разовий виклик генератора (сам порівнює stamp; демона нема)
+        {   // (сам скрипт вирішує, чи лишати живий layerrule blur — залежно від baked_blur)
+            std::string sc = sysui::home() + "/.local/bin/mgos-bakeblur";
+            gchar* argv[] = { (gchar*)"/bin/bash", (gchar*)sc.c_str(), nullptr };
+            g_spawn_async(nullptr, argv, nullptr, G_SPAWN_STDOUT_TO_DEV_NULL, nullptr, nullptr, nullptr, nullptr);
+        }
         if (g_power_box) gtk_widget_set_visible(g_power_box, sysui::settings().topbar_power);
         g_eco_applied = -1;   // перечитати: «Налаштування» могли самі змінити blur:enabled
         eco_blur_apply();
@@ -556,13 +568,15 @@ static void on_tray_click(GtkGestureClick* gesture, int, double, double, gpointe
 // ===================== ОНОВЛЕННЯ ДАНИХ (ПОЛІНГ) =====================
 namespace cpop { static std::string clock_suffix(); }   // clock_popover.h — фокус-таймер у бульбашці
 
+static gboolean write_bubble_geo(gpointer);
 static gboolean update_clock(gpointer) {
     time_t now = time(0);
     struct tm tstruct;
     localtime_r(&now, &tstruct);
     char buf[80];
-    strftime(buf, sizeof(buf), " %H:%M", &tstruct);
+    strftime(buf, sizeof(buf), "%H:%M", &tstruct);
     gtk_label_set_text(GTK_LABEL(clock_label), (std::string(buf) + cpop::clock_suffix()).c_str());
+    g_timeout_add(300, write_bubble_geo, nullptr);   // після перерозкладки
     // Наступне оновлення — рівно на початку наступної хвилини (раніше будили процес щосекунди).
     static guint next = 0;
     if (next) g_source_remove(next);
@@ -730,6 +744,107 @@ static gboolean update_mouse_battery(gpointer) {
     return G_SOURCE_CONTINUE;
 }
 
+// ===================== ЗАРЯД ПЕРИФЕРІЇ (Magic Mouse / Magic Keyboard / Magic Trackpad…) =====================
+// Драйвери hid-magicmouse і hid-apple віддають заряд Bluetooth-пристроїв Apple у /sys/class/power_supply/hid-<MAC>-battery
+// (scope=Device); так само роблять і інші HID-пристрої з батареєю. Лише читання файлів — без fork і без D-Bus;
+// раз на 10 с (новий пристрій з'являється в sysfs одразу після підключення). Ядро часто дає заряд не одразу, а після
+// першого руху / натискання — до того пристрій не показуємо. Немає жодного — бульбашки немає.
+struct Periph { std::string name, icon; int cap; bool chg; };
+
+// Bluetooth-пристрої Apple: ядро по Bluetooth показує 0 % (питає не той тип звіту) — справжній заряд питає
+// помічник /usr/local/bin/mgos-hidbat (cap_dac_override, лише звіт 0x90). Запускаємо лише коли є такий 0 %,
+// не частіше ніж раз на хвилину, асинхронно (запит по Bluetooth може тривати секунди — topbar не чекає).
+struct HidBat { int pct; bool chg; };
+static std::map<std::string, HidBat> g_hidbat;
+static bool g_hidbat_busy = false;
+static gint64 g_hidbat_last = 0;
+static gboolean update_periph(gpointer);
+
+static void hidbat_request() {
+    const char* bin = "/usr/local/bin/mgos-hidbat";
+    if (g_hidbat_busy || access(bin, X_OK) != 0) return;
+    gint64 now = g_get_monotonic_time();
+    if (g_hidbat_last && now - g_hidbat_last < 60 * G_USEC_PER_SEC) return;
+    g_hidbat_last = now;
+    GSubprocess* p = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE, nullptr, bin, nullptr);
+    if (!p) return;
+    g_hidbat_busy = true;
+    g_subprocess_communicate_utf8_async(p, nullptr, nullptr, [](GObject* o, GAsyncResult* r, gpointer) {
+        char* out = nullptr;
+        if (g_subprocess_communicate_utf8_finish(G_SUBPROCESS(o), r, &out, nullptr, nullptr) && out) {
+            std::istringstream is(out);
+            std::string line;
+            while (std::getline(is, line)) {
+                std::istringstream ls(line);
+                std::string name; int pct = 0, chg = 0;
+                if (std::getline(ls, name, '\t') && (ls >> pct >> chg) && pct > 0) g_hidbat[name] = {pct, chg != 0};
+            }
+        }
+        g_free(out);
+        g_object_unref(o);
+        g_hidbat_busy = false;
+        update_periph(nullptr);
+    }, nullptr);
+}
+
+static std::string read_line(const std::string& f) { std::ifstream i(f); std::string l; std::getline(i, l); return l; }
+
+static std::vector<Periph> scan_periph() {
+    std::vector<Periph> out;
+    DIR* d = opendir("/sys/class/power_supply");
+    if (!d) return out;
+    while (dirent* e = readdir(d)) {
+        if (e->d_name[0] == '.') continue;
+        std::string base = std::string("/sys/class/power_supply/") + e->d_name;
+        if (read_line(base + "/scope") != "Device") continue;
+        std::string cs = read_line(base + "/capacity");
+        if (cs.empty()) continue;   // ucsi-джерела USB-C та пристрої, що ще не повідомили заряд
+        int cap = atoi(cs.c_str());
+        bool hb_chg = false;
+        if (cap <= 0 && strncmp(e->d_name, "hid-", 4) == 0) {   // ядро не знає заряду — питаємо пристрій самі
+            hidbat_request();
+            auto it = g_hidbat.find(e->d_name);
+            if (it != g_hidbat.end()) { cap = it->second.pct; hb_chg = it->second.chg; }
+        }
+        if (cap <= 0 || cap > 100) continue;
+        std::string model = read_line(base + "/model_name");
+        std::string lm = model; for (auto& ch : lm) ch = tolower(ch);
+        Periph p{model.empty() ? e->d_name : model, "󰂯", cap, read_line(base + "/status") == "Charging" || hb_chg};
+        if (lm.find("trackpad") != std::string::npos || lm.find("touchpad") != std::string::npos) p.icon = "󰟸";
+        else if (lm.find("mouse") != std::string::npos) p.icon = "󰍽";
+        else if (lm.find("keyboard") != std::string::npos) p.icon = "󰌌";
+        else if (lm.find("head") != std::string::npos || lm.find("bud") != std::string::npos || lm.find("pods") != std::string::npos) p.icon = "󰋋";
+        else if (lm.find("controller") != std::string::npos || lm.find("pad") != std::string::npos) p.icon = "󰊴";
+        out.push_back(p);
+    }
+    closedir(d);
+    std::sort(out.begin(), out.end(), [](const Periph& a, const Periph& b) { return a.name < b.name; });
+    return out;
+}
+
+static gboolean update_periph(gpointer) {
+    static std::string last = "\x01";
+    auto devs = scan_periph();
+    std::string sig;
+    for (auto& p : devs) sig += p.name + ":" + std::to_string(p.cap) + (p.chg ? "+" : "") + ";";
+    if (sig == last) return G_SOURCE_CONTINUE;
+    last = sig;
+    while (GtkWidget* c = gtk_widget_get_first_child(periph_box)) gtk_box_remove(GTK_BOX(periph_box), c);
+    for (auto& p : devs) {
+        std::string t = p.icon + " " + std::to_string(p.cap) + "%" + (p.chg ? " 󱐋" : "");
+        GtkWidget* l = gtk_label_new(t.c_str());
+        gtk_widget_add_css_class(l, "periph-lbl");
+        if (p.chg) gtk_widget_add_css_class(l, "bat-chg");
+        else if (p.cap <= 10) gtk_widget_add_css_class(l, "bat-crit");
+        else if (p.cap <= 20) gtk_widget_add_css_class(l, "bat-low");
+        std::string tip = p.name + ": " + std::to_string(p.cap) + "%" + (p.chg ? ", заряджається" : "");
+        gtk_widget_set_tooltip_text(l, tip.c_str());
+        gtk_box_append(GTK_BOX(periph_box), l);
+    }
+    gtk_widget_set_visible(gtk_widget_get_parent(periph_box), !devs.empty());
+    return G_SOURCE_CONTINUE;
+}
+
 // ===================== БАТАРЕЯ НОУТБУКА =====================
 // Джерело — UPower (D-Bus, DisplayDevice): оновлення лише по сигналах, без fork і без частого полінгу.
 // Якщо UPower недоступний — читаємо /sys/class/power_supply/BAT* раз на 30 с.
@@ -874,6 +989,7 @@ static gboolean update_pseudo_tray(gpointer) {
     }
     if (sig == last_sig) return G_SOURCE_CONTINUE;
     last_sig = sig;
+    if (tray_module) gtk_widget_set_visible(tray_module, !active.empty());   // порожній трей — без порожньої бульбашки
 
     GtkWidget* child = gtk_widget_get_first_child(tray_box);
     while (child) {
@@ -1166,6 +1282,28 @@ static void music_init() {
 static gboolean update_fullscreen(gpointer);
 static GtkWidget* clock_bubble = nullptr;
 static void on_clock_click(GtkGestureClick*, int, double, double, gpointer) { cpop::toggle(clock_bubble, topbar_window); }
+// Геометрія бульбашки годинника (координати монітора) → $XDG_RUNTIME_DIR/mgos_clock_bubble.
+// З неї «Стрічка шпалер» (Super+W, wallpapers.cpp / wp_ribbon.h) розростається й у неї згортається.
+// Пишеться лише при зміні — з уже наявного таймера годинника, без окремих опитувань.
+static gboolean write_bubble_geo(gpointer) {
+    static std::string last;
+    graphene_rect_t b;
+    if (!clock_bubble || !topbar_window || !gtk_widget_compute_bounds(clock_bubble, topbar_window, &b)) return G_SOURCE_REMOVE;
+    GtkWindow* w = GTK_WINDOW(topbar_window);
+    double x = gtk_layer_get_margin(w, GTK_LAYER_SHELL_EDGE_LEFT) + b.origin.x;
+    double y = gtk_layer_get_margin(w, GTK_LAYER_SHELL_EDGE_TOP) + b.origin.y;
+    GdkMonitor* mon = gtk_layer_get_monitor(w);
+    if (!mon) if (GdkSurface* s = gtk_native_get_surface(GTK_NATIVE(topbar_window))) mon = gdk_display_get_monitor_at_surface(gdk_display_get_default(), s);
+    const char* conn = mon ? gdk_monitor_get_connector(mon) : nullptr;
+    char msg[160];
+    snprintf(msg, sizeof msg, "%.0f %.0f %.0f %.0f %s\n", x, y, b.size.width, b.size.height, conn ? conn : "-");
+    if (last == msg || b.size.width < 2) return G_SOURCE_REMOVE;
+    last = msg;
+    const char* rt = getenv("XDG_RUNTIME_DIR");
+    std::string f = std::string(rt ? rt : "/tmp") + "/mgos_clock_bubble";
+    if (FILE* fp = fopen((f + ".tmp").c_str(), "w")) { fputs(msg, fp); fclose(fp); rename((f + ".tmp").c_str(), f.c_str()); }
+    return G_SOURCE_REMOVE;
+}
 
 // ===================== UI КОНСТРУКТОРИ =====================
 GtkWidget* create_clickable_box(GtkWidget* child, GCallback on_click, gpointer data = nullptr) {
@@ -1180,6 +1318,58 @@ GtkWidget* create_clickable_box(GtkWidget* child, GCallback on_click, gpointer d
         gtk_widget_add_controller(box, GTK_EVENT_CONTROLLER(click));
     }
     return box;
+}
+
+// ===================== ЗАПЕЧЕНИЙ БЛЮР ПІД ПЛАШКАМИ =====================
+// Шар-основа (drawing area) під main_box малює розмиті шпалери під кожною плашкою .module-box
+// (у стилі macOS — під усією смугою). Налаштування baked_blur вимкнене / файла нема — нічого не малюється.
+static GtkWidget* g_bb_area = nullptr;
+static void bb_collect(GtkWidget* w, std::vector<GtkWidget*>& out) {
+    for (GtkWidget* c = gtk_widget_get_first_child(w); c; c = gtk_widget_get_next_sibling(c)) {
+        if (!gtk_widget_get_visible(c)) continue;
+        if (gtk_widget_has_css_class(c, "module-box")) out.push_back(c);
+        else bb_collect(c, out);
+    }
+}
+static std::string bb_rects(GtkWidget* area, std::vector<graphene_rect_t>& rs) {
+    GtkWidget* main = gtk_widget_get_parent(area);   // overlay
+    GtkWidget* inner = gtk_widget_get_last_child(main);
+    std::string key;
+    if (!inner || !GTK_IS_WIDGET(inner)) return key;
+    std::vector<GtkWidget*> v; bb_collect(inner, v);
+    for (GtkWidget* b : v) {
+        graphene_rect_t r;
+        if (!gtk_widget_compute_bounds(b, area, &r)) continue;
+        rs.push_back(r);
+        key += std::to_string((int)r.origin.x) + "," + std::to_string((int)r.origin.y) + "," + std::to_string((int)r.size.width) + "," + std::to_string((int)r.size.height) + ";";
+    }
+    return key;
+}
+static void bb_draw(GtkDrawingArea* a, cairo_t* cr, int w, int h, gpointer) {
+    if (!sysui::bb::enabled()) return;
+    GtkWidget* wa = GTK_WIDGET(a);
+    if (GdkSurface* s = gtk_native_get_surface(gtk_widget_get_native(wa)))
+        if (GdkMonitor* m = gdk_display_get_monitor_at_surface(gtk_widget_get_display(wa), s)) sysui::bb::set_monitor(m);
+    if (gtk_widget_has_css_class(topbar_window, "macos")) {
+        sysui::bb::paint(cr, 0, 0, w, h, 0);
+        return;
+    }
+    std::vector<graphene_rect_t> rs; bb_rects(wa, rs);
+    for (auto& r : rs) {
+        cairo_save(cr);
+        cairo_translate(cr, r.origin.x, r.origin.y);
+        sysui::bb::paint(cr, r.origin.x, r.origin.y, r.size.width, r.size.height, 10);
+        cairo_restore(cr);
+    }
+}
+static gboolean bb_watch(gpointer) {
+    static std::string last;
+    if (!g_bb_area) return G_SOURCE_CONTINUE;
+    if (!sysui::bb::enabled()) { if (!last.empty()) { last.clear(); gtk_widget_queue_draw(g_bb_area); } return G_SOURCE_CONTINUE; }
+    std::vector<graphene_rect_t> rs; std::string k = bb_rects(g_bb_area, rs);
+    k += std::to_string(sysui::bb::current_mtime()) + (gtk_widget_has_css_class(topbar_window, "macos") ? "m" : "");
+    if (k != last) { last = k; gtk_widget_queue_draw(g_bb_area); }
+    return G_SOURCE_CONTINUE;
 }
 
 // ===================== ACTIVATE =====================
@@ -1236,7 +1426,7 @@ static void activate(GtkApplication* app, gpointer user_data) {
 
     // --- ЦЕНТР ---
     GtkWidget* center_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-    clock_label = gtk_label_new(" 00:00");
+    clock_label = gtk_label_new("00:00");
     gtk_widget_add_css_class(clock_label, "clock-box");
     clock_bubble = create_clickable_box(clock_label, G_CALLBACK(on_clock_click));
     gtk_widget_set_cursor_from_name(clock_bubble, "pointer");
@@ -1276,9 +1466,18 @@ static void activate(GtkApplication* app, gpointer user_data) {
     gtk_widget_set_visible(mouse_box, FALSE); // Ховаємо одразу, поки не прилетять дані
     gtk_box_append(GTK_BOX(right_box), mouse_box);
 
+    // Заряд Bluetooth-периферії — одна бульбашка на всі пристрої
+    periph_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    GtkWidget* periph_module = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(periph_module, "module-box");
+    gtk_box_append(GTK_BOX(periph_module), periph_box);
+    gtk_widget_set_visible(periph_module, FALSE);
+    gtk_box_append(GTK_BOX(right_box), periph_module);
+
     // Псевдо-Трей
     tray_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
-    GtkWidget* tray_module = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    tray_module = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_visible(tray_module, FALSE);
     gtk_widget_add_css_class(tray_module, "module-box");
     gtk_box_append(GTK_BOX(tray_module), tray_box);
     gtk_box_append(GTK_BOX(right_box), tray_module);
@@ -1287,23 +1486,57 @@ static void activate(GtkApplication* app, gpointer user_data) {
     gtk_center_box_set_center_widget(GTK_CENTER_BOX(main_box), center_box);
     gtk_center_box_set_end_widget(GTK_CENTER_BOX(main_box), right_box);
 
-    gtk_window_set_child(GTK_WINDOW(topbar_window), main_box);
+    // запечений блюр: шар-основа під усім вмістом (див. bb_draw)
+    {
+        GtkWidget* ov = gtk_overlay_new();
+        g_bb_area = gtk_drawing_area_new();
+        gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(g_bb_area), bb_draw, nullptr, nullptr);
+        gtk_widget_set_can_target(g_bb_area, FALSE);
+        gtk_overlay_set_child(GTK_OVERLAY(ov), g_bb_area);
+        gtk_overlay_add_overlay(GTK_OVERLAY(ov), main_box);
+        gtk_overlay_set_measure_overlay(GTK_OVERLAY(ov), main_box, TRUE);
+        gtk_window_set_child(GTK_WINDOW(topbar_window), ov);
+        g_timeout_add(500, bb_watch, nullptr);
+    }
 
     // Запуск таймерів
     update_workspaces(nullptr);
     update_clock(nullptr);
+    g_timeout_add(1500, write_bubble_geo, nullptr);   // геометрія бульбашки для стрічки шпалер
+    cpop::acts_start();
     clock_watch_resume();
     update_language(nullptr);
     update_network(nullptr);
     update_volume(nullptr); 
     update_pseudo_tray(nullptr); g_timeout_add_seconds(3, update_pseudo_tray, nullptr);
     update_mouse_battery(nullptr); g_timeout_add_seconds(30, update_mouse_battery, nullptr);
+    update_periph(nullptr); g_timeout_add_seconds(10, update_periph, nullptr);
     bat_init();
     music_init();
     // pkill -USR1 -x topbar — відкрити/закрити блок годинника (для гарячої клавіші)
     g_unix_signal_add(SIGUSR1, [](gpointer) -> gboolean { cpop::toggle(clock_bubble, topbar_window); return G_SOURCE_CONTINUE; }, nullptr);
     // SIGUSR2 — блок «Надіслати файл» (Quick Share) без перетягування
     g_unix_signal_add(SIGUSR2, [](gpointer) -> gboolean { cpop::open_request(clock_bubble, topbar_window); return G_SOURCE_CONTINUE; }, nullptr);
+    // topbar.sock — «clock-close»: інший оверлей відкрився → згорнути блок годинника (sysui::close_other_overlays)
+    {
+        std::string sp = sysui::home() + "/.config/SYSui/topbar.sock";
+        unlink(sp.c_str());
+        int sfd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        struct sockaddr_un sa; memset(&sa, 0, sizeof(sa)); sa.sun_family = AF_UNIX;
+        strncpy(sa.sun_path, sp.c_str(), sizeof(sa.sun_path) - 1);
+        if (sfd >= 0 && bind(sfd, (struct sockaddr*)&sa, sizeof(sa)) == 0 && listen(sfd, 8) == 0) {
+            GIOChannel* ch = g_io_channel_unix_new(sfd);
+            g_io_add_watch(ch, G_IO_IN, [](GIOChannel* src, GIOCondition, gpointer) -> gboolean {
+                int fd = accept(g_io_channel_unix_get_fd(src), nullptr, nullptr);
+                if (fd < 0) return G_SOURCE_CONTINUE;
+                char buf[64] = {0};
+                ssize_t n = read(fd, buf, sizeof buf - 1); close(fd);
+                if (n > 0 && strstr(buf, "clock-close")) cpop::hide_pop();
+                else if (n > 0 && strstr(buf, "clock-toggle")) cpop::toggle(clock_bubble, topbar_window);
+                return G_SOURCE_CONTINUE;
+            }, nullptr);
+        } else if (sfd >= 0) close(sfd);
+    }
 
     // Таймер для зміни теми
     auto* twd = new ThemeWatchData{topbar_window};

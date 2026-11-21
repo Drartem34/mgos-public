@@ -810,6 +810,15 @@ step_services() {
         bk /etc/systemd/zram-generator.conf; bk /etc/sysctl.d/99-mgos-zram.conf; bk /usr/local/bin/mgos-pageout; bk /etc/tmpfiles.d/mgos-zswap.conf
         sudo ~/.local/bin/mgos-zram setup >/dev/null 2>&1 || echo "zram не вдалося налаштувати (sudo mgos-zram setup)"
     fi
+    # заряд Magic Mouse / Keyboard по Bluetooth: ядро питає не той тип звіту і показує 0 % — topbar питає через
+    # помічник mgos-hidbat (cap_dac_override; лише звіт заряду 0x90 пристроїв Apple, сирий HID нікому не відкриває)
+    [ -x ~/.config/SYSui/mgos-hidbat ] || bash ~/.config/SYSui/build.sh pageout >/dev/null 2>&1 || true
+    if [ -x ~/.config/SYSui/mgos-hidbat ]; then
+        msg "заряд Magic Mouse / Keyboard"
+        bk /usr/local/bin/mgos-hidbat
+        { sudo install -m 755 ~/.config/SYSui/mgos-hidbat /usr/local/bin/mgos-hidbat && sudo setcap cap_dac_override=ep /usr/local/bin/mgos-hidbat; } \
+            || echo "mgos-hidbat не встановився — заряд Magic Mouse по Bluetooth у топбарі буде недоступний"
+    fi
     _mgos_sessions_menu
     if ls ./system_state/etc/udev/*.rules &>/dev/null; then
         msg "udev-правила"
@@ -1101,6 +1110,8 @@ step_check() {
     mapfile -t m < <(pacman -T "${PACKAGES_CORE[@]}" 2>/dev/null)
     [ ${#m[@]} -eq 0 ] && c ok "Пакети" "Ключові пакети" "усі ${#PACKAGES_CORE[@]} на місці" || c fail "Пакети" "Ключові пакети" "немає: ${m[*]}"
     mapfile -t m < <(pacman -T "${PACKAGES_STABLE[@]}" "${PACKAGES_AUR[@]}" 2>/dev/null)
+    # -git збірка теж годиться (ignis-gvc-git не оголошує provides=ignis-gvc — раніше це було хибне «немає»)
+    local mm=(); for x in "${m[@]}"; do pacman -Qq "$x-git" &>/dev/null || mm+=("$x"); done; m=("${mm[@]}")
     [ ${#m[@]} -eq 0 ] && c ok "Пакети" "Пакети mgOS" "усі на місці" || c warn "Пакети" "Пакети mgOS" "немає ${#m[@]}: ${m[*]}"
     mapfile -t m < <(pacman -T $(conf_group utils) 2>/dev/null)
     [ ${#m[@]} -eq 0 ] && c ok "Пакети" "Утиліти" "усі на місці" || c warn "Пакети" "Утиліти" "немає ${#m[@]}: ${m[*]}"
@@ -1225,7 +1236,8 @@ for p in json.load(sys.stdin):
     if [ "$(cat system_state/multilib.txt 2>/dev/null)" = 1 ]; then
         grep -q '^\[multilib\]' /etc/pacman.conf && c ok "Система" "multilib" "увімкнено" || c warn "Система" "multilib" "вимкнено — Steam/Wine не встановляться"
     fi
-    n=$(journalctl -b -p err --no-pager -q 2>/dev/null | wc -l)
+    # без шуму прошивки (ACPI BIOS Error / Aborting method — баги BIOS ноутбука, ні на що не впливають)
+    n=$(journalctl -b -p err --no-pager -q -o cat 2>/dev/null | grep -vcE '^ACPI (BIOS )?Error|^acpi ') || true
     [ "$n" -lt 50 ] && c ok "Система" "Журнал" "$n помилок з моменту завантаження" || c warn "Система" "Журнал" "$n помилок з моменту завантаження (journalctl -b -p err)"
 
     # kioskOS поруч із mgOS: економія kiosk не повинна діяти поза kiosk-сесією

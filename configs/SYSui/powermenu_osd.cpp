@@ -277,6 +277,8 @@ gboolean on_socket_message(GIOChannel *source, GIOCondition condition, gpointer 
                 update_selection();
                 gtk_widget_set_visible(osd_window, TRUE);
                 gtk_window_present(GTK_WINDOW(osd_window)); 
+                        } else if (command.find("hide") != std::string::npos) {   // інший оверлей відкрився
+                if (!is_fading && gtk_widget_get_visible(osd_window)) gtk_widget_set_visible(osd_window, FALSE);
             }
         }
         close(client_fd);
@@ -312,6 +314,7 @@ static void activate(GtkApplication* app, gpointer) {
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(g_css_provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 
     osd_window = gtk_application_window_new(app);
+    sysui::exclusive_overlay(osd_window, "powermenu");   // показ → інші оверлеї згортаються
     sysui::release_on_hide(osd_window);
     sysui::live_css(".power-btn.btn-accent.selected { background-color: @ACCENT@; border-color: @ACCENT@; }");
     gtk_widget_add_css_class(osd_window, "transparent-window");
@@ -363,7 +366,12 @@ static void activate(GtkApplication* app, gpointer) {
     gtk_box_append(GTK_BOX(btn_box), create_button("weather-clear-night-symbolic", "Сон", "systemctl suspend", "btn-accent", 2));
 
     gtk_box_append(GTK_BOX(card), btn_box);
-    gtk_box_append(GTK_BOX(overlay_box), card);
+    {   // запечений блюр: підложка лише під карткою (над затемненням фону)
+        GtkWidget* cw = sysui::bb::underlay(osd_window, card, "powermenu", 20);
+        gtk_widget_set_halign(cw, GTK_ALIGN_CENTER); gtk_widget_set_valign(cw, GTK_ALIGN_CENTER);
+        gtk_widget_set_hexpand(cw, TRUE); gtk_widget_set_vexpand(cw, TRUE);
+        gtk_box_append(GTK_BOX(overlay_box), cw);
+    }
     gtk_window_set_child(GTK_WINDOW(osd_window), overlay_box);
 
     GtkEventController* key_ctl = gtk_event_controller_key_new();

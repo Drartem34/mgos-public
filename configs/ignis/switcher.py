@@ -28,6 +28,7 @@ current_index = 0
 _tex_cache = {}          # path -> (mtime, Gdk.Texture)
 _shot_timer = 0
 hypr = None
+STASH = "special:mgos-dock"   # сховані на док вікна — теж показуємо в Alt+Tab
 
 ICON_MAP = {"code": "visual-studio-code", "telegram": "telegram-desktop", "kitty": "kitty",
             "thunar": "system-file-manager", "nautilus": "org.gnome.Nautilus", "megumin-settings": "preferences-system"}
@@ -46,7 +47,8 @@ def get_windows():
     except Exception:
         return []
     valid = [c for c in data if c.get("mapped", True) and not c.get("hidden") and c.get("title")
-             and c.get("class") not in ("ignis", "") and c.get("workspace", {}).get("id", 1) > 0]
+             and c.get("class") not in ("ignis", "")
+             and (c.get("workspace", {}).get("id", 1) > 0 or c.get("workspace", {}).get("name") == STASH)]
     return sorted(valid, key=lambda x: x.get("focusHistoryID", 0))
 
 
@@ -189,7 +191,18 @@ def on_release(action, param):
     if switcher_window and switcher_window.get_visible():
         switcher_window.set_visible(False)
         if windows_list and current_index < len(windows_list):
-            _ipc(f"dispatch focuswindow address:{windows_list[current_index]['address']}")
+            w = windows_list[current_index]
+            if w.get("workspace", {}).get("name") == STASH:
+                # з доку на стіл: це робить сам док (повертає розмір, анімація з іконки)
+                try:
+                    rd = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
+                    with open(f"{rd}/mgos-dock-restore", "w") as f:
+                        f.write(w["address"])
+                    subprocess.Popen(["pkill", "-USR2", "-x", "dock"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    _ipc(f"dispatch focuswindow address:{w['address']}")
+            else:
+                _ipc(f"dispatch focuswindow address:{w['address']}")
 
 
 CSS = """

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # Генератор звукової теми mgOS (freedesktop sound theme): м'які «скляні» тони — щось середнє між macOS і Windows 11.
+# v4: події, що були вимкнені, + попередження/помилка — у стилі Windows.
 # Без зовнішніх бібліотек: синтез у чистому Python → WAV → .oga (ffmpeg/vorbis).
 #   gen-mgos-sounds.py [тека_теми]      (за замовчуванням ~/.local/share/sounds/mgos)
 import math, os, random, struct, subprocess, sys, tempfile, wave
@@ -278,21 +279,153 @@ def s_sent():             # надіслано: E6 → A6, дуже коротк
     return mseq((88, 93), step=0.06, decay=15, dur=0.35, rv=0.15)
 
 
+
+# ---------- v4: стиль Windows (власні синтезовані звуки, не копії) ----------
+def synth(freq, dur=0.5, decay=6.0, harm=(1.0, 0.35, 0.15), attack=0.004):
+    """Чистий «Windows-подібний» тон: синус + кілька гармонік, швидка атака, плавне згасання."""
+    n = int(SR * dur)
+    out = [0.0] * n
+    for k, a in enumerate(harm, 1):
+        w = 2 * math.pi * freq * k / SR
+        for i in range(n):
+            t = i / SR
+            out[i] += a * min(1.0, t / attack) * math.exp(-decay * (1 + 0.4 * k) * t) * math.sin(w * i)
+    return out
+
+
+def buzz(freq, dur=0.3, decay=7.0):
+    """Різкуватий «стоп»-тон для помилки: пилка з low-pass, трохи розстроєна пара."""
+    n = int(SR * dur)
+    out, y = [0.0] * n, 0.0
+    for i in range(n):
+        t = i / SR
+        s = 0.0
+        for d in (1.0, 1.006):
+            ph = (freq * d * t) % 1.0
+            s += 2 * ph - 1
+        y += 0.18 * (s * 0.5 - y)
+        out[i] = y * min(1.0, t / 0.003) * math.exp(-decay * t)
+    return out
+
+
+def sseq(notes, step=0.12, dur=0.6, decay=6.0, gains=None, rv=0.2):
+    x = []
+    for k, n in enumerate(notes):
+        mix(x, synth(note(n), dur, decay), at=step * k, gain=(gains[k] if gains else 1.0))
+    return reverb(x, rv)
+
+
+def s_warning_w():        # попередження: м'який чистий дзвінок, два тони вниз (як системні Windows 11 / macOS)
+    x = mix(synth(note(79), 0.6, 6.0, (1.0, 0.18, 0.05), 0.008), synth(note(74), 0.8, 5.0, (1.0, 0.18, 0.05), 0.008), at=0.15, gain=0.95)
+    return reverb(x, 0.18)
+
+
+def s_error_w():          # помилка: округлий низький «дум-дум» вниз без різкості (як Basso / Critical Stop)
+    x = mix(synth(note(57), 0.7, 5.5, (1.0, 0.3, 0.06), 0.01), synth(note(50), 1.0, 4.5, (1.0, 0.3, 0.06), 0.01), at=0.16)
+    mix(x, thump(60, 0.25), at=0.16, gain=0.35)
+    return reverb(x, 0.16)
+
+
+def tine(freq, dur=0.8, decay=4.5, idx=1.6, bright=1.0):
+    """«Електропіаніно»-тембр (FM, як у системних звуках macOS/Windows): тепле тіло + короткий дзвінкий удар, легкий хорус."""
+    n = int(SR * dur)
+    out = [0.0] * n
+    for det, g in ((1.0, 0.6), (1.0035, 0.4)):
+        f = freq * det
+        w = 2 * math.pi * f / SR
+        ph = random.random() * 6.28
+        for i in range(n):
+            t = i / SR
+            env = min(1.0, t / 0.006) * math.exp(-decay * t)
+            m = idx * bright * math.exp(-7 * t) * math.sin(2 * w * i + ph)       # модулятор 2:1 — дзвінкий удар
+            out[i] += g * env * math.sin(w * i + m + 0.35 * math.sin(w * i) * math.exp(-3 * t))
+    y = 0.0                                                                       # м'який low-pass: прибирає «цифрову» різкість
+    for i in range(n):
+        y += 0.55 * (out[i] - y); out[i] = y
+    return out
+
+
+def tseq(notes, step=0.12, dur=0.9, decay=4.5, gains=None, rv=0.25, idx=1.6):
+    x = []
+    for k, nt in enumerate(notes):
+        mix(x, tine(note(nt), dur, decay, idx), at=step * k, gain=(gains[k] if gains else 1.0))
+    return reverb(x, rv)
+
+
+def warm_pad(freqs, dur, attack, release, gain=0.5):
+    """Тепла підкладка: пилка з сильним low-pass (замість «чистих» синусів, що звучать як чіптюн)."""
+    n = int(SR * dur)
+    out = [0.0] * n
+    for f in freqs:
+        for det in (-0.07, 0.0, 0.07):
+            ff = f * 2 ** (det / 12)
+            y = 0.0
+            for i in range(n):
+                t = i / SR
+                ph = (ff * t) % 1.0
+                y += 0.035 * ((2 * ph - 1) - y)
+                a = min(1.0, t / attack)
+                r = 1.0 if t < dur - release else max(0.0, (dur - t) / release)
+                out[i] += gain * y * a * a * r * r
+    return out
+
+
+def s_complete_w():       # готово: два теплі дзвінки вгору («тінь-тінь»)
+    return tseq((79, 86), step=0.11, dur=1.0, decay=4.0, gains=(0.75, 1.0), rv=0.28)
+
+
+def s_login_w():          # вхід: ширший теплий акорд-підйом + м'який дзвінок зверху
+    x = warm_pad([note(50), note(57), note(62), note(66)], 3.2, 0.9, 1.8, 1.0)
+    mix(x, tseq((74, 81, 86), step=0.28, dur=1.6, decay=2.8, gains=(0.55, 0.7, 0.9), rv=0.0, idx=1.2), at=0.7, gain=0.9)
+    return reverb(x, 0.35)
+
+
+def s_logout_w():         # вихід: те саме вниз і тихіше
+    x = warm_pad([note(47), note(54), note(59), note(62)], 2.6, 0.4, 1.6, 0.9)
+    mix(x, tseq((86, 81, 74), step=0.22, dur=1.3, decay=3.4, gains=(0.8, 0.65, 0.5), rv=0.0, idx=1.2), at=0.0, gain=0.85)
+    return reverb(x, 0.33)
+
+
+def s_sent_w():           # надіслано: м'який «вжух» і один чистий дзвінок
+    x = whoosh(0.22, up=True, gain=0.35)
+    mix(x, tine(note(88), 0.7, 5.0, 1.2), at=0.12, gain=0.9)
+    return reverb(x, 0.2)
+
+
+def s_screenshot_w():     # знімок екрана: приглушений м'який «клік» затвора (без різкого шуму)
+    a = noise_burst(0.035, lp=0.18, decay=110.0, attack=0.0015)
+    x = mix(a, tine(note(72), 0.12, 38.0, 0.6), gain=0.7)
+    mix(x, noise_burst(0.05, lp=0.14, decay=70.0, attack=0.002), at=0.07, gain=0.75)
+    return silence(0.05) + reverb(x, 0.12)
+
+
+def s_trash_w():          # кошик очищено: м'який шурхіт паперу, що стихає
+    n = int(SR * 0.5)
+    x, y = [0.0] * n, 0.0
+    for i in range(n):
+        t = i / SR
+        burst = 1.0 if random.random() < 0.0035 else 0.0
+        y += 0.22 * (random.uniform(-1, 1) * (0.25 + 4 * burst) - y)
+        x[i] = y * min(1.0, t / 0.01) * math.exp(-5.5 * t)
+    mix(x, tine(note(64), 0.35, 8.0, 0.8), at=0.0, gain=0.12)
+    return reverb(x, 0.12)
+
+
 SOUNDS = {
     # freedesktop-імена (їх шукають GTK, libcanberra, Firefox, dunst-скрипти тощо) → генератор, ширина стерео
     "message-new-instant": (s_message, 0.0004), "message": (s_message, 0.0004),
     "bell": (s_bell, 0.0003), "dialog-information": (s_bell, 0.0003),
-    "dialog-warning": (s_warning, 0.0003), "dialog-error": (s_error, 0.0002),
-    "complete": (s_complete, 0.0005), "power-plug": (s_plug, 0.0003), "power-unplug": (s_unplug, 0.0003),
+    "dialog-warning": (s_warning_w, 0.0003), "dialog-error": (s_error_w, 0.0002),
+    "complete": (s_complete_w, 0.0005), "power-plug": (s_plug, 0.0003), "power-unplug": (s_unplug, 0.0003),
     "device-added": (s_device_added, 0.0003), "device-removed": (s_device_removed, 0.0003),
-    "audio-volume-change": (s_volume, 0.0), "screen-capture": (s_screenshot, 0.0002), "camera-shutter": (s_screenshot, 0.0002),
-    "trash-empty": (s_trash, 0.0004), "desktop-login": (s_login, 0.0006), "desktop-logout": (s_logout, 0.0006),
+    "audio-volume-change": (s_volume, 0.0), "screen-capture": (s_screenshot_w, 0.0002), "camera-shutter": (s_screenshot_w, 0.0002),
+    "trash-empty": (s_trash_w, 0.0004), "desktop-login": (s_login_w, 0.0006), "desktop-logout": (s_logout_w, 0.0006),
     "battery-low": (s_battery_low, 0.0003), "battery-caution": (s_battery_low, 0.0003),
-    "message-sent-instant": (s_sent, 0.0003), "outgoing": (s_sent, 0.0003),
+    "message-sent-instant": (s_sent_w, 0.0003), "outgoing": (s_sent_w, 0.0003),
 }
 
 
-KEEP = {s_warning, s_error}   # ці звуки не перегенеровуються (лише з --all)
+KEEP = set()   # ці звуки не перегенеровуються (лише з --all)
 
 
 def main():
@@ -303,7 +436,10 @@ def main():
                 "[stereo]\nOutputProfile=stereo\n")
     cache = {}
     tmp = tempfile.mkdtemp(prefix="mgos-snd-")
+    only = next((a.split("=", 1)[1].split(",") for a in sys.argv if a.startswith("--only=")), None)
     for name, (fn, width) in SOUNDS.items():
+        if only and name not in only:
+            continue
         if fn in KEEP and os.path.exists(os.path.join(d, name + ".oga")) and "--all" not in sys.argv:
             print("= лишаю", name); continue
         if fn not in cache:

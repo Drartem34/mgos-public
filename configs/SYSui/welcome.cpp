@@ -707,8 +707,9 @@ static GtkWidget* build_wallpaper() {
     std::string cache = sysui::home() + "/.cache/megumin-os/pixel_previews";
     g_mkdir_with_parents(cache.c_str(), 0755);
     struct Opt { const char* id; const char* name; };
-    static const Opt OPTS[] = {{"aurora", "Аврора"}, {"blackhole", "Чорна діра"}, {"horizon", "Захід сонця"}, {"waves", "Хвилі"},
-                               {"rain", "Піксельний дощ"}, {"eq", "Еквалайзер"}, {"virus", "Вірус"}, {"life", "Гра «Життя»"}};
+    static const Opt OPTS[] = {{"aurora", "Аврора"}, {"neoncity", "Неонове місто"}, {"rooftop", "Дах"}, {"tower", "Вежа"}, {"blackhole", "Чорна діра"}, {"horizon", "Захід сонця"}, {"waves", "Хвилі"},
+                               {"rain", "Піксельний дощ"}, {"eq", "Еквалайзер"}, {"virus", "Вірус"}, {"life", "Гра «Життя»"},
+                               {"riftportal", "Розлом"}, {"voidfield", "Зоряна безодня"}, {"skyline", "Skyline"}, {"torus", "Бублик"}, {"knot", "Вузол"}, {"clouds", "Хмари"}};
     for (auto& o : OPTS) {
         GtkWidget* pic;
         GtkWidget* c = wp_card(b, o.name, std::string("pixel:") + o.id, cur == std::string("pixel:") + o.id, &pic);
@@ -809,6 +810,7 @@ static GtkWidget* build_desktop() {
     gtk_widget_set_size_request(list, 600, -1);
     gtk_widget_set_halign(list, GTK_ALIGN_CENTER);
     gtk_box_append(GTK_BOX(list), opt_row("Розмиття і скло", "Скляні панелі та вікна; без нього — економніше", sw_ctl("hyprland_blur", true, true)));
+    gtk_box_append(GTK_BOX(list), opt_row("Запечений блюр", "Віджети малюють розмиті шпалери самі — те саме скло, але майже без навантаження на GPU", sw_ctl("baked_blur", true, false)));
     gtk_box_append(GTK_BOX(list), opt_row("Системні звуки", "Вхід, сповіщення, знімки екрана", sw_ctl("sounds_enabled", true, true)));
     gtk_box_append(GTK_BOX(list), opt_row("Збільшення іконок доку", "Іконки ростуть під курсором", sw_ctl("dock_magnify", true, false)));
     gtk_box_append(GTK_BOX(list), opt_row("Кнопка вимкнення у верхній панелі", "Меню живлення лишається на Super + O", sw_ctl("topbar_power", true, false)));
@@ -816,7 +818,8 @@ static GtkWidget* build_desktop() {
         drop_ctl("power_profile", {{"power-saver", "Економ"}, {"balanced", "Баланс"}, {"performance", "Максимум"}}, "balanced", true)));
     gtk_box_append(GTK_BOX(list), opt_row("Анімація піксельних віджетів", "Шапки «Про систему», Control Center",
         drop_ctl("pixel_style", {{"waves", "Хвилі"}, {"aurora", "Аврора"}, {"horizon", "Захід сонця"}, {"virus", "Вірус"},
-                                 {"eq", "Еквалайзер"}, {"rain", "Піксельний дощ"}, {"life", "Гра «Життя»"}}, "waves", false)));
+                                 {"eq", "Еквалайзер"}, {"rain", "Піксельний дощ"}, {"life", "Гра «Життя»"},
+                                 {"lava", "Плазма-лампа"}, {"abyss", "Біолюмінесценція"}, {"skyline", "Skyline"}}, "waves", false)));
     // шрифти — лише встановлені
     std::vector<Choice> fonts;
     {

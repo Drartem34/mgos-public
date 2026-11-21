@@ -103,9 +103,14 @@ void update_volume_ui() {
 // ================= CSS =================
 void apply_css() {
     if (!g_css_provider) return;
+    // CSS перебудовуємо лише коли змінились тема/акцент/налаштування або схема (світла/темна) — не на кожен показ
+    static long long last_stamp = -1; static std::string last_scheme;
+    { long long st = sysui::theme_stamp(); std::string sc = sysui::color_scheme();
+      if (st == last_stamp && sc == last_scheme) return;
+      last_stamp = st; last_scheme = sc; }
     reload_wal_colors(); 
 
-    std::string theme_str = exec_cmd("gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null");
+    std::string theme_str = sysui::color_scheme();   // у процесі, без запуску gsettings (раніше гальмувало кожен показ)
     bool is_light = (theme_str.find("prefer-light") != std::string::npos);
 
     std::string bg_rgba, fg_color, fg_trough;
@@ -133,7 +138,9 @@ void apply_css() {
 
         .vol-icon { color: )" + fg_color + R"(; font-size: 20px; margin-right: 12px; }
         
-        progressbar trough { 
+        /* Селектори обмежені .vol-box: в osd_hub усі CSS-провайдери спільні на дисплей,
+           і загальний "progressbar progress" з brightness_osd перекривав акцент гучності. */
+        .vol-box progressbar trough {
             background-color: )" + fg_trough + R"(; 
             min-height: 4px; 
             min-width: 4px; /* ЖОРСТКИЙ ЛІМІТ РОЗМІРУ */
@@ -142,7 +149,7 @@ void apply_css() {
             box-shadow: none;
         }
         
-        progressbar progress { 
+        .vol-box progressbar progress {
             background-color: )" + g_wal.accent + R"(; 
             min-height: 4px;
             min-width: 4px; /* ЖОРСТКИЙ ЛІМІТ РОЗМІРУ */
@@ -152,7 +159,7 @@ void apply_css() {
             box-shadow: none;
         }
         
-        progressbar.overvol progress {
+        .vol-box progressbar.overvol progress {
             background-color: #f38ba8;
         }
 
@@ -270,7 +277,7 @@ static void activate(GtkApplication* app, gpointer) {
     gtk_box_append(GTK_BOX(main_box), progress_bar);
     gtk_box_append(GTK_BOX(main_box), percent_label);
 
-    gtk_window_set_child(GTK_WINDOW(osd_window), main_box);
+    gtk_window_set_child(GTK_WINDOW(osd_window), sysui::bb::underlay(osd_window, main_box, "volume_osd", 15, nullptr, true, true));   // запечений блюр
     gtk_widget_set_visible(osd_window, FALSE); 
 }
 
