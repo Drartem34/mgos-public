@@ -28,7 +28,7 @@ class Store(ctx: Context) {
         get() = sp.getBoolean("tile_offered", false)
         set(v) { sp.edit().putBoolean("tile_offered", v).apply() }
 
-    fun devices(): MutableList<Device> {
+    @Synchronized fun devices(): MutableList<Device> {
         val o = JSONObject(sp.getString("devices", "{}") ?: "{}")
         val out = mutableListOf<Device>()
         for (id in o.keys()) {
@@ -39,12 +39,31 @@ class Store(ctx: Context) {
         return out
     }
 
-    fun save(list: List<Device>) {
-        val o = JSONObject()
-        for (d in list) o.put(d.id, JSONObject().apply {
-            put("name", d.name); put("kind", d.kind); put("key", d.key); put("ip", d.ip); put("port", d.port)
-        })
-        sp.edit().putString("devices", o.toString()).apply()
+    private fun json(d: Device) = JSONObject().apply {
+        put("name", d.name); put("kind", d.kind); put("key", d.key); put("ip", d.ip); put("port", d.port)
+    }
+
+    private fun stored() = JSONObject(sp.getString("devices", "{}") ?: "{}")
+
+    // commit(), а не apply(): Receiver читає сховище з іншого потоку одразу після з'єднання
+    private fun write(o: JSONObject) { sp.edit().putString("devices", o.toString()).commit() }
+
+    /** Додати / замінити один пристрій (з'єднання через QR). Інші записи не чіпає. */
+    @Synchronized fun add(d: Device) { write(stored().put(d.id, json(d))) }
+
+    /** Забути пристрій. */
+    @Synchronized fun remove(id: String) { write(stored().apply { remove(id) }) }
+
+    /**
+     * Лише оновити IP / порт / ім'я тих, хто ВЖЕ є у сховищі — нікого не додає й не видаляє.
+     * Раніше цикл присутності зберігав свій знімок списку цілком: якщо в цей час (≈1–5 с пошуку)
+     * з'єднувався новий ПК, знімок без нього перезаписував сховище — ПК зникав зі списку, а його
+     * файли телефон відкидав (403: невідомий пристрій).
+     */
+    @Synchronized fun updateKnown(list: List<Device>) {
+        val o = stored()
+        for (d in list) o.optJSONObject(d.id)?.apply { put("name", d.name); put("ip", d.ip); put("port", d.port) }
+        write(o)
     }
 
     companion object {

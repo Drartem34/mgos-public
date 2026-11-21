@@ -1,0 +1,103 @@
+#!/bin/bash
+# ============================================================================
+#  mgOS: «запечений» блюр — розмиті шпалери для віджетів SYSui.
+#  ~/.cache/mgos/baked_blur_<монітор>.png — шпалери (постер), обрізані під логічний розмір
+#  монітора й розмиті. Віджети (topbar, годинник) малюють потрібний шматок під своєю
+#  напівпрозорою плашкою — без живого блюру Hyprland (SYSui/sysui_common.h, namespace bb).
+#
+#  Запускає topbar при зміні шпалер / теми / налаштувань (разово, без демона).
+#  Сам порівнює stamp — якщо нічого не змінилось, виходить одразу.
+#  Також веде ~/.config/hypr/blur-layers.conf: при baked_blur у topbar/годинника живого блюру нема,
+#  без нього — є (решта віджетів поверх програм завжди на живому блюрі, інакше xray).
+#
+#    mgos-bakeblur          — оновити, якщо треба
+#    mgos-bakeblur --force  — перегенерувати
+# ============================================================================
+set -u
+OUT="$HOME/.cache/mgos"
+STAMP="$OUT/baked_blur.stamp"
+SET="$HOME/.config/megumin-os/settings.json"
+LAYERS="$HOME/.config/hypr/blur-layers.conf"
+mkdir -p "$OUT"
+exec 9>"$OUT/baked_blur.lock"; flock -n 9 || exit 0   # topbar може смикнути кілька разів поспіль
+
+# ── налаштування ──
+read -r BAKED SIZE PASSES BRIGHT CONTR < <(python3 - "$SET" <<'EOF' 2>/dev/null
+import json, sys
+try: s = json.load(open(sys.argv[1]))
+except Exception: s = {}
+on = s.get("baked_blur", True) and s.get("hyprland_blur", True) and not s.get("eco_effects", False)
+print(int(bool(on)), int(s.get("blur_size", 5)), int(s.get("blur_passes", 4)),
+      int(s.get("blur_brightness", 100)), int(s.get("blur_contrast", 89)))
+EOF
+) || true
+BAKED=${BAKED:-1}; SIZE=${SIZE:-5}; PASSES=${PASSES:-4}; BRIGHT=${BRIGHT:-100}; CONTR=${CONTR:-89}
+
+# ── живий блюр шарів (blur-layers.conf) ──
+write_layers() {
+    local f
+    f=$(mktemp)
+    {
+        if [ "$BAKED" = 1 ]; then
+            echo "# mgOS: запечений блюр лише для topbar/годинника; віджети поверх програм (dock, osd, runner, буфер, меню живлення, cc) лишаються на живому блюрі Hyprland — інакше xray. Файл перезаписується."
+        else
+            echo "# mgOS: запечений блюр вимкнено — усі віджети на живому блюрі Hyprland. Файл перезаписується (mgos-bakeblur)."
+            echo "layerrule = blur on, ignore_alpha 0.1, match:namespace topbar"
+            echo "layerrule = blur on, ignore_alpha 0.1, match:namespace clock_popover"
+        fi
+        cat <<'EOF'
+layerrule = blur on, ignore_alpha 0.5, match:namespace dock
+layerrule = blur on, ignore_alpha 0.1, match:namespace megumin_osd
+layerrule = blur on, ignore_alpha 0.1, match:namespace volume_osd
+layerrule = blur on, ignore_alpha 0.1, match:namespace brightness_osd
+layerrule = blur on, ignore_alpha 0.1, match:namespace notify_osd
+layerrule = blur on, ignore_alpha 0.1, match:namespace powermenu
+layerrule = blur on, ignore_alpha 0.1, match:namespace clipboard
+layerrule = blur on, ignore_alpha 0, match:namespace runner
+layerrule = blur on, ignore_alpha 0.1, match:namespace control_center
+EOF
+    } > "$f"
+    if ! cmp -s "$f" "$LAYERS"; then
+        mv -f "$f" "$LAYERS"
+        [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && hyprctl reload >/dev/null 2>&1
+    else
+        rm -f "$f"
+    fi
+}
+write_layers
+
+[ "$BAKED" = 1 ] || exit 0
+
+# ── джерело: постер поточних шпалер (кадр відео / картинка / піксельні) ──
+SRC=$("$HOME/.local/bin/mgos-wp-poster" 2>/dev/null | tail -1)
+[ -n "$SRC" ] && [ -f "$SRC" ] || exit 0
+
+# ── монітори: ім'я + логічний розмір ──
+MONS=$(hyprctl monitors -j 2>/dev/null | python3 -c '
+import json, sys
+for m in json.load(sys.stdin):
+    w, h = m["width"], m["height"]
+    if m.get("transform", 0) % 2: w, h = h, w
+    s = m.get("scale", 1) or 1
+    print(m["name"], round(w / s), round(h / s))' 2>/dev/null)
+[ -n "$MONS" ] || exit 0
+
+KEY="$SRC|$(stat -c %Y "$SRC")|$MONS|$SIZE|$PASSES|$BRIGHT|$CONTR|v1"
+if [ "${1:-}" != "--force" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$KEY" ]; then
+    ok=1; while read -r n _; do [ -f "$OUT/baked_blur_$n.png" ] || ok=0; done <<< "$MONS"
+    [ $ok = 1 ] && exit 0
+fi
+
+# Сила ≈ як у Hyprland: size × passes (Kawase) → σ. Рахуємо на ¼ розміру (швидко, різниці не видно).
+SIGMA=$(( SIZE * PASSES * 2 / 4 )); [ "$SIGMA" -lt 3 ] && SIGMA=3
+while read -r name w h; do
+    [ -n "$name" ] || continue
+    qw=$(( w / 4 )); qh=$(( h / 4 ))
+    tmp="$OUT/.baked_blur_$name.tmp.png"
+    nice -n 10 magick "$SRC" -resize "${qw}x${qh}^" -gravity center -extent "${qw}x${qh}" \
+        -blur "0x$SIGMA" -resize "${w}x${h}!" \
+        -modulate "$BRIGHT" -brightness-contrast "0x$(( (CONTR - 100) / 2 ))" \
+        -strip -define png:compression-level=3 "$tmp" 2>/dev/null \
+        && mv -f "$tmp" "$OUT/baked_blur_$name.png"
+done <<< "$MONS"
+printf '%s' "$KEY" > "$STAMP"

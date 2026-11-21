@@ -138,7 +138,8 @@ def apply_actual_wallpaper(path):
             except: pass
             
         shaders_opt = "glsl-shaders=/home/doki/.config/mpv/shaders/Anime4K_Restore_CNN_VL.glsl,/home/doki/.config/mpv/shaders/Anime4K_Upscale_CNN_x2_VL.glsl,/home/doki/.config/mpv/shaders/Anime4K_Restore_CNN_M.glsl" if anime4k_enabled else "glsl-shaders="
-        os.system(f"nohup nice -n 19 mpvpaper -o 'config=no {shaders_opt} input-ipc-server=/tmp/mpv-socket loop-file=inf hwdec=auto-safe no-audio panscan=1.0' '*' '{path}' >/dev/null 2>&1 &")
+        # легка копія відео (mgos-wp-optimize) і nice 5 замість 19 — інакше під навантаженням шпалери смикались
+        os.system(f"nohup nice -n 5 mpvpaper -o 'config=no {shaders_opt} input-ipc-server=/tmp/mpv-socket loop-file=inf hwdec=auto-safe no-audio panscan=1.0' '*' \"$(~/.local/bin/mgos-wp-optimize get '{path}' || echo '{path}')\" >/dev/null 2>&1 &")
     else:
         # Для звичайних картинок
         subprocess.run("pkill -9 mpvpaper", shell=True, stderr=subprocess.DEVNULL)

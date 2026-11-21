@@ -39,7 +39,7 @@ PACKAGES_STABLE=(
     kitty fastfetch plymouth
     nwg-look
     grim slurp wl-clipboard cliphist awww mpv imagemagick ffmpeg
-    pipewire-alsa pipewire-jack pavucontrol pamixer playerctl ddcutil
+    pipewire-alsa pipewire-jack pavucontrol pamixer playerctl ddcutil hyprsunset   # hyprsunset: нічне світло і затемнення монітора без DDC (mgos-brightness)
     python-pywal openrgb
     ttf-jetbrains-mono-nerd ttf-liberation ttf-opensans ttf-bitstream-vera noto-fonts noto-fonts-cjk noto-fonts-emoji woff2-font-awesome cantarell-fonts
     btop nautilus gnome-disk-utility rclone power-profiles-daemon bluez bluez-utils
@@ -551,8 +551,21 @@ step_configs() {
         i=$((i + 1)); sub "$i/${#list[@]}"; msg "$c"
         [ -d "./configs/$c" ] || continue
         bk ~/.config/"$c"                       # стара версія — у точці відкату
-        rm -rf ~/.config/"$c"
+        # Файли зі знімка замінюємо, а ЛИШЕ ЛОКАЛЬНІ (яких у знімку немає) — лишаємо: закладки Nautilus
+        # (gtk-3.0/bookmarks — там, напр., другий SSD), теми btop, плагіни OpenRGB, схеми wal…
+        # Раніше тут був rm -rf усієї теки, і все локальне зникало. Виняток — SYSui: це код,
+        # старі бінарники (megumin_osd, notify_osd…) мають зникнути.
+        local old=""
+        if [ -d ~/.config/"$c" ] && [ "$c" != SYSui ]; then
+            old=$(mktemp -d); mv ~/.config/"$c" "$old/"
+        else
+            rm -rf ~/.config/"$c"
+        fi
         cp -r "./configs/$c" ~/.config/
+        if [ -n "$old" ]; then
+            cp -rn --preserve=all "$old/$c/." ~/.config/"$c"/ 2>/dev/null   # -n: файли знімка не перезаписуються
+            rm -rf "$old"
+        fi
         # знімок зроблено з домашньої теки автора — підміняємо шляхи у текстових файлах
         if [ "$SRC_HOME" != "$HOME" ]; then
             grep -rlI --null -F "$SRC_HOME" ~/.config/"$c" 2>/dev/null | xargs -0 -r sed -i "s|$SRC_HOME|$HOME|g"
@@ -588,7 +601,9 @@ step_home() {
     done < <(find ./home -type f -print0)
     chmod +x ~/.local/bin/wal ~/.local/bin/mgos-power ~/.local/bin/mgos-sound ~/.local/bin/mgos-fan \
              ~/.local/bin/mgos-share ~/.local/bin/mgos-quickshare ~/.local/bin/mfg-unlocker-run \
-             ~/.local/bin/mgos-wp-poster ~/.local/bin/mgos-close ~/.local/bin/mgos-zram 2>/dev/null
+             ~/.local/bin/mgos-wp-poster ~/.local/bin/mgos-close ~/.local/bin/mgos-zram ~/.local/bin/mgos-brightness ~/.local/bin/mgos-wp-optimize \
+             ~/.local/bin/hyprctl ~/.local/bin/mgos-bakeblur 2>/dev/null
+    rm -f "${XDG_RUNTIME_DIR:-/tmp}"/mgos-hyprlua.* 2>/dev/null   # обгортка hyprctl перевірить версію Hyprland заново
     _kiosk_shell_hooks   # mgOS перезаписав ~/.bashrc — повертаємо команду kiosk, якщо kioskOS встановлено
     bk ~/.local/share/applications/mimeinfo.cache
     update-desktop-database ~/.local/share/applications 2>/dev/null || true
@@ -597,20 +612,31 @@ step_home() {
 
 # Автозапуски hyprland.conf, що ведуть у нікуди (програми немає) — коментуємо, щоб не було сміття.
 step_cleanup() {
-    local f=~/.config/hypr/hyprland.conf n=0 line cmd
+    local f=${1:-$HOME/.config/hypr/hyprland.conf} n=0 back line cmd isbind
     [ -f "$f" ] || return 0
     bk "$f"
+    # знімок автора вже містить рядки, вимкнені на ЙОГО машині (spotify, SLOWSHELL…) —
+    # спершу повертаємо їх і перевіряємо заново під цей ПК
+    back=$(grep -c -E '^# \[mgOS: немає [^]]*\] ' "$f")
+    sed -i -E 's/^# \[mgOS: немає [^]]*\] //' "$f"
     while IFS= read -r line; do
-        cmd=$(sed -E 's/^exec-once[[:space:]]*=[[:space:]]*//; s/^\[[^]]*\][[:space:]]*//' <<< "$line" | awk '{print $1}')
+        isbind=0
+        if [[ "$line" == exec-once* ]]; then
+            cmd=$(sed -E 's/^exec-once[[:space:]]*=[[:space:]]*//; s/^\[[^]]*\][[:space:]]*//' <<< "$line" | awk '{print $1}')
+        else   # bind = MODS, KEY, exec, команда
+            isbind=1
+            cmd=$(sed -E 's/^[^,]*,[^,]*,[[:space:]]*exec[[:space:]]*,[[:space:]]*//; s/^\[[^]]*\][[:space:]]*//' <<< "$line" | awk '{print $1}')
+        fi
         cmd=${cmd/#\~/$HOME}
-        [ -z "$cmd" ] && continue
+        [[ -z "$cmd" || "$cmd" == '$'* ]] && continue   # $term, $browser — змінні конфігу
         local dead="" pth
         if [[ "$cmd" == /* ]]; then [ -e "$cmd" ] || dead=$cmd; else command -v "$cmd" &>/dev/null || dead=$cmd; fi
-        # шляхи всередині команди (cd /mnt/... тощо), яких на цьому ПК немає
-        if [ -z "$dead" ]; then
+        # шляхи всередині команди (cd /mnt/... тощо), яких на цьому ПК немає;
+        # у біндах лише сама команда (там D-Bus-шляхи /com/…, файли-результати тощо)
+        if [ -z "$dead" ] && [ "$isbind" = 0 ]; then
             for pth in $(grep -oE '(^|[[:space:]"])(/|~/)[^[:space:]"'"'"';&|]+' <<< "${line#*=}" | tr -d ' "'); do
                 pth=${pth/#\~/$HOME}
-                [[ "$pth" == /dev/* || "$pth" == /tmp/* ]] && continue
+                [[ "$pth" == /dev/* || "$pth" == /tmp/* || "$pth" == *'$'* ]] && continue   # $(date …) — файл, що створиться
                 [ -e "$pth" ] || { dead=$pth; break; }
             done
         fi
@@ -618,9 +644,47 @@ step_cleanup() {
         cmd=$dead
         grep -nF -x -- "$line" "$f" >/dev/null || continue
         sed -i "\|^$(sed 's/[][\\.*^$|]/\\&/g' <<< "$line")\$|s|^|# [mgOS: немає $(basename "$cmd")] |" "$f"
-        echo "вимкнено автозапуск: $cmd"; n=$((n + 1))
-    done < <(grep -E '^exec-once' "$f")
-    echo "Мертвих автозапусків прибрано: $n"
+        echo "вимкнено: $cmd"; n=$((n + 1))
+    done < <(grep -E '^(exec-once|bind[a-z]*[[:space:]]*=[^,]*,[^,]*,[[:space:]]*exec[[:space:]]*,)' "$f")
+    echo "Перевірено заново рядків зі знімка: $back · вимкнено (програми немає на цьому ПК): $n"
+    _hypr_selfheal "$f"
+    return 0
+}
+
+# Hyprland ≥ 0.57: конфіг лише Lua (~/.config/hypr/hyprland.lua + mgos/legacy.lua для файлів «Налаштувань»),
+# старі «hyprctl dispatch/keyword» перекладає ~/.local/bin/hyprctl. До 0.57 — як раніше, hyprland.conf.
+_hypr_lua() {
+    command -v Hyprland &>/dev/null || return 1
+    local v; v=$(Hyprland --version 2>/dev/null | grep -m1 -oE 'Hyprland [0-9]+\.[0-9]+' | awk '{print $2}')
+    [ -n "$v" ] || return 1
+    [ "${v%%.*}" -gt 0 ] || [ "${v#*.}" -ge 57 ]
+}
+
+# _hypr_selfheal <hyprland.conf> — знімок зроблено на іншій версії Hyprland / іншому залізі: опції, яких ця
+# версія не знає, і source на файли, яких немає, дають червону плашку помилок на весь екран. Hyprland сам
+# каже, де саме (--verify-config) — коментуємо ці рядки з поясненням, до 5 проходів (одна помилка може ховати іншу).
+_hypr_selfheal() {
+    local main=$1 out pass ef ln why ver fixed=0
+    command -v Hyprland &>/dev/null && [ -f "$main" ] || return 0
+    # Hyprland ≥ 0.57 читає лише hyprland.lua — hyprland.conf лишається шаблоном для старших версій,
+    # а Lua-конфіг сам пристосовується до заліза (NVIDIA, наявні програми) — лагодити нічого
+    _hypr_lua && return 0
+    ver=$(Hyprland --version 2>/dev/null | awk 'NR==1{print $2}')
+    for pass in 1 2 3 4 5; do
+        out=$(timeout 30 Hyprland --verify-config --config "$main" 2>&1) && break
+        local any=0
+        while IFS=$'\t' read -r ef ln why; do
+            [ -f "$ef" ] && [[ "$ln" =~ ^[0-9]+$ ]] || continue
+            sed -n "${ln}p" "$ef" | grep -q '^[[:space:]]*#' && continue
+            bk "$ef"
+            sed -i "${ln}s|^\([[:space:]]*\)|\1# [mgOS: $why (Hyprland $ver)] |" "$ef"
+            echo "вимкнено рядок $ln у $(basename "$ef"): $why"; any=1; fixed=$((fixed + 1))
+        done < <(sed -n -E \
+            -e 's/^Config error in file (.+) at line ([0-9]+): config option <([^>]+)> does not exist.*/\1\t\2\tопції \3 немає/p' \
+            -e 's/^Config error in file (.+) at line ([0-9]+): source= globbing error.*/\1\t\2\tфайлу немає/p' <<< "$out" | sort -u)
+        [ "$any" = 1 ] || break   # інші помилки авто-лагодити не беремось — їх покаже крок «Перевірка»
+    done
+    [ "$fixed" -gt 0 ] && echo "Конфіг Hyprland: виправлено несумісних рядків — $fixed"
     return 0
 }
 
@@ -629,7 +693,33 @@ step_build() {
     bk ~/.config/SYSui
     msg "g++ — панелі під бібліотеки цієї системи"
     # build.sh не чіпає готові бінарники, якщо збірка впала
-    bash ~/.config/SYSui/build.sh || { echo "Збірка впала — лишаю бінарники з інсталятора"; return 0; }
+    bash ~/.config/SYSui/build.sh || echo "Збірка впала — лишаю бінарники з інсталятора"
+    _sysui_live_restart
+    return 0
+}
+
+# Оновлення з живої сесії: старі панелі працюють із видалених файлів (… (deleted)), а нових (osd_hub,
+# dashboard) ще немає — до перелогіну була б суміш старого й нового. Перезапускаємо за exec-once з hyprland.conf.
+_sysui_live_restart() {
+    [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && command -v hyprctl &>/dev/null || return 0
+    local d=$HOME/.config/SYSui p exe line bin n=0
+    echo "expect|all" | socat - UNIX-CLIENT:"$d/cc.sock" 2>/dev/null   # сторож CC: це плановий перезапуск
+    for p in $(pgrep -u "$USER" -f "$d/" 2>/dev/null); do
+        exe=$(readlink "/proc/$p/exe" 2>/dev/null) || continue
+        [[ "$exe" == "$d/"*" (deleted)" ]] && { kill "$p" 2>/dev/null; n=$((n + 1)); }
+    done
+    [ "$n" -gt 0 ] || return 0
+    sleep 0.5
+    msg "Перезапуск панелей SYSui ($n старих процесів)"
+    while IFS= read -r line; do
+        line=${line#*=}; line=${line%%#*}; line=$(sed -E 's/^[[:space:]]+|[[:space:]]+$//g' <<< "$line")
+        bin=$(grep -oE "(~|$HOME)/\.config/SYSui/[A-Za-z0-9_-]+" <<< "$line" | head -1)
+        bin=${bin/#\~/$HOME}
+        [ -x "$bin" ] || continue   # *.sh не збігаються з [A-Za-z0-9_-]+ — wallpapers_watch.sh живе далі й сам піднімає wallpapers
+        pgrep -u "$USER" -f "^$bin( |\$)" >/dev/null && continue   # -x ріже імена >15 символів (controller_addon)
+        hyprctl dispatch exec "$line" >/dev/null 2>&1
+    done < <(grep -E '^exec-once[[:space:]]*=.*\.config/SYSui/' ~/.config/hypr/hyprland.conf 2>/dev/null)
+    return 0
 }
 
 step_theme() {
@@ -737,7 +827,7 @@ _mgos_session_entry() {   # _mgos_session_entry <файл> <Name> <Comment> <Exe
 _mgos_sessions_menu() {
     msg "Меню сесій: mgOS і kiosk"
     # mgOS — звичайний Hyprland з ~/.config/hypr (як пакетний hyprland.desktop)
-    if [ -f ~/.config/hypr/hyprland.conf ]; then
+    if [ -f ~/.config/hypr/hyprland.conf ] || [ -f ~/.config/hypr/hyprland.lua ]; then
         local ex=/usr/bin/start-hyprland; [ -x "$ex" ] || ex=Hyprland
         _mgos_session_entry mgos.desktop "mgOS" "Megumin OS — повна оболонка, повна потужність" "$ex"
     fi
@@ -883,6 +973,16 @@ step_gpu() {
         # знімок системи автора (лише Intel) має ці рядки закоментованими — на NVIDIA вмикаємо назад
         msg "NVIDIA — вмикаю env-змінні nvidia"
         [ -f "$f" ] && bk "$f" && sed -i -E 's/^# (env = (LIBVA_DRIVER_NAME, nvidia|GBM_BACKEND, nvidia-drm|NVD_BACKEND,direct|WLR_NO_HARDWARE_CURSORS, 1)).*/\1/' "$f"
+        # DDC/CI (яскравість монітора з ПК, mgos-brightness): апаратний I2C драйвера NVIDIA дає EIO на більшості
+        # моніторів — програмний I2C на 100 кГц працює. Діє з наступного завантаження модуля (перезавантаження).
+        local ddc=/etc/modprobe.d/mgos-nvidia-ddc.conf
+        if [ ! -f "$ddc" ]; then
+            msg "NVIDIA — DDC/CI для яскравості монітора"
+            bk "$ddc"
+            echo 'options nvidia NVreg_RegistryDwords="RMUseSwI2c=0x01;RMI2cSpeed=100"' | sudo tee "$ddc" >/dev/null
+            echo "DDC/CI монітора запрацює після перезавантаження"
+        fi
+        rm -f ~/.cache/mgos/brightness.json   # спосіб яскравості визначиться заново
         return 0
     fi
     msg "Не NVIDIA — вимикаю nvidia-змінні в hyprland.conf"
@@ -913,7 +1013,7 @@ _hw_display_bin() {
     cmp -s ./scripts/mgos-display "$HW_DISPLAY_BIN" && return 0
     bk "$HW_DISPLAY_BIN"; sudo install -Dm755 ./scripts/mgos-display "$HW_DISPLAY_BIN"
 }
-_hw_touchpads() { python3 ./scripts/mgos-display touchpads 2>/dev/null; }
+_hw_touchpads() { python3 ./scripts/mgos-display touchpads 2>/dev/null | sed '/^[[:space:]]*$/d'; }
 _hw_laptop() { compgen -G '/sys/class/power_supply/BAT*' >/dev/null; }
 
 # _hw_layouts "us,ua" → ті самі + розкладки системи (localectl) і мов локалей (uk_UA → ua), до 4 штук
@@ -948,7 +1048,8 @@ _hw_write() {
     sed -i -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$main"
     printf '\n%s\nsource = %s\n' "$HW_SRC_LINE" "${auto/#$HOME/\~}" >> "$main"
 
-    mapfile -t tps < <(_hw_touchpads)
+    # без тачпада mgos-display друкує порожній рядок — інакше «device { name = }» і source на неіснуючий touchpad.conf
+    mapfile -t tps < <(_hw_touchpads | sed '/^[[:space:]]*$/d')
     cur=$(grep -m1 -E '^[[:space:]]*kb_layout[[:space:]]*=' "$main" | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*(#.*)?$//')
     lay=$(_hw_layouts "${cur:-us}")
     {
@@ -1296,9 +1397,45 @@ step_verify() {
         done
     fi
     chk "автомасштаб екранів (mgos-display)" test -x "$HW_DISPLAY_BIN"
-    [ -f ~/.config/hypr/hyprland.conf ] && chk "mgos-auto.conf підключено" bash -c "test -f ~/.config/hypr/mgos-auto.conf && grep -q '^source = ~/.config/hypr/mgos-auto.conf' ~/.config/hypr/hyprland.conf"
+    if _hypr_lua; then
+        [ -f ~/.config/hypr/hyprland.lua ] && chk "mgos-auto.conf підключено (hyprland.lua)" bash -c "test -f ~/.config/hypr/mgos-auto.conf && grep -q 'mgos-auto.conf' ~/.config/hypr/hyprland.lua"
+    else
+        [ -f ~/.config/hypr/hyprland.conf ] && chk "mgos-auto.conf підключено" bash -c "test -f ~/.config/hypr/mgos-auto.conf && grep -q '^source = ~/.config/hypr/mgos-auto.conf' ~/.config/hypr/hyprland.conf"
+    fi
     [ -n "$(_hw_touchpads)" ] && [ -f ~/.config/hypr/hyprland.conf ] && chk "жести тачпада (touchpad.conf)" grep -q '^gesture = 3, horizontal, workspace' ~/.config/hypr/touchpad.conf
     [ -f ~/.config/hypr/mgos-auto.conf ] && grep -q 'touchpad-user.conf' ~/.config/hypr/mgos-auto.conf && chk "touchpad-user.conf (Налаштування)" test -f ~/.config/hypr/touchpad-user.conf
+    # ── запобіжники від багів перенесення знімка на інший ПК ──
+    if _hypr_lua; then
+        # Hyprland ≥ 0.57: лише Lua-конфіг; NVIDIA-змінні він вмикає сам (за /proc/driver/nvidia)
+        chk "hyprland.lua (Hyprland ≥ 0.57)" test -f ~/.config/hypr/hyprland.lua -a -f ~/.config/hypr/mgos/legacy.lua
+        chk "конфіг Hyprland без помилок" bash -c "timeout 30 Hyprland --verify-config --config ~/.config/hypr/hyprland.lua 2>&1 | grep -q 'config ok'"
+        timeout 30 Hyprland --verify-config --config ~/.config/hypr/hyprland.lua 2>&1 | sed -n '/Config parsing result/,$p' | grep -v 'config ok\|parsing result\|^$' | sed 's/^/    /'
+        chk "hyprctl: старі команди SYSui/скриптів (обгортка)" test -x ~/.local/bin/hyprctl
+        chk "блюр GTK ≥ 4.24 (GDK_WAYLAND_DISABLE)" grep -q 'ext_background_effect_manager_v1' ~/.config/hypr/hyprland.lua
+        chk "запечений блюр (mgos-bakeblur)" test -x ~/.local/bin/mgos-bakeblur
+        chk "mgos-auto.conf без порожніх пристроїв" bash -c "! grep -qE '^[[:space:]]*name[[:space:]]*=[[:space:]]*$' ~/.config/hypr/mgos-auto.conf"
+    elif [ -f ~/.config/hypr/hyprland.conf ] && command -v Hyprland &>/dev/null; then
+        # червона плашка «Config error» — Hyprland сам перевіряє конфіг без запуску
+        chk "конфіг Hyprland без помилок" timeout 30 Hyprland --verify-config --config ~/.config/hypr/hyprland.conf
+        timeout 30 Hyprland --verify-config --config ~/.config/hypr/hyprland.conf 2>&1 | grep '^Config error' | sed 's/^/    /'
+        # знімок з Intel-ноутбука: на NVIDIA env-змінні мають бути увімкнені, на інших — вимкнені
+        if gpu_nvidia; then chk "NVIDIA: env-змінні в hyprland.conf" grep -q '^env = LIBVA_DRIVER_NAME, nvidia' ~/.config/hypr/hyprland.conf
+        else chk "не NVIDIA: nvidia-змінні вимкнені" bash -c "! grep -q '^env = LIBVA_DRIVER_NAME, nvidia' ~/.config/hypr/hyprland.conf"; fi
+        chk "mgos-auto.conf без порожніх пристроїв" bash -c "! grep -qE '^[[:space:]]*name[[:space:]]*=[[:space:]]*$' ~/.config/hypr/mgos-auto.conf"
+    fi
+    # жоден локальний файл конфігів не мав зникнути (закладки Nautilus з SSD, теми, плагіни…):
+    # усе, що було в теках ~/.config до запуску (точка відкату), має існувати й тепер (крім коду SYSui)
+    if [ -n "${CACHE:-}" ] && [ -f "$CACHE/manifest" ]; then
+        local lost
+        lost=$(awk -F'\t' -v h="$HOME/.config/" '$1=="E" && index($2,h)==1 && $2 !~ /\/SYSui$/ && $3!="" {print $3}' "$CACHE/manifest" \
+            | while read -r t; do tar --quoting-style=literal -tf "$CACHE/files/$t" 2>/dev/null; done \
+            | grep -v -E '/$|__pycache__|/cache/' | sort -u | while read -r p; do [ -e "/$p" ] || [ -L "/$p" ] || echo "/$p"; done)
+        chk "локальні файли конфігів на місці" test -z "$lost"
+        [ -n "$lost" ] && head -20 <<< "$lost" | sed 's/^/    загублено: /'
+    fi
+    # панелі не мають працювати зі старих (видалених) бінарників — інакше до перелогіну суміш версій
+    [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && [ -d ~/.config/SYSui ] && chk "панелі SYSui — нові версії" bash -c \
+        'for p in $(pgrep -u "$USER" -f "$HOME/.config/SYSui/"); do readlink "/proc/$p/exe" | grep -q " (deleted)$" && exit 1; done; exit 0'
     echo "Перевірок: $total, з помилками: $fail"
     return 0
 }

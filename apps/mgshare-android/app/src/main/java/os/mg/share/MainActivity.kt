@@ -38,7 +38,8 @@ import kotlin.concurrent.thread
 class MainActivity : ComponentActivity() {
     private lateinit var st: Store
     private lateinit var recv: Receiver
-    private var devices = mutableListOf<Device>()
+    // спільний для UI, циклу присутності й з'єднання — потокобезпечний список
+    private var devices = java.util.concurrent.CopyOnWriteArrayList<Device>()
     private val ui = Handler(Looper.getMainLooper())
     private val pending = mutableListOf<Uri>()        // файли з «Поділитися» / вибрані
     private var fromShare = false
@@ -69,9 +70,9 @@ class MainActivity : ComponentActivity() {
         thread {
             try {
                 val d = Link.pair(st, txt.trim())
+                st.add(d)
                 devices.removeAll { it.id == d.id }
                 devices += d
-                st.save(devices)
                 d.online = Link.hello(st, d)
                 ui.post { toast("З'єднано з ${d.name}"); render() }
             } catch (e: Exception) {
@@ -88,7 +89,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         st = Store(this)
         recv = Receiver(this, st) { e -> ui.post { onRecv(e) } }
-        devices = st.devices()
+        devices = java.util.concurrent.CopyOnWriteArrayList(st.devices())
         buildUi()
         takeShare(intent)
         render()
@@ -118,12 +119,15 @@ class MainActivity : ComponentActivity() {
     }
 
     // ---------- присутність: лише поки вікно на екрані ----------
+    private var presenceGen = 0
     private fun presenceLoop() {
+        // повернення зі сканера QR дає onStop → onStart: старий цикл мав би ще жити — лишаємо лише новий
+        val my = ++presenceGen
         thread(name = "mg-presence") {
-            while (started) {
+            while (started && my == presenceGen) {
                 refreshPresence()
                 var waited = 0
-                while (started && waited < 15000) { Thread.sleep(250); waited += 250 }
+                while (started && my == presenceGen && waited < 15000) { Thread.sleep(250); waited += 250 }
             }
         }
     }
@@ -139,7 +143,7 @@ class MainActivity : ComponentActivity() {
             d.online = (d.ip.isNotEmpty()) && Link.hello(st, d)
             if (was != d.online) changed = true
         }
-        st.save(list)
+        st.updateKnown(list)
         if (changed || true) ui.post { if (!isFinishing) render() }
     }
 
@@ -362,7 +366,7 @@ class MainActivity : ComponentActivity() {
                 AlertDialog.Builder(this@MainActivity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                     .setTitle("Забути ${d.name}?")
                     .setMessage("Щоб знову обмінюватись файлами, треба буде з'єднатись через QR.")
-                    .setPositiveButton("Забути") { _, _ -> devices.removeAll { it.id == d.id }; st.save(devices); render() }
+                    .setPositiveButton("Забути") { _, _ -> devices.removeAll { it.id == d.id }; st.remove(d.id); render() }
                     .setNegativeButton("Ні", null).show()
                 true
             }

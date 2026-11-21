@@ -1181,7 +1181,7 @@ static GtkWidget* build_main_page() {
     gtk_box_append(GTK_BOX(page), pp);
     anim_tile(pp);
 
-    // --- Дисплей (лише якщо монітор підтримує DDC/CI) ---
+    // --- Дисплей: яскравість через ~/.local/bin/mgos-brightness (підсвітка ноутбука / DDC монітора / hyprsunset) ---
     cc.bright_tile = tile_box(GTK_ORIENTATION_VERTICAL, 6);
     gtk_box_append(GTK_BOX(cc.bright_tile), mklabel("Дисплей", "title"));
     GtkWidget* bbtn;
@@ -1190,7 +1190,7 @@ static GtkWidget* build_main_page() {
         v = std::clamp(v, 0.0, 100.0);
         cc.touch_bright = now_ms();
         gtk_label_set_text(GTK_LABEL(cc.bright_pct), (std::to_string((int)v) + "%").c_str());
-        throttle_run(&cc.th_bright, "ddcutil setvcp 10 " + std::to_string((int)v) + " --noverify 2>/dev/null");
+        throttle_run(&cc.th_bright, "~/.local/bin/mgos-brightness set " + std::to_string(std::max(1, (int)v)) + " >/dev/null 2>&1");
         return FALSE;
     }), nullptr);
     gtk_widget_set_visible(cc.bright_tile, FALSE);
@@ -2406,15 +2406,15 @@ static void build_ui(GtkApplication* app) {
 
     gtk_widget_set_visible(cc.win, FALSE);
 
-    // Перевірка DDC/CI у фоні (на моніторах без DDC займає ~6 с — тому один раз і асинхронно)
-    sh_async("command -v ddcutil >/dev/null && timeout 12 ddcutil getvcp 10 --brief 2>/dev/null", [](const std::string& out, bool ok) {
-        // формат: "VCP 10 C 50 100"
+    // Яскравість у фоні: mgos-brightness кешує спосіб (перша перевірка DDC на моніторі без DDC ~6 с)
+    sh_async("timeout 25 ~/.local/bin/mgos-brightness get 2>/dev/null", [](const std::string& out, bool ok) {
+        // формат: "70 ddc" | "100 soft" | "45 backlight"
         std::istringstream ss(out);
-        std::string vcp, code, type; int cur = -1, max = -1;
-        if (ok && (ss >> vcp >> code >> type >> cur >> max) && max > 0) {
-            cc.ddc_ok = true;
-            gtk_range_set_value(GTK_RANGE(cc.bright_scale), 100.0 * cur / max);
-            gtk_label_set_text(GTK_LABEL(cc.bright_pct), (std::to_string(100 * cur / max) + "%").c_str());
+        int cur = -1; std::string how;
+        if (ok && (ss >> cur >> how) && cur >= 0) {
+            cc.ddc_ok = how == "ddc";
+            gtk_range_set_value(GTK_RANGE(cc.bright_scale), cur);
+            gtk_label_set_text(GTK_LABEL(cc.bright_pct), (std::to_string(cur) + "%").c_str());
             gtk_widget_set_visible(cc.bright_tile, TRUE);
         }
     });

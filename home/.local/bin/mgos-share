@@ -667,10 +667,28 @@ class Link:
         end = time.time() + 15 * 60
         i = 0
         waiting = False
+        direct = True   # одна пряма спроба на останній відомий IP: застосунок може бути відкритий, а «привіт» ще не дійшов
         while i < len(files):
             d = load_devices().get(did)
             if not d:
                 return say("ERROR", "unknown")
+            if not is_online(d) and direct and d.get("ip"):
+                direct = False
+                try:   # порт телефона відкритий лише поки вікно Mg Share на екрані — перевіряємо за 1.5 с
+                    socket.create_connection((d["ip"], d.get("port", PHONE_PORT)), timeout=1.5).close()
+                    reachable = True
+                except OSError:
+                    reachable = False
+                if reachable:
+                    r = self.put_file(d, did, files[i], say, gone)
+                    if r == "ok":
+                        self.touch(did, d["ip"], None)
+                        say("GOT", os.path.basename(files[i])); i += 1
+                        continue
+                    if r == "cancel":
+                        return
+                    if r == "auth":   # телефон не знає цей ПК (з'єднання загубилось на телефоні) — чекати марно
+                        return say("ERROR", "auth")
             if not is_online(d):
                 if not waiting:
                     say("WAIT"); waiting = True

@@ -7,7 +7,7 @@ import os
 import pwd
 from pathlib import Path
 
-from PyQt6.QtCore import (QObject, pyqtSignal, pyqtSlot, pyqtProperty, QUrl, QTimer, QAbstractListModel,
+from PyQt6.QtCore import (QObject, QEvent, pyqtSignal, pyqtSlot, pyqtProperty, QUrl, QTimer, QAbstractListModel,
                           QModelIndex, QByteArray, Qt, QSize)
 from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QColor
 from PyQt6.QtWidgets import QLabel, QSizePolicy
@@ -120,6 +120,14 @@ class SddmPreview(QLabel):
         if self.isVisible():
             self._debounce.start(120)
 
+    def event(self, e):
+        # вікно переїхало на екран з іншим масштабом (ноутбук ×2 ↔ 4К ×1.33) — перемалювати під новий DPR
+        if e.type() == getattr(QEvent.Type, "DevicePixelRatioChange", None) and self.conf:
+            self._dirty = True
+            if self.isVisible():
+                self._debounce.start(120)
+        return super().event(e)
+
     def showEvent(self, e):
         super().showEvent(e)
         if getattr(self, "_dirty", False):
@@ -146,9 +154,14 @@ class SddmPreview(QLabel):
         if self._frames < 8:               # кілька «кадрів», щоб відмалювались полотна й ефекти
             return
         self._tick.stop()
-        dpr = max(1, round(self.devicePixelRatioF()))
-        pm = QPixmap.fromImage(img).scaled(self.w * dpr, self.h * dpr,
+        # Дробовий масштаб (4К ×1.33, ×1.5): точний DPR, без round() — інакше картинка мильна або не того розміру.
+        # Знімок QQuickView несе свій DPR (на 4К часто 2) — скидаємо його в 1, бо інакше drawPixmap нижче
+        # малює його в «логічному» розмірі = вдвічі менше, і прев'ю тулиться в лівий верхній кут рамки.
+        img.setDevicePixelRatio(1.0)
+        dpr = max(1.0, self.devicePixelRatioF())
+        pm = QPixmap.fromImage(img).scaled(round(self.w * dpr), round(self.h * dpr),
                                            Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        pm.setDevicePixelRatio(1.0)
         out = QPixmap(pm.size())
         out.fill(Qt.GlobalColor.transparent)
         p = QPainter(out)

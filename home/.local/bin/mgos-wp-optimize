@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# mgos-wp-optimize — легка копія відео-шпалер, щоб робочий стіл не лагав.
+#
+#   mgos-wp-optimize get <відео>   → шлях, який давати mpvpaper: готова оптимізована копія або оригінал
+#                                    (тоді копія робиться у фоні й підміняється в mpv на льоту через IPC)
+#   mgos-wp-optimize clean         → прибрати кеш копій
+#
+# Чому: шпалери 4K 60 к/с ~40 Мбіт/с — кожен кадр змушує Hyprland перемалювати ВЕСЬ екран разом із розмиттям
+# панелей (blur 4 проходи). 60 разів/с це навантаження на GPU і посмикування всього столу. Копія:
+#   • не більша за найбільший монітор (4K-відео на 1080p — марна робота декодера);
+#   • 30 к/с (Налаштування → Шпалери → wp_video_fps; 0 — як в оригіналі) — удвічі менше перемальовок;
+#   • HEVC на апаратному кодері (NVENC / VAAPI), ~8–12 Мбіт/с. Без апаратного кодера — оригінал як є.
+# Кеш: ~/.cache/mgos/wp-opt/<ключ>.mp4 (ключ = шлях + розмір + час зміни + параметри).
+set -u
+CACHE="$HOME/.cache/mgos/wp-opt"
+SETTINGS="$HOME/.config/megumin-os/settings.json"
+SOCK=/tmp/mpv-socket
+
+setting() { python3 -c "import json,sys;print(json.load(open('$SETTINGS')).get('$1','$2'))" 2>/dev/null || echo "$2"; }
+
+target() {   # «ШxВ» найбільшого монітора у фізичних пікселях
+    hyprctl monitors -j 2>/dev/null | python3 -c '
+import json,sys
+m=json.load(sys.stdin) or [{"width":1920,"height":1080}]
+b=max(m,key=lambda x:x["width"]*x["height"]); print(b["width"], b["height"])' 2>/dev/null || echo "1920 1080"
+}
+
+encoder() {
+    local e; e=$(ffmpeg -hide_banner -encoders 2>/dev/null)
+    if grep -q hevc_nvenc <<< "$e" && nvidia-smi -L &>/dev/null; then echo nvenc
+    elif grep -q hevc_vaapi <<< "$e" && [ -e /dev/dri/renderD128 ]; then echo vaapi
+    else echo none; fi
+}
+
+probe() {    # → ширина висота fps бітрейт(біт/с)
+    ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate,bit_rate:format=bit_rate \
+        -of default=nw=1:nk=1 "$1" 2>/dev/null | python3 -c '
+import sys
+v=[l.strip() for l in sys.stdin if l.strip()]
+w,h=int(v[0]),int(v[1]); n,d=(v[2].split("/")+["1"])[:2]; fps=float(n)/float(d or 1)
+br=next((int(x) for x in v[3:] if x.isdigit()),0); print(w,h,round(fps),br)'
+}
+
+cmd_get() {
+    SRC=$(readlink -f "$1")
+    [ -f "$SRC" ] || { echo "$1"; return; }
+    command -v ffmpeg >/dev/null || { echo "$SRC"; return; }
+    local fps tw th w h sfps br enc
+    fps=$(setting wp_video_fps 30)
+    read -r tw th < <(target)
+    read -r w h sfps br < <(probe "$SRC") || { echo "$SRC"; return; }
+    # уже легке — нічого не робимо
+    local need=0
+    [ $((w * h)) -gt $((tw * th)) ] && need=1
+    [ "$fps" -gt 0 ] && [ "$sfps" -gt $((fps + 2)) ] && need=1
+    [ "${br:-0}" -gt 20000000 ] && need=1
+    [ $need = 1 ] || { echo "$SRC"; return; }
+    enc=$(encoder); [ "$enc" = none ] && { echo "$SRC"; return; }
+    mkdir -p "$CACHE"
+    local key out
+    key=$(printf '%s|%s|%s|%sx%s|v1' "$SRC" "$(stat -c '%s.%Y' "$SRC")" "$fps" "$tw" "$th" | sha1sum | cut -c1-16)
+    out="$CACHE/$key.mp4"
+    if [ -s "$out" ]; then echo "$out"; return; fi
+    echo "$SRC"
+    # у фоні: один кодер на файл (flock), потім підміна в mpv, якщо грає саме цей файл
+    ( exec 9>"$CACHE/$key.lock"; flock -n 9 || exit 0
+      local vf="scale=w=${tw}:h=${th}:force_original_aspect_ratio=increase:force_divisible_by=2,crop=min(iw\,${tw}):min(ih\,${th})"
+      [ "$fps" -gt 0 ] && [ "$sfps" -gt "$fps" ] && vf="fps=$fps,$vf"
+      if [ "$enc" = nvenc ]; then
+          nice -n 10 ffmpeg -nostdin -v error -y -i "$SRC" -an -vf "$vf" -c:v hevc_nvenc -preset p5 -tune hq -rc vbr -cq 24 \
+              -b:v 0 -maxrate 14M -bufsize 28M -tag:v hvc1 -movflags +faststart "$out.part.mp4"
+      else
+          nice -n 10 ffmpeg -nostdin -v error -y -vaapi_device /dev/dri/renderD128 -i "$SRC" -an -vf "$vf,format=nv12,hwupload" \
+              -c:v hevc_vaapi -qp 24 -tag:v hvc1 -movflags +faststart "$out.part.mp4"
+      fi
+      if [ -s "$out.part.mp4" ]; then
+          mv -f "$out.part.mp4" "$out"
+          # підміна на льоту: mpv грає оригінал → loadfile копії (без перезапуску mpvpaper і без чорного кадру)
+          cur=$(printf '{"command":["get_property","path"]}\n' | socat -t 0.5 - "$SOCK" 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin).get("data",""))' 2>/dev/null)
+          [ "$(readlink -f "$cur" 2>/dev/null)" = "$SRC" ] && printf '{"command":["loadfile","%s","replace"]}\n' "$out" | socat -t 0.5 - "$SOCK" >/dev/null 2>&1
+      else
+          rm -f "$out.part.mp4"
+      fi
+      rm -f "$CACHE/$key.lock"
+    ) >/dev/null 2>&1 &
+    disown
+}
+
+case "${1:-}" in
+    get) cmd_get "${2:?відео}" ;;
+    clean) rm -rf "$CACHE"; echo "кеш шпалер очищено" ;;
+    *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

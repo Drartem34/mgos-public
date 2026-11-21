@@ -880,7 +880,7 @@ class FanCurveWidget(QWidget):
 MFG_CFG = Path.home() / ".config" / "mfg-unlocker" / "config.json"
 MFG_RUN = str(Path.home() / ".local" / "bin" / "mfg-unlocker-run")
 MFG_DEFAULT_DLL = Path.home() / ".local" / "share" / "mfg-unlocker" / "MFGUnlocker.dll"
-MFG_DLL_NAMES = ["version.dll", "winmm.dll", "dinput8.dll", "dxgi.dll", "d3d12.dll", "d3d11.dll", "dsound.dll",
+MFG_DLL_NAMES = ["version.dll", "winmm.dll", "dinput8.dll", "dxgi.dll", "d3d12.dll", "d3d11.dll", "dsound.dll", "xinput9_1_0.dll",
                  "wininet.dll", "winhttp.dll", "binkw64.dll", "bink2w64.dll", "xinput1_3.dll", "xinput1_4.dll"]
 STEAM_TOOLS = ("proton", "steam linux runtime", "steamworks", "steamvr")
 
@@ -898,6 +898,20 @@ def mfg_save(c):
     tmp = str(MFG_CFG) + ".tmp"
     with open(tmp, "w") as f: json.dump(c, f, ensure_ascii=False, indent=2)
     os.replace(tmp, MFG_CFG)
+
+
+_MFG_MOD = []
+def mfg_runner():
+    """~/.local/bin/mfg-unlocker-run як модуль (таблиця сумісності, параметри запуску Steam)."""
+    if not _MFG_MOD:
+        try:
+            import importlib.util, importlib.machinery
+            ld = importlib.machinery.SourceFileLoader("mfg_unlocker_run", MFG_RUN)
+            sp = importlib.util.spec_from_loader("mfg_unlocker_run", ld)
+            m = importlib.util.module_from_spec(sp); ld.exec_module(m); _MFG_MOD.append(m)
+        except Exception as e:
+            print("mfg-unlocker-run:", e); _MFG_MOD.append(None)
+    return _MFG_MOD[0]
 
 
 def steam_games():
@@ -3374,7 +3388,7 @@ class MeguminSettings(QWidget):
         cmds = {"wifi": "nmcli -t -f WIFI general", "bt": "bluetoothctl show | grep 'Powered: yes'",
                 "blur": "hyprctl getoption decoration:blur:enabled -j",
                 "theme": "gsettings get org.gnome.desktop.interface color-scheme",
-                "night": "pgrep hyprsunset", "pp": "powerprofilesctl get"}
+                "night": "~/.local/bin/mgos-brightness night | grep -qx on && echo on", "pp": "powerprofilesctl get"}
         procs = {k: subprocess.Popen(c, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
                  for k, c in cmds.items()}
         out = {}
@@ -3453,8 +3467,8 @@ class MeguminSettings(QWidget):
                 set_gtk_ini("gtk-application-prefer-dark-theme", 1 if value else 0)
                 self.apply_ui_theme()
             elif key == "night_light":
-                if value: subprocess.Popen(["hyprsunset", "-t", "4000"], start_new_session=True, stdout=DEVNULL, stderr=DEVNULL)
-                else: subprocess.Popen(["killall", "hyprsunset"], stdout=DEVNULL, stderr=DEVNULL)
+                # через mgos-brightness: той самий hyprsunset тримає й затемнення монітора без DDC — killall скинув би його
+                subprocess.Popen([str(Path.home() / ".local/bin/mgos-brightness"), "night", "on" if value else "off"], start_new_session=True, stdout=DEVNULL, stderr=DEVNULL)
             elif key == "power_profile":
                 # лише процесор; кулер у «Авто» підхопить зміну сам (mgos-fan слухає D-Bus), «Крива» лишається кривою
                 subprocess.Popen(["powerprofilesctl", "set", value], stdout=DEVNULL, stderr=DEVNULL)
@@ -3464,8 +3478,11 @@ class MeguminSettings(QWidget):
                 QTimer.singleShot(600, self.refresh_fan)
             elif key == "volume":
                 subprocess.Popen(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{value}%"], stdout=DEVNULL, stderr=DEVNULL)
+            elif key == "wp_video_fps":   # нова частота — перезапустити відео-шпалери (копія зробиться у фоні)
+                QTimer.singleShot(300, lambda: subprocess.Popen([str(Path.home() / ".config/SYSui/wallpaper_restore.sh")],
+                                                                 start_new_session=True, stdout=DEVNULL, stderr=DEVNULL))
             elif key == "screen_brightness":
-                subprocess.Popen(["brightnessctl", "-q", "set", f"{max(1, value)}%"], stdout=DEVNULL, stderr=DEVNULL)
+                subprocess.Popen([str(Path.home() / ".local/bin/mgos-brightness"), "set", str(max(1, int(value)))], stdout=DEVNULL, stderr=DEVNULL)
         except Exception: pass
 
     def launch_app(self, cmd, close_ui=False):
@@ -3968,6 +3985,10 @@ class MeguminSettings(QWidget):
             SettingRow("", "", "Пауза під вікнами", "Поки вікна закривають ≥85% екрана — відео й піксельні шпалери стоять, блюр «запікається»",
                        MeguminSwitch("wp_pause_covered", bool(self.settings.get("wp_pause_covered", True)), self.save_setting)),
             SettingRow("", "", "Шейдери Anime4K", "Деблюр і апскейл «мильних» відео-шпалер", self.sw("wp_anime4k")),
+            SettingRow("", "", "Частота відео-шпалер",
+                       "Легка копія відео: роздільність монітора, HEVC на відеокарті. 30 к/с — удвічі менше перемальовок столу з розмиттям",
+                       SegmentedSelector("wp_video_fps", [(30, "30 к/с"), (60, "60 к/с"), (0, "Як у файлі")],
+                                         int(self.settings.get("wp_video_fps", 30)), self.save_setting)),
             SettingRow("", "", "Швидкий вибір", "Super + W — панель шпалер поверх усіх вікон",
                        on_click=lambda: self.launch_app(f"echo show | socat - UNIX-CONNECT:{Path.home()}/.config/SYSui/wallpapers.sock")),
         ]))
@@ -4132,10 +4153,17 @@ class MeguminSettings(QWidget):
         page, lay = self.page_base("display")
         self.hero(lay, "display", "Яскравість, нічне світло та розташування моніторів.")
         rows = []
+        # mgos-brightness: підсвітка ноутбука, DDC/CI монітора або програмне затемнення (hyprsunset) — що є
         try:
-            cur = int(subprocess.run(["brightnessctl", "-m"], capture_output=True, text=True, timeout=1).stdout.split(",")[3].rstrip("%"))
-            rows.append(SettingRow("", "", "Яскравість", "Також Fn+F2 / Fn+F3",
-                                   MeguminSlider("screen_brightness", cur, 1, 100, "%", self.save_setting, width=220)))
+            cur, how = subprocess.run([str(Path.home() / ".local/bin/mgos-brightness"), "get"], capture_output=True, text=True, timeout=25).stdout.split()[:2]
+            desc = {"backlight": "Підсвітка екрана · Fn+F2 / Fn+F3",
+                     "ddc": "Підсвітка монітора (DDC/CI) · Super+F2 / Super+F3",
+                     "soft": "Монітор не приймає DDC/CI — програмне затемнення (не яскравіше за 100%) · Super+F2 / Super+F3"}.get(how, "")
+            rows.append(SettingRow("", "", "Яскравість", desc,
+                                   MeguminSlider("screen_brightness", int(cur), 20 if how == "soft" else 1, 100, "%", self.save_setting, width=220)))
+            if how == "soft":
+                rows.append(SettingRow("", "", "Шукати DDC/CI ще раз", "Після ввімкнення DDC/CI в меню монітора або перезавантаження з новим драйвером",
+                                       LinkButton("Перевірити", lambda: (subprocess.run([str(Path.home() / ".local/bin/mgos-brightness"), "detect"], timeout=30), self.rebuild_page("display")))))
         except Exception:
             pass
         rows += [
@@ -4304,6 +4332,7 @@ class MeguminSettings(QWidget):
         except Exception:
             lays = ""
         self.hero(lay, "keyboard", f"Розкладки: {lays.upper().replace(',', ' · ')}" if lays else "Повтор клавіш і розкладки.")
+        self.kbd_section(lay)
         lay.addWidget(self.create_card([
             SettingRow("", "", "Швидкість повтору", "Скільки символів за секунду, коли клавішу затиснуто",
                        self.sl("kb_rate", 10, 60, labels=("Повільно", "Швидко"), ticks=8, width=240)),
@@ -4311,7 +4340,7 @@ class MeguminSettings(QWidget):
         ]))
         lay.addWidget(self.create_card([
             SettingRow("", "", "Перемикання розкладки", "Alt + Shift", None),
-            SettingRow("", "", "Яскравість екрана", "Fn + F2 / Fn + F3", None),
+            SettingRow("", "", "Яскравість екрана", "Fn + F2 / Fn + F3 · на будь-якій клавіатурі — Super + F2 / Super + F3", None),
         ]))
         if KBD_LED:
             self.section(lay, "Підсвітка клавіатури")
@@ -4328,6 +4357,68 @@ class MeguminSettings(QWidget):
         t = QLineEdit(); t.setPlaceholderText("Перевірте повтор клавіш тут…")
         lay.addWidget(t)
         return page
+
+    # --- Звичайна клавіатура: схема + розпізнавання (kbd_preview.py) ---
+    def kbd_section(self, lay):
+        try:
+            import kbd_preview as kp
+        except Exception as e:
+            print("kbd_preview:", e); return
+        pv = kp.KeyboardPreview(T, ACCENT[0], FONT_UI)
+        self.kbd_preview = pv
+        lay.addWidget(GroupCard([pv]))
+
+        start = LinkButton("Перевірити клавіші", pv.start_test)
+        stop = LinkButton("Завершити перевірку", pv.stop_test)
+        reset = LinkButton("Скинути", pv.reset_test)
+        form = SegmentedSelector("kbd_form", [("auto", "Авто"), ("ansi", "ANSI"), ("iso", "ISO")], pv.form,
+                                 lambda k, v: pv.set_form(v), seg_width=70)
+        bar = QWidget(); bh = QHBoxLayout(bar); bh.setContentsMargins(0, 0, 0, 0); bh.setSpacing(8)
+        bh.addWidget(start); bh.addWidget(stop); bh.addWidget(reset); bh.addStretch(); bh.addWidget(form)
+        lay.addWidget(bar)
+
+        kb = pv.kb
+        f = pv.feat
+        lname = lambda l, v: (l.upper() + (f" ({v})" if v else ""))
+        laytxt = " · ".join(lname(l, v) for l, v in pv.lays) + (f" — зараз: {pv.active}" if pv.active else "")
+        if kb:
+            src = kp.bus_name(kb["bus"]) + (" · приймач, через який працює й миша" if kb["mouse"] else "")
+            others = [g["name"] for g in pv.kbds[1:]]
+            kbtxt = f"{kb['name']} ({src})" + (f". Ще: {', '.join(others)}" if others else "")
+        else:
+            kbtxt = "Клавіатуру не знайдено"
+        declared = "заявлено приймачем — приймачі часто заявляють усе підряд, перевірка покаже точно" if kb and kb["mouse"] else "заявлено пристроєм"
+        spec_names = [kp.SPECIAL[c] for c in f["special"]]
+        self.kbd_rows = {
+            "kb": SettingRow("", "", "Клавіатура", kbtxt),
+            "lay": SettingRow("", "", "Розкладки", laytxt + ". Підписи на схемі — з розкладок системи (xkb), друга — кольором"),
+            "form": SettingRow("", "", "Форма", "…"),
+            "size": SettingRow("", "", "Розмір", f"{f['size']} — {declared}"),
+            "spec": SettingRow("", "", "Спецклавіші", (f"{len(spec_names)}: " + ", ".join(spec_names[:10]) + ("…" if len(spec_names) > 10 else "")
+                                                       + f" — {declared}") if spec_names else "Немає — лише стандартні клавіші"),
+            "found": SettingRow("", "", "Знайдено перевіркою", "…"),
+        }
+        lay.addWidget(self.create_card(list(self.kbd_rows.values())))
+
+        def refresh():
+            start.setVisible(not pv.testing); stop.setVisible(pv.testing)
+            reset.setVisible(not pv.testing and bool(pv.tested or pv.extra))
+            iso = pv.iso()
+            why = ("натискали клавішу < > біля лівого Shift" if pv.seen_iso else "клавіші < > біля лівого Shift не натискали") if pv.form == "auto" else "вибрано вручну"
+            self.kbd_rows["form"].desc_lbl.setText(("ISO — Enter «чобітком», коротший лівий Shift" if iso else "ANSI — широкий Enter і лівий Shift") + f" ({why})")
+            if pv.extra:
+                parts = []
+                for code, x in sorted(pv.extra.items()):
+                    act = f" → {x['bind']}" if x.get("bind") else (" → не призначено" if x.get("sym") else "")
+                    parts.append(f"{x['name']} ({x.get('sym') or x.get('ev') or code}){act}")
+                found = "Поза схемою: " + "; ".join(parts)
+            elif pv.tested:
+                found = f"Перевірено {len(pv.tested)} клавіш, спецклавіш поза стандартною схемою не натискали"
+            else:
+                found = "Натисніть «Перевірити клавіші»: медіа-, макро- та Fn-клавіші виробника з'являться тут — з кодом і тим, чи призначена на них дія"
+            self.kbd_rows["found"].desc_lbl.setText(found)
+        pv.changed.connect(refresh)
+        refresh()
 
     def kbd_light_control(self):
         if not KBD_LED: return None
@@ -5041,9 +5132,14 @@ class MeguminSettings(QWidget):
         mod = Path(os.path.expanduser(cfg["mod_dll"]))
         launch = f"{MFG_RUN} %command%"
 
+        mctl = QWidget(); mh = QHBoxLayout(mctl); mh.setContentsMargins(0, 0, 0, 0); mh.setSpacing(8)
+        mh.addWidget(LinkButton("Оновити" if mod.exists() else "Завантажити", self.mfg_download))
+        mh.addWidget(LinkButton("Вибрати…", self.mfg_pick_dll))
+        ver = cfg.get("mod_version", "")
         self.mfg_mod_row = SettingRow("", "", "Файл мода",
-                                      (f"✓ {mod}" if mod.exists() else f"• Немає: {mod}. Завантажте MFGUnlocker.dll з GitHub Releases"),
-                                      LinkButton("Вибрати…", self.mfg_pick_dll))
+                                      (f"✓ {ver + ' · ' if ver else ''}{mod}" if mod.exists()
+                                       else "• Ще не завантажено — «Завантажити» бере останній реліз з GitHub і звіряє SHA256"),
+                                      mctl)
         ask = MeguminSwitch("mfg_ask", bool(cfg.get("ask", True)), lambda k, v: self.mfg_set(ask=bool(v)))
         lay.addWidget(self.create_card([
             self.mfg_mod_row,
@@ -5058,21 +5154,134 @@ class MeguminSettings(QWidget):
                        lambda: self.launch_app("xdg-open https://github.com/dashdogy/MFG-Unlocker/blob/main/docs/compatibility.md"))),
         ]))
 
+        # GPU: DLSS MFG лише на RTX 20–50, XeMFG — будь-яка (docs/compatibility.md)
+        try:
+            gpu = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True, timeout=3).stdout.strip().splitlines()[0]
+        except Exception:
+            gpu = ""
+        if re.search(r"RTX\s*50", gpu): gtxt = f"{gpu}: MFG рідна в драйвері — мод додає меню й керування"
+        elif re.search(r"RTX\s*[234]0", gpu): gtxt = f"{gpu}: DLSS Multi Frame Generation до 6x (DX12; Vulkan — експериментально)"
+        elif gpu: gtxt = f"{gpu}: DLSS MFG недоступна — лише XeMFG через OptiScaler"
+        else: gtxt = "Не NVIDIA: DLSS MFG недоступна — лише XeMFG через OptiScaler (AMD — так, Intel Arc — експериментально)"
+        # увімкнена гра без обгортки в параметрах запуску Steam = мод ніколи не ставиться (раніше рядок треба було
+        # вставити руками) — дописуємо самі; поки Steam відкритий — у чергу «Закрити Steam і застосувати»
+        mfg = mfg_runner()
+        if mfg:
+            pend = cfg.setdefault("pending_launch", {})
+            for aid, g in cfg["games"].items():
+                if g.get("enabled") and "mfg-unlocker-run" not in mfg.get_launch(aid) and aid not in pend:
+                    if mfg.set_launch(aid, True) == "steam": pend[aid] = True
+            if not pend: cfg.pop("pending_launch", None)
+            mfg_save(cfg); self.mfg_cfg = cfg
+        pend = cfg.get("pending_launch", {})
+        top = [SettingRow("", "", "Відеокарта", gtxt)]
+        if pend:
+            top.append(SettingRow("", "", f"Параметри запуску чекають: {len(pend)}",
+                                  "Steam відкритий і перезаписує свої налаштування — закрийте його, і параметри запишуться",
+                                  LinkButton("Закрити Steam і застосувати", self.mfg_apply_pending)))
+        lay.addWidget(self.create_card(top))
+
         self.section(lay, "Ігри Steam")
+        mfg = mfg_runner()
         games = steam_games()
         rows = []
         for aid, name in games:
             g = cfg["games"].get(aid, {})
+            c = mfg.compat_for(name) if mfg else {"status": "unknown", "use": "version.dll", "also": [], "dont": {}}
+            st = c["status"]
+            dll = g.get("dll") or c["use"] or "version.dll"
+            # збережена назва в «не можна» для цієї гри (напр. version.dll у Cyberpunk = Cyber Engine Tweaks) —
+            # міняємо на рекомендовану, якщо мод під нею ще ні разу не спрацював
+            if g and dll in c["dont"] and c["use"] and not g.get("works"):
+                dll = c["use"]; self.mfg_game(aid, name, dll=dll, tried=[])
+            # підписи в списку: ★ рекомендована, + ще працює, ✕ не можна (причина з таблиці)
+            items = []
+            for d in MFG_DLL_NAMES:
+                lab = d
+                if d == c["use"]: lab = f"★ {d}"
+                elif d in c["also"]: lab = f"+ {d}"
+                elif d in c["dont"]: lab = f"✕ {d} — {c['dont'][d]}"
+                items.append((d, lab))
+            if st == "ok":
+                desc = f"✓ Сумісна · рекомендовано {c['use']}" + (f", ще: {', '.join(c['also'])}" if c["also"] else "")
+            elif st == "optiscaler":
+                desc = "Працює лише як плагін OptiScaler (назву DLL дає OptiScaler)"
+            elif st == "anticheat":
+                desc = "⛔ Анти-чит — мод не можна (ризик бану)"
+            else:
+                desc = "Не перевірена: спершу version.dll, потім winmm.dll — якщо мод не завантажиться, назва зміниться сама"
+            if g.get("works"): desc = f"✓ Мод працював як {g['works']}"
+            elif g.get("tried"): desc += f" · не спрацювали: {', '.join(g['tried'])}"
+            if aid in pend: desc += " · параметри запуску запишуться після закриття Steam"
             ctl = QWidget(); h = QHBoxLayout(ctl); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(10)
-            pop = MacPopup(f"mfg_dll:{aid}", [(d, d) for d in MFG_DLL_NAMES], g.get("dll", "version.dll"),
-                           lambda k, v, a=aid, n=name: self.mfg_game(a, n, dll=v), width=130)
-            sw = MeguminSwitch(f"mfg_on:{aid}", bool(g.get("enabled")), lambda k, v, a=aid, n=name: self.mfg_game(a, n, enabled=bool(v)))
-            h.addWidget(pop); h.addWidget(sw)
-            rows.append(SettingRow("", "", name, f"AppID {aid}" + (f" · тека: {g['exe_dir']}" if g.get("exe_dir") else ""), ctl))
+            if st != "anticheat":
+                pop = MacPopup(f"mfg_dll:{aid}", items, dll, lambda k, v, a=aid, n=name: self.mfg_game(a, n, dll=v, tried=[], works=""), width=150)
+                h.addWidget(pop)
+            sw = MeguminSwitch(f"mfg_on:{aid}", bool(g.get("enabled")), lambda k, v, a=aid, n=name, d=dll: self.mfg_toggle(a, n, bool(v), d))
+            sw.setEnabled(st != "anticheat")
+            h.addWidget(sw)
+            rows.append(SettingRow("", "", name, desc, ctl))
         if not rows:
             rows.append(SettingRow("", "", "Ігор Steam не знайдено", "Встановіть гру в Steam і відкрийте цю сторінку знову"))
         lay.addWidget(self.create_card(rows))
         return page
+
+    # Увімкнути генерацію кадрів у грі одним перемикачем: DLL з таблиці, перевірка анти-чита в теці гри
+    # і обгортка в параметрах запуску Steam (сама, без копіювання рядка)
+    def mfg_toggle(self, appid, name, on, dll):
+        mfg = mfg_runner()
+        if on and mfg:
+            gd = mfg.install_dir(appid)
+            scan = mfg.scan_game(gd) if gd else {"anticheat": []}
+            if scan["anticheat"]:
+                subprocess.Popen(["notify-send", "-a", "Налаштування", "MFG Unlocker",
+                                  f"«{name}»: знайдено анти-чит ({', '.join(scan['anticheat'][:3])}) — мод не вмикаю"])
+                self.rebuild_page("games"); return
+        self.mfg_game(appid, name, enabled=on, dll=dll)
+        r = mfg.set_launch(appid, on) if mfg else "nosteam"
+        c = mfg_load()
+        pend = c.setdefault("pending_launch", {})
+        if r == "steam": pend[appid] = on
+        else: pend.pop(appid, None)
+        if not pend: c.pop("pending_launch", None)
+        mfg_save(c); self.mfg_cfg = c
+        if r == "ok":
+            subprocess.Popen(["notify-send", "-a", "Налаштування", "MFG Unlocker",
+                              f"«{name}»: генерацію кадрів " + ("увімкнено" if on else "вимкнено") + " — параметри запуску Steam оновлено"])
+        self.rebuild_page("games")
+
+    def mfg_download(self):
+        def work():
+            r = subprocess.run([MFG_RUN, "--update-mod"], capture_output=True, text=True, timeout=180).stdout.strip()
+            ok = r and not r.startswith("ERROR")
+            subprocess.Popen(["notify-send", "-a", "Налаштування", "MFG Unlocker",
+                              f"Мод {r} завантажено і перевірено (SHA256)" if ok else f"Не вдалося завантажити: {r[6:] or 'немає мережі'}"])
+        t = threading.Thread(target=work, daemon=True); t.start()
+        def poll():
+            if t.is_alive(): QTimer.singleShot(500, poll)
+            else: self.mfg_cfg = mfg_load(); self.rebuild_page("games")
+        QTimer.singleShot(500, poll)
+
+    def mfg_apply_pending(self):
+        """Закрити Steam (він перезаписує localconfig.vdf при виході), записати параметри, запустити Steam знову."""
+        mfg = mfg_runner()
+        if not mfg: return
+        def work():
+            subprocess.run(["steam", "-shutdown"], capture_output=True, timeout=30)
+            for _ in range(60):
+                if not mfg.steam_running(): break
+                time.sleep(0.5)
+            c = mfg_load()
+            for aid, on in list(c.get("pending_launch", {}).items()):
+                if mfg.set_launch(aid, on) == "ok": c["pending_launch"].pop(aid, None)
+            if not c.get("pending_launch"): c.pop("pending_launch", None)
+            mfg_save(c)
+            subprocess.Popen(["steam", "-silent"], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        t = threading.Thread(target=work, daemon=True); t.start()
+        def poll():
+            if t.is_alive(): QTimer.singleShot(500, poll)
+            else: self.mfg_cfg = mfg_load(); self.rebuild_page("games")
+        QTimer.singleShot(500, poll)
 
     def mfg_set(self, **kw):
         c = mfg_load(); c.update(kw); mfg_save(c); self.mfg_cfg = c
