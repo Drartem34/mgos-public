@@ -1,2 +1,0 @@
-# жива флешка: інсталятор (mgos-setup) запускає mgos-arch-install через sudo без пароля
-mgos ALL=(ALL:ALL) NOPASSWD: ALL
