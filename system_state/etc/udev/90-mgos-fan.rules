@@ -1,0 +1,2 @@
+# mgOS: дозволити групі wheel перемикати профіль прошивки (кулер) — Налаштування → Батарея → Кулер
+ACTION=="add|change", SUBSYSTEM=="platform-profile", RUN+="/bin/sh -c 'chgrp wheel /sys%p/profile /sys/firmware/acpi/platform_profile; chmod g+w /sys%p/profile /sys/firmware/acpi/platform_profile'"
