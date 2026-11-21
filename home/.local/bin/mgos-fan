@@ -1,0 +1,121 @@
+#!/bin/bash
+# mgOS: кулер Samsung Galaxy Book.
+# Прямого PWM у цього BIOS/EC немає — криву кулера вибирає прошивка за platform_profile
+# (драйвер samsung_galaxybook): low-power / quiet / balanced / performance.
+#
+# Розподіл ролей:
+#   power-profiles-daemon — СТОКОВИЙ: керує і процесором, і platform_profile. НЕ блокуємо йому
+#                           platform_profile — на цьому тримається економ/холодний кіоск (power-saver → low-power).
+#   mgos-fan              — лише в сесії mgOS: ручний режим / крива переписують platform_profile поверх PPD.
+#                           У кіоску не робить НІЧОГО, фоновий процес сам виходить, коли сесія mgOS закінчилась.
+#
+#   mgos-fan status            — rpm/temp/profile/mode/writable/split (рядок key=value)
+#   mgos-fan set MODE          — auto | quiet | balanced | performance | curve (запам'ятовується)
+#                                auto  — кулер іде за режимом живлення (подія D-Bus, без опитування)
+#                                curve — раз на 3 с температура CPU → смуга кривої → профіль прошивки
+#                                        (~/.config/mgos/fan-curve.conf: «°C відсоток»; 0–25 економ,
+#                                        25–50 тихий, 50–75 баланс, 75–100 макс)
+#   mgos-fan apply             — після входу: застосувати збережений режим (exec-once у Hyprland)
+#   mgos-fan install           — (root) права на platform_profile (+ прибирає старий блок PPD, якщо є)
+set -u
+PP=/sys/firmware/acpi/platform_profile
+STATE="$HOME/.config/mgos/fan.conf"
+CURVE="$HOME/.config/mgos/fan-curve.conf"
+RUN="${XDG_RUNTIME_DIR:-/tmp}"
+PIDF="$RUN/mgos-fan.pid"
+RULE=/etc/udev/rules.d/90-mgos-fan.rules
+PPD_DROPIN=/etc/systemd/system/power-profiles-daemon.service.d/mgos-fan.conf
+LEVELS=(low-power quiet balanced performance)
+HYST=3   # °C: вниз перемикаємось, лише коли охололо на 3° нижче порогу — без «смикання»
+
+fan_rpm() { for h in /sys/class/hwmon/hwmon*; do [ "$(cat "$h/name" 2>/dev/null)" = acpi_fan ] && cat "$h/fan1_input" 2>/dev/null && return; done; echo 0; }
+cpu_temp() {
+    for h in /sys/class/hwmon/hwmon*; do
+        [ "$(cat "$h/name" 2>/dev/null)" = coretemp ] && { echo $(( $(cat "$h/temp1_input") / 1000 )); return; }
+    done; echo 0
+}
+saved() { cat "$STATE" 2>/dev/null || echo auto; }
+ppd_ok() { [ ! -e "$PPD_DROPIN" ]; }   # PPD стоковий (без --block-driver) — інакше кіоск не охолоджується
+kiosk() { pgrep -f 'Hyprland -c .*hyprland/kiosk\.conf' >/dev/null 2>&1; }
+mgos_alive() { pgrep -x Hyprland >/dev/null 2>&1 && ! kiosk; }   # фоновий процес живе лише поки йде сесія mgOS
+ppd_map() {   # режим живлення → профіль прошивки
+    case "$1" in power-saver) echo low-power ;; performance) echo performance ;; *) echo balanced ;; esac
+}
+write_pp() {
+    grep -qw "$1" "${PP}_choices" 2>/dev/null || { echo "профіль $1 не підтримується" >&2; return 2; }
+    [ "$(cat "$PP")" = "$1" ] && return 0
+    if [ -w "$PP" ]; then echo "$1" > "$PP"; else echo "немає прав: «Налаштування → Батарея → Кулер → Дозволити»" >&2; return 3; fi
+}
+curve_pct() {   # $1 °C → відсоток на кривій (лінійно між точками, як малює «Налаштування»)
+    local pts; pts=$(grep -E '^[0-9]' "$CURVE" 2>/dev/null); [ -n "$pts" ] || pts=$'40 10\n55 35\n70 60\n85 90'
+    echo "$pts" | sort -n | awk -v t="$1" '
+        { x[NR]=$1; y[NR]=$2 } END {
+            if (t <= x[1]) { print y[1]; exit } if (t >= x[NR]) { print y[NR]; exit }
+            for (i = 1; i < NR; i++) if (t <= x[i+1]) { printf "%d\n", y[i] + (y[i+1]-y[i]) * (t-x[i]) / (x[i+1]-x[i]); exit } }'
+}
+pct_level() { local p=$1; [ "$p" -lt 25 ] && echo 0 && return; [ "$p" -lt 50 ] && echo 1 && return; [ "$p" -lt 75 ] && echo 2 && return; echo 3; }
+curve_level() { pct_level "$(curve_pct "$1")"; }
+
+stop_daemon() {   # гасимо попередній фоновий процес разом з його gdbus/sleep (вся група процесів)
+    local pid; pid=$(cat "$PIDF" 2>/dev/null) || return 0
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && kill -- -"$pid" 2>/dev/null
+    rm -f "$PIDF"
+}
+start_daemon() { stop_daemon; setsid -f "$0" daemon >/dev/null 2>&1; }
+
+case "${1:-status}" in
+    status)
+        echo "rpm=$(fan_rpm) temp=$(cpu_temp) profile=$(cat "$PP" 2>/dev/null) mode=$(saved) writable=$([ -w "$PP" ] && echo 1 || echo 0) split=$(ppd_ok && echo 1 || echo 0) power=$(powerprofilesctl get 2>/dev/null)" ;;
+    set)
+        m="${2:-auto}"
+        case "$m" in auto|quiet|balanced|performance|curve) ;; *) echo "режим: auto|quiet|balanced|performance|curve" >&2; exit 2 ;; esac
+        mkdir -p "${STATE%/*}"; echo "$m" > "$STATE"
+        case "$m" in
+            auto)  write_pp "$(ppd_map "$(powerprofilesctl get 2>/dev/null)")"; start_daemon ;;
+            curve) write_pp "${LEVELS[$(curve_level "$(cpu_temp)")]}"; start_daemon ;;
+            *)     write_pp "$m"; start_daemon ;;
+        esac ;;
+    apply)
+        kiosk && exit 0   # кіоск: platform_profile веде лише power-profiles-daemon
+        "$0" set "$(saved)" ;;
+    daemon)
+        echo $$ > "$PIDF"
+        m=$(saved)
+        if [ "$m" = auto ]; then
+            # PPD сам веде platform_profile за режимом живлення — фоновий процес не потрібен
+            rm -f "$PIDF"; exit 0
+        elif [ "$m" = curve ]; then
+            mgos_alive || exit 0
+            cur=-1
+            while mgos_alive; do
+                t=$(cpu_temp); want=$(curve_level "$t")
+                # гістерезис: на нижчий рівень — лише якщо й при t+HYST крива вже нижче поточного рівня
+                if [ "$cur" -ge 0 ] && [ "$want" -lt "$cur" ] && [ "$(curve_level $((t + HYST)))" -ge "$cur" ]; then want=$cur; fi
+                [ "$(cat "$PP")" != "${LEVELS[$want]}" ] && write_pp "${LEVELS[$want]}" 2>/dev/null
+                cur=$want
+                sleep 3
+            done
+        else
+            # ручний режим: PPD при зміні режиму живлення перепише platform_profile → повертаємо свій (лише в mgOS)
+            mgos_alive || exit 0
+            gdbus monitor --system --dest org.freedesktop.UPower.PowerProfiles 2>/dev/null | while read -r line; do
+                mgos_alive || { kill -- -$$ 2>/dev/null; exit 0; }
+                grep -q "ActiveProfile" <<<"$line" && write_pp "$m" 2>/dev/null
+            done
+        fi ;;
+    install)
+        [ "$(id -u)" = 0 ] || { echo "потрібен root: sudo $0 install" >&2; exit 1; }
+        cat > "$RULE" <<'EOF'
+# mgOS: дозволити групі wheel перемикати профіль прошивки (кулер) — Налаштування → Батарея → Кулер
+ACTION=="add|change", SUBSYSTEM=="platform-profile", RUN+="/bin/sh -c 'chgrp wheel /sys%p/profile /sys/firmware/acpi/platform_profile; chmod g+w /sys%p/profile /sys/firmware/acpi/platform_profile'"
+EOF
+        udevadm control --reload
+        chgrp wheel "$PP" /sys/class/platform-profile/*/profile && chmod g+w "$PP" /sys/class/platform-profile/*/profile
+        # старий блок PPD ламав кіоск (power-saver переставав вмикати економ-профіль кулера) — прибираємо
+        if [ -e "$PPD_DROPIN" ]; then
+            rm -f "$PPD_DROPIN"; rmdir "${PPD_DROPIN%/*}" 2>/dev/null
+            systemctl daemon-reload && systemctl restart power-profiles-daemon
+        fi
+        echo "✓ Готово: права на кулер є, power-profiles-daemon стоковий" ;;
+    *) sed -n 2,20p "$0"; exit 2 ;;
+esac

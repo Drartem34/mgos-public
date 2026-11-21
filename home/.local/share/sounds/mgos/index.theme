@@ -1,0 +1,8 @@
+[Sound Theme]
+Name=mgOS
+Comment=mgOS — м'які скляні звуки
+Inherits=freedesktop
+Directories=stereo
+
+[stereo]
+OutputProfile=stereo

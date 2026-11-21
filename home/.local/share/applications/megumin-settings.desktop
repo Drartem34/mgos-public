@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Megumin Settings
+Comment=Налаштування системи Megumin OS
+Exec=sh -c "pkill -f settings.py; python3 /home/doki/.config/ignis/settings.py"
+Icon=preferences-system
+Terminal=false
+Type=Application
+Categories=Settings;System;
+StartupWMClass=megumin-settings
