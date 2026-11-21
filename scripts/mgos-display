@@ -1,0 +1,384 @@
+#!/usr/bin/env python3
+# ============================================================================
+#  mgos-display — автомасштаб і режим екранів для Hyprland (mgOS і kioskOS)
+#
+#  Масштаб рахується за реальною щільністю пікселів (EDID: роздільність + фізичний
+#  розмір), а не лише за роздільністю: 14" FHD → 1.33, 14" 2.8K → 2, 27" 1440p → 1,
+#  32" 4K → 1.33, телевізор 4K → 2. Береться лише «чистий» масштаб (логічний розмір
+#  цілий, кратний 1/120 — як вимагає Hyprland), тож без попереджень і розмиття.
+#
+#    mgos-display detect [--profile mgos|kiosk] [--json]   що знайдено і що буде
+#    mgos-display conf   [--profile …]                     рядки monitor = … для Hyprland
+#    mgos-display apply  [--profile …]                     застосувати зараз (hyprctl)
+#    mgos-display watch  [--profile …]                     apply + підхоплювати нові монітори
+#    mgos-display touchpads                                імена тачпадів для device { }
+#
+#  Профіль mgos — рідна роздільність, найвища частота; kiosk — рідна роздільність, ~60 Гц
+#  (економія батареї). Свій масштаб: ~/.config/mgos/display.conf, рядки
+#      <назва (eDP-1) або частина опису монітора>  <масштаб|auto>  [режим, напр. 2560x1440@144]
+# ============================================================================
+import glob
+import json
+import math
+import os
+import re
+import socket
+import subprocess
+import sys
+import time
+
+CANDIDATES = [1, 1.25, 4 / 3, 1.5, 1.6, 5 / 3, 1.75, 2, 2.25, 2.5, 8 / 3, 3]
+INTERNAL_PREFIX = ("eDP", "LVDS", "DSI")
+TARGET_PPI_INTERNAL = 121   # ноутбук: екран ближче до очей
+TARGET_PPI_EXTERNAL = 105   # монітор на столі
+TOLERANCE = 0.05            # найбільший «чистий» масштаб ≤ ідеального + 0.05 (UI не роздувається)
+OVERRIDES = os.path.expanduser("~/.config/mgos/display.conf")
+
+
+def fmt_scale(s):
+    return ("%.6f" % s).rstrip("0").rstrip(".")
+
+
+def scale_ok(w, h, s):
+    n = round(s * 120)
+    return n > 0 and (w * 120) % n == 0 and (h * 120) % n == 0
+
+
+# ---------- EDID ----------
+def parse_edid(b):
+    if len(b) < 128 or b[:8] != b"\x00\xff\xff\xff\xff\xff\xff\x00":
+        return None
+    mfg = (b[8] << 8) | b[9]
+    make = "".join(chr(((mfg >> s) & 31) + 64) for s in (10, 5, 0))
+    info = {"make": make, "model": "", "serial": "", "modes": [], "mm": None, "cm": (b[21], b[22])}
+
+    def dtd(d):
+        clk = (d[0] | (d[1] << 8)) * 10000
+        if clk == 0:
+            text = bytes(d[5:18]).split(b"\n")[0].decode("ascii", "ignore").strip()
+            if d[3] == 0xFC:
+                info["model"] = text
+            elif d[3] == 0xFF:
+                info["serial"] = text
+            return
+        ha = d[2] | ((d[4] & 0xF0) << 4)
+        hb = d[3] | ((d[4] & 0x0F) << 8)
+        va = d[5] | ((d[7] & 0xF0) << 4)
+        vb = d[6] | ((d[7] & 0x0F) << 8)
+        wmm = d[12] | ((d[14] & 0xF0) << 4)
+        hmm = d[13] | ((d[14] & 0x0F) << 8)
+        if ha == 0 or va == 0 or (ha + hb) == 0 or (va + vb) == 0:
+            return
+        if d[17] & 0x80:  # interlaced — пропускаємо
+            return
+        info["modes"].append((ha, va, round(clk / ((ha + hb) * (va + vb)), 3)))
+        if info["mm"] is None and wmm and hmm:
+            info["mm"] = (wmm, hmm)
+
+    for off in (54, 72, 90, 108):
+        dtd(b[off:off + 18])
+    for i in range(1, b[126] + 1):
+        blk = b[i * 128:(i + 1) * 128]
+        if len(blk) < 128 or blk[0] != 0x02:
+            continue
+        o = blk[2]
+        while 4 <= o and o + 18 <= 127 and (blk[o] | blk[o + 1]):
+            dtd(blk[o:o + 18])
+            o += 18
+    return info
+
+
+def drm_monitors():
+    out = []
+    for st in sorted(glob.glob("/sys/class/drm/card*-*/status")):
+        d = os.path.dirname(st)
+        try:
+            if open(st).read().strip() != "connected":
+                continue
+            raw = open(os.path.join(d, "edid"), "rb").read()
+        except OSError:
+            continue
+        name = re.sub(r"^card\d+-", "", os.path.basename(d))
+        e = parse_edid(raw)
+        if not e:
+            continue
+        modes = list(e["modes"])
+        try:  # роздільності без частот, яких немає в DTD
+            for line in open(os.path.join(d, "modes")):
+                m = re.match(r"(\d+)x(\d+)", line)
+                if m and not any((x[0], x[1]) == (int(m[1]), int(m[2])) for x in modes):
+                    modes.append((int(m[1]), int(m[2]), 0))
+        except OSError:
+            pass
+        mm = e["mm"] or (e["cm"][0] * 10, e["cm"][1] * 10)
+        out.append({"name": name, "desc": " ".join(x for x in (e["make"], e["model"], e["serial"]) if x),
+                    "modes": modes, "mm": mm, "native": modes[0][:2] if modes and modes[0][2] else None})
+    return out
+
+
+# ---------- Hyprland ----------
+def in_hyprland():
+    return bool(os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"))
+
+
+def hyprctl_json(what):
+    try:
+        return json.loads(subprocess.run(["hyprctl", what, "-j"], capture_output=True, text=True, timeout=5).stdout)
+    except Exception:
+        return None
+
+
+def hypr_monitors():
+    data = hyprctl_json("monitors")
+    if not isinstance(data, list):
+        return None
+    out = []
+    for m in data:
+        modes = []
+        for s in m.get("availableModes", []):
+            r = re.match(r"(\d+)x(\d+)@([\d.]+)", s)
+            if r:
+                modes.append((int(r[1]), int(r[2]), float(r[3])))
+        native = max(modes, key=lambda x: (x[0] * x[1], x[2]))[:2] if modes else (m["width"], m["height"])
+        out.append({"name": m["name"], "desc": m.get("description", ""), "modes": modes,
+                    "mm": (m.get("physicalWidth", 0), m.get("physicalHeight", 0)), "native": native,
+                    "cur": {"w": m["width"], "h": m["height"], "rr": m.get("refreshRate", 0), "scale": m.get("scale", 1)}})
+    return out
+
+
+def monitors():
+    hm = hypr_monitors() if in_hyprland() else None
+    if hm:
+        # EDID точніший за physicalWidth (Hyprland іноді віддає 0) — доповнюємо
+        drm = {d["name"]: d for d in drm_monitors()}
+        for m in hm:
+            d = drm.get(m["name"])
+            if d and (not m["mm"][0] or not m["mm"][1]):
+                m["mm"] = d["mm"]
+        return hm
+    return drm_monitors()
+
+
+# ---------- розрахунок ----------
+def overrides():
+    res = []
+    try:
+        for line in open(OVERRIDES):
+            line = line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            p = line.split()
+            if len(p) >= 2:
+                res.append((p[0], p[1], p[2] if len(p) > 2 else None))
+    except OSError:
+        pass
+    return res
+
+
+def find_override(m):
+    for match, sc, mode in overrides():
+        if match == m["name"] or match.lower() in m["desc"].lower():
+            return sc, mode
+    return None, None
+
+
+def physical(m, w, h):
+    wmm, hmm = m["mm"] or (0, 0)
+    if wmm < 50 or hmm < 30:
+        return None
+    # EDID інколи містить лише пропорцію (16×9 см) або перевернуті розміри — перевіряємо
+    if abs((wmm / hmm) - (w / h)) / (w / h) > 0.15:
+        if abs((hmm / wmm) - (w / h)) / (w / h) <= 0.15:
+            wmm, hmm = hmm, wmm
+        else:
+            return None
+    if (wmm, hmm) in ((160, 90), (160, 100), (40, 30), (150, 100)):
+        return None
+    return math.hypot(wmm, hmm) / 25.4
+
+
+def auto_scale(m):
+    w, h = native_res(m)
+    internal = m["name"].startswith(INTERNAL_PREFIX)
+    diag = physical(m, w, h)
+    if diag is None:
+        ideal, why = (h / 1200 if internal else h / 1440), "розмір невідомий — за роздільністю"
+    elif not internal and diag >= 40:
+        ideal, why = h / 1080, 'телевізор %.0f"' % diag
+    else:
+        ppi = math.hypot(w, h) / diag
+        ideal = ppi / (TARGET_PPI_INTERNAL if internal else TARGET_PPI_EXTERNAL)
+        why = '%.1f" · %d ppi' % (diag, round(ppi))
+    best = 1
+    for c in CANDIDATES:
+        if c <= ideal + TOLERANCE and scale_ok(w, h, c):
+            best = max(best, c)
+    return best, why, internal, diag
+
+
+def native_res(m):
+    if m.get("native"):
+        return m["native"]
+    if m["modes"]:
+        return max(m["modes"], key=lambda x: x[0] * x[1])[:2]
+    return (m["cur"]["w"], m["cur"]["h"]) if m.get("cur") else (1920, 1080)
+
+
+def pick_mode(m, profile):
+    w, h = native_res(m)
+    rates = sorted({r for (mw, mh, r) in m["modes"] if (mw, mh) == (w, h) and r > 0})
+    if not rates:
+        return "preferred", None
+    if profile == "kiosk":
+        low = [r for r in rates if r <= 61]
+        rr = max(low) if low else min(rates)
+    else:
+        rr = max(rates)
+    return "%dx%d@%s" % (w, h, ("%.3f" % rr).rstrip("0").rstrip(".")), rr
+
+
+def plan(m, profile):
+    sc, why, internal, diag = auto_scale(m)
+    mode, rr = pick_mode(m, profile)
+    o_sc, o_mode = find_override(m)
+    if o_sc and o_sc != "auto":
+        try:
+            sc, why = float(o_sc), "з ~/.config/mgos/display.conf"
+        except ValueError:
+            pass
+    if o_mode:
+        mode, rr = o_mode, None
+    w, h = native_res(m)
+    return {"name": m["name"], "desc": m["desc"], "width": w, "height": h, "diag": diag, "internal": internal,
+            "mode": mode, "rate": rr, "scale": sc, "scale_str": fmt_scale(sc), "why": why,
+            "logical": "%dx%d" % (round(w / sc), round(h / sc)),
+            "current_scale": (m.get("cur") or {}).get("scale")}
+
+
+def rule(p):
+    return "%s, %s, auto, %s" % (p["name"], p["mode"], p["scale_str"])
+
+
+# ---------- команди ----------
+def cmd_detect(profile, as_json):
+    plans = [plan(m, profile) for m in monitors()]
+    if as_json:
+        print(json.dumps(plans, ensure_ascii=False))
+        return 0
+    if not plans:
+        print("Екранів не знайдено (немає EDID у /sys/class/drm)")
+        return 1
+    for p in plans:
+        print("%-10s %-34s %dx%d  %s → масштаб %s (як %s), режим %s" % (
+            p["name"], p["desc"][:34], p["width"], p["height"], p["why"], p["scale_str"], p["logical"], p["mode"]))
+    return 0
+
+
+def cmd_conf(profile):
+    plans = [plan(m, profile) for m in monitors()]
+    for p in plans:
+        print("# %s · %s · %dx%d · %s → %s" % (p["name"], p["desc"] or "?", p["width"], p["height"], p["why"], p["logical"]))
+        print("monitor = " + rule(p))
+    print("# будь-який інший екран: поки mgos-display watch його не підхопить")
+    print("monitor = , preferred, auto, auto")
+    return 0
+
+
+def apply_one(m, profile, verbose=True):
+    p = plan(m, profile)
+    cur = m.get("cur")
+    if cur:
+        same_scale = abs(cur["scale"] - p["scale"]) < 0.01
+        same_res = (cur["w"], cur["h"]) == (p["width"], p["height"])
+        same_rr = p["rate"] is None or abs(cur["rr"] - p["rate"]) < 1
+        if same_scale and same_res and same_rr:
+            return
+    r = subprocess.run(["hyprctl", "keyword", "monitor", rule(p)], capture_output=True, text=True)
+    if verbose:
+        print("%s → %s (%s)" % (p["name"], rule(p), (r.stdout or r.stderr).strip()))
+
+
+def cmd_apply(profile, only=None):
+    if not in_hyprland():
+        print("Hyprland не запущено — apply працює лише всередині сесії")
+        return 1
+    for m in hypr_monitors() or []:
+        if only is None or m["name"] == only:
+            apply_one(m, profile)
+    return 0
+
+
+def cmd_watch(profile):
+    if not in_hyprland():
+        return 1
+    cmd_apply(profile)
+    sig = os.environ["HYPRLAND_INSTANCE_SIGNATURE"]
+    paths = [os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/run/user/%d" % os.getuid()), "hypr", sig, ".socket2.sock"),
+             os.path.join("/tmp/hypr", sig, ".socket2.sock")]
+    path = next((p for p in paths if os.path.exists(p)), None)
+    if not path:
+        return 1
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(path)
+    buf = b""
+    while True:
+        chunk = s.recv(4096)
+        if not chunk:
+            return 0  # Hyprland завершився
+        buf += chunk
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            ev, _, data = line.decode("utf-8", "ignore").partition(">>")
+            if ev == "monitoradded":
+                time.sleep(0.7)  # дати монітору ініціалізуватися
+                cmd_apply(profile, only=data.strip())
+
+
+def touchpads():
+    names, cur = [], {}
+    try:
+        text = open("/proc/bus/input/devices").read()
+    except OSError:
+        return names
+    for block in text.split("\n\n"):
+        n = re.search(r'^N: Name="(.*)"$', block, re.M)
+        hnd = re.search(r"^H: Handlers=(.*)$", block, re.M)
+        if not n or not hnd or "mouse" not in hnd[1]:
+            continue
+        if re.search(r"touch ?pad|trackpad|glidepoint", n[1], re.I):
+            hn = n[1].lower().replace(" ", "-")
+            if hn not in names:
+                names.append(hn)
+    return names
+
+
+def main(argv):
+    args = [a for a in argv[1:]]
+    profile = "mgos"
+    if "--profile" in args:
+        i = args.index("--profile")
+        profile = args[i + 1] if i + 1 < len(args) else "mgos"
+        del args[i:i + 2]
+    as_json = "--json" in args
+    args = [a for a in args if a != "--json"]
+    cmd = args[0] if args else "detect"
+    if cmd == "detect":
+        return cmd_detect(profile, as_json)
+    if cmd == "conf":
+        return cmd_conf(profile)
+    if cmd == "apply":
+        return cmd_apply(profile)
+    if cmd == "watch":
+        return cmd_watch(profile)
+    if cmd == "touchpads":
+        print("\n".join(touchpads()))
+        return 0
+    print(__doc__ or "mgos-display detect|conf|apply|watch|touchpads [--profile mgos|kiosk] [--json]")
+    return 2
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv))
+    except KeyboardInterrupt:
+        sys.exit(130)

@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  kiosk-session — запуск енергоощадної kiosk-сесії Hyprland
+#  (SDDM → «kioskOS» або з TTY: kiosk)
+#
+#  Економія діє ЛИШЕ поки ця сесія працює:
+#   • power-saver тримається через «powerprofilesctl launch» — якщо сесія впаде
+#     чи її вб'ють, power-profiles-daemon сам поверне попередній профіль;
+#   • тема/gsettings/localsearch/Drive вмикає і вимикає kioskos-mode;
+#   • KIOSKOS=1 — Firefox бере kiosk-налаштування (RAM-кеш, VA-API…) лише тут.
+# ============================================================================
+export KIOSKOS=1
+CONF="$HOME/.config/hyprland/kiosk.conf"
+MODE=/usr/local/bin/kioskos-mode
+
+"$MODE" enter $$
+trap '"$MODE" leave; exit 0' TERM HUP INT
+
+if command -v powerprofilesctl >/dev/null && systemctl is-active -q power-profiles-daemon; then
+    powerprofilesctl launch --profile power-saver --reason "kioskOS" -- Hyprland -c "$CONF" "$@"
+else
+    Hyprland -c "$CONF" "$@"
+fi
+rc=$?
+
+"$MODE" leave
+exit $rc
