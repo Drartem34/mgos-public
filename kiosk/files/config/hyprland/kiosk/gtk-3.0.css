@@ -1,0 +1,27 @@
+/* GTK 3 Graphite Theme Companion */
+@define-color theme_bg_color #141619;
+@define-color theme_fg_color #e2e4e8;
+@define-color theme_base_color #17191d;
+@define-color theme_text_color #e2e4e8;
+@define-color theme_selected_bg_color #3d4652;
+@define-color theme_selected_fg_color #ffffff;
+
+window, dialog {
+  background-color: #141619;
+  color: #e2e4e8;
+}
+
+headerbar {
+  background-color: #141619;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.view, textview {
+  background-color: #17191d;
+  color: #e2e4e8;
+}
+
+.view:selected {
+  background-color: rgba(112, 130, 148, 0.35);
+  color: #ffffff;
+}

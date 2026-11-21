@@ -1,0 +1,101 @@
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ *  kioskOS — Wofi Terminal Minimal Style (High Performance)
+ * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+
+* {
+    font-family: "CaskaydiaCove Nerd Font Mono", "JetBrains Mono", "DejaVu Sans Mono", monospace;
+    font-size: 14px;
+    border-radius: 0px;
+}
+
+/* Зовнішнє вікно — чистий чорний квадрат із білою рамкою */
+window {
+    margin: 0px;
+    padding: 0px;
+    background-color: #000000;
+    border: 2px solid #ffffff;
+    border-radius: 0px;
+    color: #ffffff;
+    box-shadow: none;
+}
+
+/* Головний контейнер */
+#outer-box {
+    margin: 0px;
+    padding: 12px;
+    background-color: #000000;
+    border: none;
+    border-radius: 0px;
+}
+
+/* Поле пошуку — термінальний рядок вводу */
+#input {
+    margin: 0px 0px 10px 0px;
+    padding: 8px 12px;
+    background-color: #000000;
+    border: 1px solid #ffffff;
+    border-radius: 0px;
+    color: #ffffff;
+    font-weight: bold;
+    caret-color: #ffffff;
+}
+
+#input:focus {
+    border: 1px solid #ffffff;
+    outline: none;
+    box-shadow: none;
+}
+
+/* Область списку та прокручування */
+#scroll {
+    margin: 0px;
+    padding: 0px;
+    border: none;
+    background-color: transparent;
+}
+
+#inner-box {
+    margin: 0px;
+    padding: 0px;
+    border: none;
+    background-color: transparent;
+}
+
+/* Елемент списку за замовчуванням */
+#entry {
+    margin: 2px 0px;
+    padding: 6px 10px;
+    background-color: #000000;
+    border: 1px solid transparent;
+    border-radius: 0px;
+    color: #a0a0a0;
+    transition: none;
+}
+
+/* Виділений елемент — біла рамка та чіткий термінальний контраст */
+#entry:selected {
+    background-color: #181818;
+    border: 1px solid #ffffff;
+    border-radius: 0px;
+    color: #ffffff;
+    outline: none;
+    transition: none;
+}
+
+#entry:selected #text {
+    color: #ffffff;
+    font-weight: bold;
+}
+
+/* Текст пунктів */
+#text {
+    margin-left: 8px;
+    color: inherit;
+}
+
+/* Іконки програм */
+image {
+    margin-left: 2px;
+    margin-right: 8px;
+    background-color: transparent;
+}
