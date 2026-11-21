@@ -806,6 +806,11 @@ if [ -x ~/.local/bin/mgos-zram ]; then
     [ -x ~/.config/SYSui/mgos-pageout ] || bash ~/.config/SYSui/build.sh pageout >/dev/null 2>&1 || true
     gum spin --spinner line --title "🗜 zram..." -- bash -c 'sudo ~/.local/bin/mgos-zram setup >/dev/null 2>&1' || true
 fi
+# заряд Magic Mouse / Keyboard по Bluetooth (topbar) — помічник з cap_dac_override, див. SYSui/mgos_hidbat.c
+[ -x ~/.config/SYSui/mgos-hidbat ] || bash ~/.config/SYSui/build.sh pageout >/dev/null 2>&1 || true
+if [ -x ~/.config/SYSui/mgos-hidbat ]; then
+    sudo install -m 755 ~/.config/SYSui/mgos-hidbat /usr/local/bin/mgos-hidbat && sudo setcap cap_dac_override=ep /usr/local/bin/mgos-hidbat || true
+fi
 
 bios_section "$(t sec_shell)"
 if [ "$SHELL" != "/usr/bin/fish" ]; then

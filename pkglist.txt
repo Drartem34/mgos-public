@@ -156,6 +156,7 @@ noto-fonts-extra
 nss-mdns
 ntfs-3g
 nwg-look
+obs-studio
 open-quickshare-bin
 openrgb
 openssh
