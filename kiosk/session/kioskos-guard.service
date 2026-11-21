@@ -1,0 +1,9 @@
+[Unit]
+Description=kioskOS: повернути тему й налаштування, якщо kiosk-сесія завершилась аварійно
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/kioskos-mode guard
+
+[Install]
+WantedBy=default.target
