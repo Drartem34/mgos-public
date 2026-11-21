@@ -54,6 +54,13 @@ struct AppInfo {
     std::string min_address;         // яке з них повертати кліком
 };
 static const char* DOCK_STASH = "special:mgos-dock";   // прихований стіл для «сховано на док»
+// Перенос вікна в сховище. Фокус не чіпаємо: Hyprland сам переводить його на сусіда в тому ж просторі,
+// а на інший простір користувача не перекидаємо.
+static void stash_window(const std::string& addr, const std::string& prefix = "") {
+    sysui::hypr_request(prefix.empty() ? std::string("dispatch movetoworkspacesilent ") + DOCK_STASH + ",address:" + addr
+                                       : "[[BATCH]]" + prefix + "dispatch movetoworkspacesilent " + DOCK_STASH + ",address:" + addr);
+}
+static gint64 g_no_drag_until = 0;   // після повернення вікна з доку жест «перетягнув на док» мовчить (анімація росту його вдавала)
 
 struct RecentApp {
     std::string id;
@@ -516,7 +523,13 @@ struct DockState;
 static gboolean update_dock(gpointer user_data);
 static void files_schedule();
 static DockState* g_dock_state = nullptr;
+namespace genie { static void grow_expect(const std::string& id); static void grow_restore(const std::string& addr); }   // запуск з доку → вікно росте з іконки (dock_genie.h)
+static bool g_genie_force_dock = false;   // жест «3 пальці вниз» триває → док видно (dock_genie.h)
 static bool stash_is_open();   // Сховище відкрите → док завжди видно (визначено нижче)
+static void stash_restore(const std::string& addr);   // повернути вікно з простору (картки, нижче)
+static void cards_on_special(bool open);              // простір відкрили / закрили → картки
+static void veil_lift(const std::string& a);           // вікно в просторі знову видиме (нижче)
+static void veil_lift_all();
 
 // ===================== ІКОНКА =====================
 
@@ -541,7 +554,23 @@ static GtkWidget* make_icon(const std::string& icon_name, int size) {
 // а сусіди розсуваються (ширина слоту = ширина * масштаб), як у доку macOS.
 // Ціль рахується за гаусовою кривою від відстані до курсора в «незбільшених»
 // координатах, тож немає дрижання від зворотного зв'язку.
-struct Mag { double cur = 1.0, target = 1.0; };
+struct Mag { double cur = 1.0, target = 1.0; gint64 sq_t0 = 0; };   // sq_t0 — початок пружини «здачі» (мкс)
+
+// Пружина «здачі» вікна в іконку: (sx, sy) за часом; якір — низ по центру (як у збільшення).
+// Малюється тим самим gsk-трансформом, що й збільшення — CSS-transform давав рожевий error-вузол GSK.
+static bool squash_scale(Mag* m, double& sx, double& sy) {
+    sx = sy = 1.0;
+    if (!m || !m->sq_t0) return false;
+    double t = (g_get_monotonic_time() - m->sq_t0) / 520000.0;
+    if (t >= 1.0 || t < 0) { m->sq_t0 = 0; return false; }
+    static const double K[][3] = {{0, 1, 1}, {0.16, 1.22, 0.62}, {0.38, 0.9, 1.16}, {0.58, 1.06, 0.95}, {0.78, 0.98, 1.02}, {1, 1, 1}};
+    int i = 0; while (i < 4 && t > K[i + 1][0]) i++;
+    double u = (t - K[i][0]) / (K[i + 1][0] - K[i][0]);
+    u = u * u * (3 - 2 * u);
+    sx = K[i][1] + (K[i + 1][1] - K[i][1]) * u;
+    sy = K[i][2] + (K[i + 1][2] - K[i][2]) * u;
+    return true;
+}
 static GtkWidget* g_mag_boxes[3] = {nullptr, nullptr, nullptr};
 static GtkWidget* g_mag_window = nullptr;
 static bool   g_pointer_in = false;
@@ -593,8 +622,9 @@ static void mag_allocate(GtkWidget* w, int width, int height, int) {
         double s = m ? m->cur : 1.0, slot = cw * s * k;
         graphene_point_t a = GRAPHENE_POINT_INIT((float)(x + slot / 2.0), (float)height);
         graphene_point_t b = GRAPHENE_POINT_INIT(-(float)cw / 2.0f, -(float)height);
+        double sx, sy; squash_scale(m, sx, sy);
         GskTransform* t = gsk_transform_translate(nullptr, &a);
-        t = gsk_transform_scale(t, (float)s, (float)s);
+        t = gsk_transform_scale(t, (float)(s * sx), (float)(s * sy));
         t = gsk_transform_translate(t, &b);
         gtk_widget_allocate(c, cw, height, -1, t);
         x += slot;
@@ -655,6 +685,7 @@ static gboolean mag_tick(GtkWidget*, GdkFrameClock*, gpointer) {
             double d = m->target - m->cur;
             if (std::fabs(d) > 0.002) { m->cur += d * 0.3; changed = true; }
             else if (m->cur != m->target) { m->cur = m->target; changed = true; }
+            if (m->sq_t0) changed = true;   // пружина ще йде — перекладати кожен кадр (останній кадр скине sq_t0)
         }
         if (changed) { gtk_widget_queue_allocate(box); moving = true; }
     }
@@ -707,14 +738,13 @@ static void on_left_click(GtkButton* btn, gpointer user_data) {
 
     // сховано на док → повертаємо вікно на поточний стіл
     const char* min_addr = (const char*)g_object_get_data(G_OBJECT(btn), "min-address");
-    if (min_addr && *min_addr) {
-        int ws = 1;
-        try { ws = json::parse(sysui::hypr_request("j/activeworkspace")).value("id", 1); } catch (...) {}
-        sysui::hypr_request("dispatch movetoworkspacesilent " + std::to_string(ws) + ",address:" + min_addr);
-        sysui::hypr_request(std::string("dispatch focuswindow address:") + min_addr);
-        return;
-    }
+    if (min_addr && *min_addr) { stash_restore(min_addr); return; }
     const char* address = (const char*)g_object_get_data(G_OBJECT(btn), "window-address");
+    // та сама програма відкрита і на столі, і в просторі: поки простір відкритий — повертаємо вікно з простору
+    // (раніше клік кидав на копію з робочого столу, а сховану відкрити було неможливо); так само, якщо
+    // видима копія вже в фокусі — другий клік дістає сховану
+    const char* st_addr = (const char*)g_object_get_data(G_OBJECT(btn), "stash-address");
+    if (st_addr && *st_addr && (stash_is_open() || (address && g_object_get_data(G_OBJECT(btn), "is-active")))) { stash_restore(st_addr); return; }
     if (address && strlen(address) > 0) {
         std::string cmd = "hyprctl dispatch focuswindow address:" + std::string(address) + " >/dev/null 2>&1 &";
         system(cmd.c_str());
@@ -742,7 +772,11 @@ static void on_middle_click(GtkGestureClick* gesture, int, double, double, gpoin
 
 static void on_recent_click(GtkButton* btn, gpointer user_data) {
     const char* cmd = (const char*)g_object_get_data(G_OBJECT(btn), "exec-cmd");
-    if (cmd) launch_app(cmd);
+    if (cmd) {
+        const char* id = (const char*)g_object_get_data(G_OBJECT(btn), "app-id");
+        if (id) genie::grow_expect(id);
+        launch_app(cmd);
+    }
     // Іконка підстрибує, поки програма запускається (як у macOS)
     GtkWidget* vbox = gtk_button_get_child(btn);
     GtkWidget* icon = vbox ? gtk_widget_get_first_child(vbox) : nullptr;
@@ -929,6 +963,8 @@ static gboolean update_dock(gpointer user_data) {
             g_object_set_data(G_OBJECT(btn), "window-pid", GINT_TO_POINTER(info.pid));
             g_object_set_data_full(G_OBJECT(btn), "app-id", g_strdup(info.id.c_str()), g_free);
             g_object_set_data_full(G_OBJECT(btn), "min-address", g_strdup(info.minimized ? info.min_address.c_str() : ""), g_free);
+            g_object_set_data_full(G_OBJECT(btn), "stash-address", g_strdup(info.min_address.c_str()), g_free);
+            g_object_set_data(G_OBJECT(btn), "is-active", GINT_TO_POINTER(info.is_active ? 1 : 0));
             if (info.minimized) gtk_widget_add_css_class(btn, "minimized");
 
             g_signal_connect(btn, "clicked", G_CALLBACK(on_left_click), NULL);
@@ -949,6 +985,8 @@ static gboolean update_dock(gpointer user_data) {
             if (info.is_active) gtk_widget_add_css_class(btn, "active");
             else gtk_widget_remove_css_class(btn, "active");
             g_object_set_data_full(G_OBJECT(btn), "min-address", g_strdup(info.minimized ? info.min_address.c_str() : ""), g_free);
+            g_object_set_data_full(G_OBJECT(btn), "stash-address", g_strdup(info.min_address.c_str()), g_free);
+            g_object_set_data(G_OBJECT(btn), "is-active", GINT_TO_POINTER(info.is_active ? 1 : 0));
             if (info.minimized) gtk_widget_add_css_class(btn, "minimized");
             else gtk_widget_remove_css_class(btn, "minimized");
         }
@@ -1131,7 +1169,7 @@ static gboolean check_autohide(gpointer user_data) {
     // Fullscreen перемагає все: ні whitelist, ні курсор знизу не витягують док поверх гри/відео.
     // «Док відсуває вікна» (dock_reserve): док завжди на місці, вікна закінчуються над ним.
     bool reserve = sysui::settings().dock_reserve;
-    bool should_show = reserve || mouse_bottom || ignored || g_no_window || stash_is_open();
+    bool should_show = reserve || mouse_bottom || ignored || g_no_window || stash_is_open() || g_genie_force_dock;
     // fullscreen: док не ховаємо (виїзд + в'їзд при швидкому гортанні столів давали дві копії доку),
     // а переносимо під вікна — fullscreen-вікно його накриває; видимість лишається, як була
     static int under = -1;
@@ -1160,7 +1198,8 @@ static gboolean check_autohide(gpointer user_data) {
     int dw = gtk_widget_get_width(d->window), dh = std::max(0, gtk_widget_get_height(d->window) - mag_headroom());
     bool over_dock = should_show && dh > 0 && cy >= height - dh && cx >= (width - dw) / 2 && cx <= (width + dw) / 2;
     bool near_bottom = cy >= height - 250;   // стежимо заздалегідь: док з'являється лише біля самого низу
-    if (sysui::settings().dock_minimize_drag && (near_bottom || following)) {
+    if (g_get_monotonic_time() < g_no_drag_until) { following = false; last_wx = INT_MIN; }
+    else if (sysui::settings().dock_minimize_drag && (near_bottom || following)) {
         json aw;
         try { aw = json::parse(sysui::hypr_request("j/activewindow")); } catch (...) {}
         std::string addr = aw.value("address", "");
@@ -1172,7 +1211,7 @@ static gboolean check_autohide(gpointer user_data) {
                 if (moved && std::abs(dwx - dcx) < 40 && std::abs(dwy - dcy) < 40) { following = true; still = 0; }
                 else if (moved) { following = false; still = 0; }          // рух не від миші (клавіші, анімація)
                 else if (following && over_dock && ++still >= 2) {          // ~300 мс нерухомо над доком — відпустили
-                    sysui::hypr_request(std::string("dispatch movetoworkspacesilent ") + DOCK_STASH + ",address:" + addr);
+                    stash_window(addr);
                     following = false; still = 0;
                 }
             }
@@ -1238,7 +1277,8 @@ window, window.background {
                 box-shadow 0.3s cubic-bezier(0.25, 0.1, 0.25, 1);
 }
 
-.minimized image { opacity: 0.5; }
+.dock-item image { filter: grayscale(0%) opacity(100%); transition: filter 0.35s ease; }
+.dock-item.minimized image { filter: grayscale(100%) opacity(55%) brightness(90%); }
 .stash-btn { padding: 0 6px; }
 .stash-glyph { font-family: "JetBrainsMono Nerd Font"; font-size: 22px; opacity: 0.85; }
 #dock-stash { background: transparent; }
@@ -1252,6 +1292,20 @@ window, window.background {
 .stash-tile.dragging { background: rgba(255,255,255,0.18); }
 .stash-thumb { border-radius: 8px; }
 .stash-label { font-size: 12px; font-weight: 600; color: #ffffff; text-shadow: 0 1px 4px rgba(0,0,0,0.8); }
+.card-title { padding: 0 4px; }
+.card-title label { font-size: 13px; font-weight: 600; color: #ffffff; text-shadow: 0 1px 4px rgba(0,0,0,0.8); }
+.card-hit { background: transparent; border: 2px solid transparent; transition: background 150ms ease, border-color 150ms ease; }
+.card-hit:hover { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.35); }
+button.card-btn { border-radius: 16px; padding: 6px 18px; background: rgba(255,255,255,0.16); color: #ffffff;
+             border: 1px solid rgba(255,255,255,0.18); font-weight: 600; box-shadow: 0 6px 20px rgba(0,0,0,0.25); }
+button.card-btn:hover { background: rgba(255,255,255,0.28); }
+.card-empty { font-family: "SF Pro Display", "Inter", sans-serif; }
+.card-title { padding: 0 4px; }
+.card-title label { font-size: 13px; font-weight: 600; color: #ffffff; text-shadow: 0 1px 4px rgba(0,0,0,0.8); }
+button.card-btn { border-radius: 16px; padding: 6px 18px; background: rgba(255,255,255,0.16); color: #ffffff;
+             border: 1px solid rgba(255,255,255,0.18); font-weight: 600; box-shadow: 0 6px 20px rgba(0,0,0,0.25); }
+button.card-btn:hover { background: rgba(255,255,255,0.28); }
+.card-empty { font-size: 15px; font-weight: 600; color: rgba(255,255,255,0.75); text-shadow: 0 1px 4px rgba(0,0,0,0.8); }
 .running .mac-dot {
     background-color: rgba(255, 255, 255, 0.5);
 }
@@ -2108,6 +2162,7 @@ static void stash_ensure() {
 // Hyprland повідомив, який спеціальний стіл тепер видно → показуємо / ховаємо ярлики
 static void stash_on_special(bool open) {
     g_stash_open = open;
+    cards_on_special(open);
 #if !STASH_SHORTCUTS
     return;   // без шару ярликів: лише «док завжди видно, поки простір відкритий»
 #endif
@@ -2144,6 +2199,421 @@ static void stash_compress_later(const std::string& addr) {
         return G_SOURCE_REMOVE;
     }, new std::string(addr), [](gpointer d) { delete (std::string*)d; });
 }
+// ===================== ПРОСТІР: КАРТКИ ВІКОН (як «Недавні» в Android) =====================
+// Сховані вікна (special:mgos-dock) стоять рядом однакових карток, над кожною — іконка й назва, під нею — кнопка
+// «На робочий стіл». Клік по картці теж повертає вікно, клік по порожньому місцю закриває простір, колесо / два
+// пальці гортають ряд, якщо картки не вміщаються. Hyprland не малює мініатюр прихованих вікон, тож картка — це саме
+// вікно: робимо його плаваючим і зменшуємо. Справжню геометрію запам'ятовуємо, коли вікно йде в простір, і
+// повертаємо, щойно воно звідти виходить (кнопкою, кліком у доці, жестом угору — будь-як).
+//
+// Розмір: усі картки однакові. Програми мають мінімальний розмір (Налаштування — 820×520), менше якого Hyprland
+// їх не стискає; тому мінімум кожного вікна міряємо один раз, поки воно сховане (стиснути до 1×1 і прочитати),
+// і картку беремо не меншою за найбільший мінімум.
+//
+// Підписи, рамки й кнопки малює окремий процес cards_osd (GPU): повноекранний шар на Cairo в доці з'їдав ~половину
+// ядра на кожну появу простору — звідти лаги. Док лише рахує розкладку, рухає вікна і шле cards_osd JSON-рядки;
+// той анімує шар тими ж кривими, що й Hyprland (параметри — з `hyprctl animations`, анімація Hyprland для шару
+// вимкнена в animations.hl), з поправкою на момент показу кадру.
+
+struct StashOrig { bool floating = false; int x = 0, y = 0, w = 0, h = 0, minw = 0, minh = 0; };
+static std::map<std::string, StashOrig> g_card_orig;
+static std::vector<std::string> g_card_order;
+static bool g_cards_dirty = true;
+
+static std::string cards_file() { return sysui::home() + "/.cache/megumin-os/stash_cards.json"; }
+static void cards_save() {
+    json j = {{"order", g_card_order}, {"orig", json::object()}};
+    for (auto& [a, o] : g_card_orig) j["orig"][a] = {o.floating, o.x, o.y, o.w, o.h, o.minw, o.minh};
+    std::string p = cards_file(), tmp = p + ".tmp";
+    g_mkdir_with_parents((sysui::home() + "/.cache/megumin-os").c_str(), 0755);
+    { std::ofstream f(tmp); f << j.dump(); }
+    rename(tmp.c_str(), p.c_str());
+}
+static void cards_load() {
+    try {
+        std::ifstream f(cards_file()); json j; f >> j;
+        const json order = j.value("order", json::array()), orig = j.value("orig", json::object());   // не тимчасові: items() по value(...) висить
+        for (auto& a : order) g_card_order.push_back(a.get<std::string>());
+        for (auto& [a, v] : orig.items()) {
+            StashOrig o{v[0].get<bool>(), v[1].get<int>(), v[2].get<int>(), v[3].get<int>(), v[4].get<int>()};
+            if (v.size() >= 7) { o.minw = v[5].get<int>(); o.minh = v[6].get<int>(); }
+            g_card_orig[a] = o;
+        }
+    } catch (...) {}
+}
+
+static bool is_stash_client(const json& c) { return c.value("workspace", json::object()).value("name", "") == DOCK_STASH; }
+
+// вікно щойно потрапило в простір → запам'ятати, яким воно було (ще до того, як стане карткою)
+static void card_track(const json& c) {
+    std::string a = c.value("address", "");
+    if (a.empty()) return;
+    if (!g_card_orig.count(a)) {
+        StashOrig o; o.floating = c.value("floating", false);
+        if (c.contains("at") && c.contains("size")) { o.x = c["at"][0]; o.y = c["at"][1]; o.w = c["size"][0]; o.h = c["size"][1]; }
+        g_card_orig[a] = o;
+        g_cards_dirty = true;
+    }
+    if (std::find(g_card_order.begin(), g_card_order.end(), a) == g_card_order.end()) { g_card_order.push_back(a); g_cards_dirty = true; }
+}
+
+// вікно вийшло з простору → повертаємо плаваючість і розмір, які були до нього
+static void card_untrack(const std::string& a, bool restore) {
+    auto it = g_card_orig.find(a);
+    if (it != g_card_orig.end()) {
+        const StashOrig& o = it->second;
+        std::string w = ",address:" + a;
+        if (restore) {
+            if (!o.floating) sysui::hypr_request("dispatch settiled address:" + a);
+            else if (o.w > 0 && o.h > 0)
+                sysui::hypr_request("[[BATCH]]dispatch resizewindowpixel exact " + std::to_string(o.w) + " " + std::to_string(o.h) + w +
+                                    ";dispatch movewindowpixel exact " + std::to_string(o.x) + " " + std::to_string(o.y) + w);
+        }
+        g_card_orig.erase(it);
+    }
+    g_card_order.erase(std::remove(g_card_order.begin(), g_card_order.end(), a), g_card_order.end());
+    g_cards_dirty = true;
+}
+
+// ---------- криві Hyprland ----------
+struct HAnim { double x0 = 0, y0 = 0, x1 = 1, y1 = 1, ms = 0, slide_x = 0, slide_y = 0; bool fade = false; };
+static HAnim g_an_special, g_an_move;
+
+static double bezier_at(const HAnim& a, double x) {
+    if (x <= 0) return 0;
+    if (x >= 1) return 1;
+    double lo = 0, hi = 1, t = x;
+    for (int i = 0; i < 40; i++) {
+        t = (lo + hi) / 2;
+        double bx = 3 * (1 - t) * (1 - t) * t * a.x0 + 3 * (1 - t) * t * t * a.x1 + t * t * t;
+        (bx < x ? lo : hi) = t;
+    }
+    return 3 * (1 - t) * (1 - t) * t * a.y0 + 3 * (1 - t) * t * t * a.y1 + t * t * t;
+}
+
+// читаємо анімацію з Hyprland (specialWorkspaceIn успадковує specialWorkspace, а той — workspaces → global)
+static void cards_read_anims() {
+    try {
+        json A = json::parse(sysui::hypr_request("j/animations"));
+        bool global_on = true;
+        try { global_on = json::parse(sysui::hypr_request("j/getoption animations:enabled")).value("int", 1) != 0; } catch (...) {}
+        std::map<std::string, json> an; std::map<std::string, json> bz;
+        for (auto& x : A[0]) an[x.value("name", "")] = x;
+        for (auto& b : A[1]) bz[b.value("name", "")] = b;
+        auto pick = [&](std::vector<std::string> chain, HAnim& out) {
+            out = HAnim{};
+            for (auto& n : chain) {
+                if (!an.count(n) || !an[n].value("overridden", false)) continue;
+                const json& x = an[n];
+                if (!global_on || !x.value("enabled", true)) { out.ms = 0; return; }
+                out.ms = x.value("speed", 0.0) * 100.0;   // speed — у сотнях мілісекунд
+                std::string b = x.value("bezier", "default");
+                if (bz.count(b)) { out.x0 = bz[b].value("X0", 0.0); out.y0 = bz[b].value("Y0", 0.0); out.x1 = bz[b].value("X1", 1.0); out.y1 = bz[b].value("Y1", 1.0); }
+                std::string st = x.value("style", "");
+                out.fade = st.find("fade") != std::string::npos || st.empty();
+                double pct = 1.0;
+                size_t sp = st.find(' ');
+                if (sp != std::string::npos) { try { pct = std::stod(st.substr(sp + 1)) / 100.0; } catch (...) {} }
+                if (st.rfind("slide", 0) == 0) { if (st.find("vert") != std::string::npos) out.slide_y = pct; else out.slide_x = pct; }
+                return;
+            }
+            out.ms = 300; out.x0 = 0.2; out.y0 = 0; out.x1 = 0; out.y1 = 1; out.fade = true;   // нічого не задано — щось розумне
+        };
+        pick({"specialWorkspaceIn", "specialWorkspace", "workspaces", "global"}, g_an_special);
+        pick({"windowsMove", "windows", "global"}, g_an_move);
+    } catch (...) {}
+}
+
+// ---------- cards_osd (GPU-процес шару) ----------
+static GSubprocess* g_cosd = nullptr; static GOutputStream* g_cosd_in = nullptr; static GDataInputStream* g_cosd_out = nullptr;
+static bool g_cosd_fresh = false;   // щойно запущений cards_osd ще не знає розкладки
+static bool g_anims_known = false;  // криві з hyprctl прочитані (оновлюємо після перезавантаження конфігу)
+static std::atomic<gint64> g_special_evt_us{0};   // коли Hyprland повідомив про відкриття / закриття (старт його анімації)
+static guint g_cards_pending = 0;
+static bool g_arrange_after_close = false, g_cards_closing = false;
+static double g_cw = 0, g_ch = 0, g_scroll = 0, g_scroll_max = 0;
+static const double CARD_GAP = 36, CARD_SIDE = 60, CARD_TITLE = 38, CARD_BTN = 54, CARD_DOCK = 112;
+
+static void stash_close_space();
+static bool stash_is_open();
+static void cards_arrange();
+static void cards_schedule();
+static void cards_scroll_to(double s);
+static void stash_restore(const std::string& addr);
+
+static void cosd_dead() {
+    if (g_cosd_in) { g_object_unref(g_cosd_in); g_cosd_in = nullptr; }
+    if (g_cosd_out) { g_object_unref(g_cosd_out); g_cosd_out = nullptr; }
+    if (g_cosd) { g_object_unref(g_cosd); g_cosd = nullptr; }
+}
+static void cosd_read() {
+    if (!g_cosd_out) return;
+    g_data_input_stream_read_line_async(g_cosd_out, G_PRIORITY_DEFAULT, nullptr, [](GObject* s, GAsyncResult* r, gpointer) {
+        char* line = g_data_input_stream_read_line_finish(G_DATA_INPUT_STREAM(s), r, nullptr, nullptr);
+        if (!line) { if ((GObject*)g_cosd_out == s) cosd_dead(); return; }
+        std::string l(line); g_free(line);
+        if (getenv("MGOS_DEBUG")) g_printerr("cards_osd> %s\n", l.c_str());
+        if (l.rfind("restore ", 0) == 0) stash_restore(l.substr(8));
+        else if (l == "close") { if (stash_is_open()) stash_close_space(); }
+        else if (l.rfind("scroll ", 0) == 0) cards_scroll_to(g_scroll + atoi(l.c_str() + 7) * (g_cw + CARD_GAP));
+        cosd_read();
+    }, nullptr);
+}
+static bool cosd_spawn() {
+    if (g_cosd) return true;
+    std::string bin = sysui::home() + "/.config/SYSui/cards_osd";
+    if (access(bin.c_str(), X_OK) != 0) return false;
+    g_cosd = g_subprocess_new((GSubprocessFlags)(G_SUBPROCESS_FLAGS_STDIN_PIPE | G_SUBPROCESS_FLAGS_STDOUT_PIPE), nullptr, bin.c_str(), nullptr);
+    if (!g_cosd) return false;
+    g_cosd_in = g_subprocess_get_stdin_pipe(g_cosd); g_object_ref(g_cosd_in);
+    g_cosd_out = g_data_input_stream_new(g_subprocess_get_stdout_pipe(g_cosd));
+    cosd_read();
+    g_cosd_fresh = true;
+    return true;
+}
+static void cosd_send(const json& j) {
+    if (!cosd_spawn()) return;
+    if (g_cosd_fresh && j.value("c", "") != "layout") { g_cosd_fresh = false; g_cards_dirty = true; cards_arrange(); }   // спершу розкладка
+    if (j.value("c", "") == "layout") g_cosd_fresh = false;
+    std::string l = j.dump() + "\n";
+    if (!g_output_stream_write_all(g_cosd_in, l.data(), l.size(), nullptr, nullptr, nullptr)) { g_subprocess_force_exit(g_cosd); cosd_dead(); }
+}
+static json anim_json(const HAnim& a) {
+    return {{"x0", a.x0}, {"y0", a.y0}, {"x1", a.x1}, {"y1", a.y1}, {"ms", a.ms}, {"sx", a.slide_x}, {"sy", a.slide_y}, {"fade", a.fade}};
+}
+
+// повернути вікно з простору на поточний робочий стіл (і закрити простір, якщо він відкритий)
+static void stash_restore(const std::string& addr) {
+    if (addr.empty()) return;
+    g_no_drag_until = g_get_monotonic_time() + 1500000;
+    cosd_send({{"c", "drop"}, {"a", addr}});   // підписи цієї картки зникають одразу — вікно вже летить на стіл
+    veil_lift(addr);
+    int ws = 1;
+    try { ws = json::parse(sysui::hypr_request("j/activeworkspace")).value("id", 1); } catch (...) {}
+    std::string cmd = "[[BATCH]]dispatch movetoworkspacesilent " + std::to_string(ws) + ",address:" + addr;
+    // простір зараз зникне: решту карток не пересуваємо, поки він не сховається (подія про переїзд вікна
+    // приходить раніше за подію закриття — без цього картки з'їжджались просто під час зникнення)
+    if (stash_is_open()) { cmd += ";dispatch togglespecialworkspace mgos-dock"; g_cards_closing = true; }
+    cmd += ";dispatch focuswindow address:" + addr;
+    sysui::hypr_request(cmd);
+    genie::grow_restore(addr);   // вікно росте з іконки в доці
+}
+
+static void cards_scroll_to(double s) {
+    s = std::clamp(s, 0.0, g_scroll_max);
+    if (s == g_scroll) return;
+    g_scroll = s;
+    cards_arrange();
+}
+
+// мінімальний розмір вікна: стискаємо до 1×1, і програма за кілька десятків мс сама повертає свій мінімум
+// (Hyprland спершу показує запитаний розмір, справжній — після відповіді програми). Лише поки вікно сховане.
+// minw: 0 — ще не міряли, -1 — стиснули й чекаємо відповіді, >0 — відомо.
+static void card_measure_start(const std::vector<json>& wins) {
+    std::string batch;
+    for (auto& c : wins) {
+        std::string a = c.value("address", "");
+        if (!c.value("floating", false)) batch += "dispatch setfloating address:" + a + ";";
+        batch += "dispatch resizewindowpixel exact 1 1,address:" + a + ";";
+        g_card_orig[a].minw = g_card_orig[a].minh = -1;
+    }
+    if (!batch.empty()) sysui::hypr_request("[[BATCH]]" + batch);
+    g_timeout_add(160, [](gpointer) -> gboolean { cards_arrange(); return G_SOURCE_REMOVE; }, nullptr);
+}
+
+// розкласти картки (вікна + підписи). Нічого не змінилось — нічого й не робимо (анімації не перезапускаються).
+static void cards_arrange() {
+    if (!sysui::settings().dock_stash_cards) return;
+    if (g_cards_closing) { g_arrange_after_close = true; return; }   // простір саме зникає — не рухаємо вікна в нього на очах   // простір саме зникає — не рухаємо вікна в нього на очах
+    json cl, mons;
+    try { cl = json::parse(sysui::hypr_request("j/clients")); mons = json::parse(sysui::hypr_request("j/monitors")); } catch (...) { return; }
+    std::vector<json> win;
+    std::set<std::string> present;
+    for (auto& c : cl) if (is_stash_client(c)) { card_track(c); win.push_back(c); present.insert(c.value("address", "")); }
+    for (auto a : std::vector<std::string>(g_card_order)) if (!present.count(a)) card_untrack(a, false);   // закрили — забуваємо
+    for (auto it = g_card_orig.begin(); it != g_card_orig.end(); ) it = present.count(it->first) ? std::next(it) : g_card_orig.erase(it);
+    auto idx = [](const std::string& a) { auto i = std::find(g_card_order.begin(), g_card_order.end(), a); return (long)(i - g_card_order.begin()); };
+    std::sort(win.begin(), win.end(), [&](const json& a, const json& b) { return idx(a.value("address", "")) < idx(b.value("address", "")); });
+
+    // мінімуми нових вікон (поки простір закритий, цього не видно): спершу стискаємо, розкладаємо — коли програми відповіли
+    std::vector<json> fresh_w;
+    for (auto& c : win) {
+        auto& o = g_card_orig[c.value("address", "")];
+        if (o.minw == 0) fresh_w.push_back(c);
+        else if (o.minw < 0) { o.minw = std::max(1, c["size"][0].get<int>()); o.minh = std::max(1, c["size"][1].get<int>()); }
+    }
+    if (!fresh_w.empty()) { card_measure_start(fresh_w); return; }
+
+    // монітор, на якому відкривається простір (сфокусований)
+    double g_mx = 0, g_my = 0, g_W = 1920, g_H = 1080, g_top_strip = 0;
+    for (auto& m : mons) if (m.value("focused", false) || &m == &mons[0]) {
+        double sc = m.value("scale", 1.0), pw = m.value("width", 1920), ph = m.value("height", 1080);
+        if (m.value("transform", 0) % 2) std::swap(pw, ph);
+        g_mx = m.value("x", 0); g_my = m.value("y", 0); g_W = std::round(pw / sc); g_H = std::round(ph / sc);
+        g_top_strip = (m.contains("reserved") && m["reserved"].is_array() && m["reserved"].size() >= 2) ? m["reserved"][1].get<double>() : 0;
+        if (m.value("focused", false)) break;
+    }
+
+    // розмір картки: усі в ряд, якщо влазять; не менше ~28% екрана (інакше — гортання); не менше мінімуму жодного вікна
+    int n = (int)win.size();
+    double top = g_top_strip + CARD_TITLE + 14, bottom = g_H - CARD_DOCK - CARD_BTN;
+    double cw = n ? std::min(g_W * 0.46, (g_W - 2 * CARD_SIDE - (n - 1) * CARD_GAP) / n) : 0;
+    cw = std::max(cw, g_W * 0.28);
+    double ch = cw * g_H / g_W;
+    if (ch > bottom - top) { ch = bottom - top; cw = ch * g_W / g_H; }
+    double S = 1;
+    for (auto& c : win) { auto& o = g_card_orig[c.value("address", "")]; S = std::max({S, o.minw / cw, o.minh / ch}); }
+    cw = std::ceil(cw * S); ch = std::ceil(ch * S);
+    double row = n * cw + std::max(0, n - 1) * CARD_GAP, inner = g_W - 2 * CARD_SIDE;
+    double old_max = g_scroll_max;
+    g_scroll_max = std::max(0.0, row - inner);
+    if (g_scroll_max > old_max) g_scroll = g_scroll_max;   // додалось вікно — показуємо найновіше (праворуч)
+    g_scroll = std::clamp(g_scroll, 0.0, g_scroll_max);
+    double x0 = g_scroll_max > 0 ? CARD_SIDE - g_scroll : (g_W - row) / 2;
+    double y0 = ch < bottom - top ? top + (bottom - top - ch) / 2 : top;
+    g_cw = cw; g_ch = ch;
+
+    // вікна: лише те, що відрізняється (інакше Hyprland перезапускає анімацію руху)
+    std::string batch;
+    for (int i = 0; i < n; i++) {
+        const json& c = win[i];
+        std::string a = c.value("address", ""), w = ",address:" + a;
+        int x = (int)std::lround(g_mx + x0 + i * (cw + CARD_GAP)), y = (int)std::lround(g_my + y0);
+        if (!c.value("floating", false)) batch += "dispatch setfloating address:" + a + ";";
+        if (c["size"][0] != (int)cw || c["size"][1] != (int)ch)
+            batch += "dispatch resizewindowpixel exact " + std::to_string((int)cw) + " " + std::to_string((int)ch) + w + ";";
+        if (!c.contains("at") || c["at"][0] != x || c["at"][1] != y)
+            batch += "dispatch movewindowpixel exact " + std::to_string(x) + " " + std::to_string(y) + w + ";";
+    }
+    if (!batch.empty()) sysui::hypr_request("[[BATCH]]" + batch);
+    g_cards_dirty = false;
+    cards_save();
+
+    // шар підписів (cards_osd): їдуть з тієї ж точки й тією ж кривою, що й вікна
+    double radius = 0;
+    try { radius = json::parse(sysui::hypr_request("j/getoption decoration:rounding")).value("int", 0); } catch (...) {}
+    if (!g_anims_known) { cards_read_anims(); g_anims_known = true; }
+    json cards_j = json::array();
+    for (int i = 0; i < n; i++) {
+        std::string a = win[i].value("address", ""), cls = to_lower(win[i].value("class", ""));
+        std::string title = win[i].value("title", ""); if (title.empty()) title = cls;
+        std::string icon = find_icon_for_class(cls);
+        if (icon.empty() || (icon[0] != '/' && !icon_displayable(icon))) icon = "application-x-executable";
+        cards_j.push_back({{"a", a}, {"title", title}, {"icon", icon}, {"x", x0 + i * (cw + CARD_GAP)}, {"y", y0}});
+    }
+    // клікабельне все, крім топбару і смуги доку (окремі шари — їх не перекриваємо)
+    json input = {0, (int)g_top_strip, (int)g_W, std::max(0, (int)(g_H - g_top_strip - CARD_DOCK + 30))};
+    cosd_send({{"c", "layout"}, {"W", g_W}, {"H", g_H}, {"input", input}, {"cw", cw}, {"ch", ch}, {"radius", (int)radius},
+               {"move", anim_json(g_an_move)}, {"cards", cards_j}});
+}
+
+// зміни в просторі приходять пачками (перенос + фокус + розмір) — розкладаємо раз, трохи згодом
+static void cards_schedule() {
+    if (g_cards_pending) return;
+    g_cards_pending = g_timeout_add(30, [](gpointer) -> gboolean { g_cards_pending = 0; cards_arrange(); return G_SOURCE_REMOVE; }, nullptr);
+}
+
+// Hyprland відкрив / закрив простір — шар повторює його анімацію (відлік від моменту події, а не від цього виклику)
+static void cards_on_special(bool open) {
+    if (!sysui::settings().dock_stash_cards) return;
+    gint64 t0 = g_special_evt_us.load();
+    if (!t0) t0 = g_get_monotonic_time();
+    // на відкритті — жодних зайвих запитів до Hyprland: криві вже прочитані, картки розкладені, поки простір був закритий
+    if (!g_anims_known) { cards_read_anims(); g_anims_known = true; }
+    if (open) veil_lift_all();   // вікна-картки мають бути видимі одразу
+    if (open) {
+        if (g_cards_pending) { g_source_remove(g_cards_pending); g_cards_pending = 0; }
+        g_cards_closing = false; g_arrange_after_close = false;
+        if (g_cards_dirty || !g_cosd) cards_arrange();
+        cosd_send({{"c", "show"}, {"t0", t0}, {"an", anim_json(g_an_special)}});
+    } else {
+        cosd_send({{"c", "hide"}, {"t0", t0}, {"an", anim_json(g_an_special)}});
+        // поки простір зникає, вікна в ньому не рухаємо; після — доробляємо відкладене
+        g_cards_closing = true;
+        g_timeout_add((guint)std::max(50.0, g_an_special.ms + 30), [](gpointer) -> gboolean {
+            g_cards_closing = false;
+            if (g_arrange_after_close) { g_arrange_after_close = false; cards_schedule(); }
+            return G_SOURCE_REMOVE;
+        }, nullptr);
+    }
+}
+
+// ---- вікно, що йде в простір, тримаємо невидимим, доки не стихнуть усі анімації ----
+// Після «джина» / Super+Q вікно переноситься в простір, а картки одразу роблять його плаваючим і міняють розмір.
+// Якщо в цей момент вікно вже непрозоре, Hyprland анімує це на екрані — після анімації згортання «моргала» примара
+// вікна. Тому непрозорість, розмиття й анімації повертаємо, лише коли все стихло (простір закритий — цього не видно),
+// або одразу, якщо простір відкрили / вікно повернули.
+static std::map<std::string, guint> g_veil;
+static void veil_lift(const std::string& a) {
+    auto it = g_veil.find(a);
+    if (it == g_veil.end()) return;
+    if (it->second) g_source_remove(it->second);
+    g_veil.erase(it);
+    std::string sp = "dispatch setprop address:" + a;
+    sysui::hypr_request("[[BATCH]]" + sp + " opacity 1.0;" + sp + " no_blur 0;" + sp + " no_shadow 0;" + sp + " no_anim 0");
+}
+static void veil_lift_all() { for (auto a : [] { std::vector<std::string> v; for (auto& [k, _] : g_veil) v.push_back(k); return v; }()) veil_lift(a); }
+// вікно вже невидиме (opacity 0, no_anim) — лише запланувати, коли повернути
+static void veil_keep(const std::string& a, guint ms = 900) {
+    auto it = g_veil.find(a);
+    if (it != g_veil.end() && it->second) g_source_remove(it->second);
+    g_veil[a] = g_timeout_add_full(G_PRIORITY_DEFAULT, ms, [](gpointer d) -> gboolean {
+        std::string a((char*)d);
+        auto it = g_veil.find(a);
+        if (it != g_veil.end()) { it->second = 0; veil_lift(a); }
+        return G_SOURCE_REMOVE;
+    }, g_strdup(a.c_str()), g_free);
+}
+
+// movewindowv2: вікно ADDR переїхало на стіл WSNAME
+static void cards_on_move(const std::string& addr, const std::string& wsname) {
+    if (!sysui::settings().dock_stash_cards) return;
+    if (wsname == DOCK_STASH) {
+        try { for (auto& c : json::parse(sysui::hypr_request("j/clients"))) if (c.value("address", "") == addr) card_track(c); } catch (...) {}
+        cards_save();
+        cards_schedule();
+    } else if (g_card_orig.count(addr) || std::count(g_card_order.begin(), g_card_order.end(), addr)) {
+        card_untrack(addr, true);
+        cards_save();
+        cards_schedule();
+    }
+}
+
+static void cards_on_close(const std::string& addr) {
+    if (!std::count(g_card_order.begin(), g_card_order.end(), addr)) return;
+    card_untrack(addr, false);
+    cards_save();
+    cards_schedule();
+}
+
+// три пальці вгору, поки відкритий простір: повернути картку під курсором (або сфокусовану, або останню)
+static bool cards_gesture_restore() {
+    if (!g_stash_open || !sysui::settings().dock_stash_cards) return false;
+    try {
+        json cl = json::parse(sysui::hypr_request("j/clients"));
+        json cp = json::parse(sysui::hypr_request("j/cursorpos"));
+        json aw = json::parse(sysui::hypr_request("j/activewindow"));
+        int px = cp.value("x", -1), py = cp.value("y", -1);
+        std::string pick, last;
+        for (auto& c : cl) {
+            if (!is_stash_client(c)) continue;
+            std::string a = c.value("address", "");
+            int x = c["at"][0], y = c["at"][1], w = c["size"][0], h = c["size"][1];
+            if (px >= x && px < x + w && py >= y && py < y + h) pick = a;
+            last = a;
+        }
+        if (pick.empty() && is_stash_client(aw)) pick = aw.value("address", "");
+        if (pick.empty() && !g_card_order.empty()) pick = g_card_order.back();
+        if (pick.empty()) pick = last;
+        if (pick.empty()) return false;
+        stash_restore(pick);
+        return true;
+    } catch (...) {}
+    return false;
+}
+
+#include "dock_genie.h"
+
 static void activate(GtkApplication* app, gpointer) {
     sysui::mem_ready();
     load_history();
@@ -2258,6 +2728,13 @@ static void activate(GtkApplication* app, gpointer) {
 #endif
     gtk_box_append(GTK_BOX(wrapper), sys_box);
     g_unix_signal_add(SIGUSR1, [](gpointer) -> gboolean { stash_toggle(); return G_SOURCE_CONTINUE; }, nullptr);
+    // SIGUSR2: Alt+Tab (ignis/switcher.py) просить повернути сховане вікно на стіл; адреса — у $XDG_RUNTIME_DIR/mgos-dock-restore
+    g_unix_signal_add(SIGUSR2, [](gpointer) -> gboolean {
+        const char* rd = getenv("XDG_RUNTIME_DIR");
+        std::ifstream f(std::string(rd ? rd : "/tmp") + "/mgos-dock-restore");
+        std::string addr; if (f >> addr) stash_restore(addr);
+        return G_SOURCE_CONTINUE;
+    }, nullptr);
 
     GtkEventController* scroll_controller = gtk_event_controller_scroll_new(GTK_EVENT_CONTROLLER_SCROLL_BOTH_AXES);
     gtk_event_controller_set_propagation_phase(scroll_controller, GTK_PHASE_CAPTURE);
@@ -2297,7 +2774,9 @@ static void activate(GtkApplication* app, gpointer) {
     gtk_widget_set_size_request(dummy, 1, 1);
     gtk_box_append(GTK_BOX(outer), dummy);
 
-    gtk_window_set_child(GTK_WINDOW(window), outer);
+    // запечений блюр під плашкою доку (центрований по горизонталі, притиснутий до низу)
+    gtk_window_set_child(GTK_WINDOW(window), sysui::bb::underlay(window, outer, "dock", 20,
+        [wrapper](std::vector<GtkWidget*>& v) { v.push_back(wrapper); }, true, true));
 
     auto* state = new DockState();
     state->dock_box   = dock_box;
@@ -2329,6 +2808,8 @@ static void activate(GtkApplication* app, gpointer) {
     g_timeout_add(2000, reload_wal_timer, nullptr);
 
     gtk_window_present(GTK_WINDOW(window));
+    genie::init();   // три пальці вниз → вікно в док
+    cards_load(); cards_schedule();   // простір: картки вікон (вікна, що вже там, стають картками)
 }
 
 // ===================== MAIN =====================
@@ -2372,17 +2853,41 @@ void listen_hyprland_ipc_dock() {
                 
                 if (line.find("activespecial>>") == 0) {   // activespecial>>special:mgos-dock,eDP-1  /  activespecial>>,eDP-1
                     bool open = line.find(std::string(">>") + DOCK_STASH + ",") != std::string::npos;
+                    g_special_evt_us = g_get_monotonic_time();   // з цього моменту Hyprland анімує простір — шар карток іде в ногу
                     g_idle_add(open ? (GSourceFunc)[](gpointer) -> gboolean { stash_on_special(true); return G_SOURCE_REMOVE; }
                                     : (GSourceFunc)[](gpointer) -> gboolean { stash_on_special(false); return G_SOURCE_REMOVE; }, nullptr);
                 }
                 if (line.find("movewindowv2>>") == 0) {   // movewindowv2>>ADDR,WSID,WSNAME
                     std::string rest = line.substr(14);
                     size_t c1 = rest.find(','), c2 = c1 == std::string::npos ? c1 : rest.find(',', c1 + 1);
+                    if (c2 != std::string::npos) {
+                        auto* mv = new std::pair<std::string, std::string>("0x" + rest.substr(0, c1), rest.substr(c2 + 1));
+                        g_idle_add([](gpointer d) -> gboolean { auto* p = (std::pair<std::string, std::string>*)d; cards_on_move(p->first, p->second); delete p; return G_SOURCE_REMOVE; }, mv);
+                    }
                     if (c2 != std::string::npos && rest.substr(c2 + 1) == DOCK_STASH) {
                         std::string* addr = new std::string("0x" + rest.substr(0, c1));
                         g_idle_add([](gpointer d) -> gboolean { stash_compress_later(*(std::string*)d); delete (std::string*)d; return G_SOURCE_REMOVE; }, addr);
                     }
                 }
+                if (line.find("configreloaded>>") == 0)   // анімації могли змінитись — перечитаємо при наступній появі простору
+                    g_idle_add([](gpointer) -> gboolean { g_anims_known = false; return G_SOURCE_REMOVE; }, nullptr);
+                if (line.find("closewindow>>") == 0) {   // закрили вікно з простору → картки зсуваються
+                    std::string* a = new std::string("0x" + line.substr(13));
+                    g_idle_add([](gpointer d) -> gboolean { cards_on_close(*(std::string*)d); delete (std::string*)d; return G_SOURCE_REMOVE; }, a);
+                }
+                if (line.find("openwindow>>") == 0) {   // openwindow>>ADDR,WS,CLASS,TITLE → можливо, це запуск з доку
+                    std::string r = line.substr(12);
+                    size_t c1 = r.find(','), c2 = c1 == std::string::npos ? c1 : r.find(',', c1 + 1),
+                           c3 = c2 == std::string::npos ? c2 : r.find(',', c2 + 1);
+                    if (c3 != std::string::npos) {
+                        auto* ev = new std::array<std::string, 3>{"0x" + r.substr(0, c1), r.substr(c1 + 1, c2 - c1 - 1), r.substr(c2 + 1, c3 - c2 - 1)};
+                        g_idle_add_full(G_PRIORITY_HIGH, [](gpointer d) -> gboolean {
+                            auto* e = (std::array<std::string, 3>*)d; genie::grow_on_open((*e)[0], (*e)[1], (*e)[2]); delete e; return G_SOURCE_REMOVE;
+                        }, ev, nullptr);
+                    }
+                }
+                if (line.find("openwindow>>") == 0 && line.find(std::string(",") + DOCK_STASH + ",") != std::string::npos)
+                    g_idle_add([](gpointer) -> gboolean { cards_schedule(); return G_SOURCE_REMOVE; }, nullptr);   // відкрили програму просто в просторі
                 if (line.find("workspace>>") == 0 || line.find("activewindow>>") == 0 || line.find("closewindow>>") == 0 || line.find("openwindow>>") == 0 || line.find("fullscreen>>") == 0 || line.find("movewindowv2>>") == 0) {
                     g_idle_add([](gpointer) -> gboolean {
                         if (g_dock_state) update_dock(g_dock_state);

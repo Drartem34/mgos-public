@@ -182,6 +182,7 @@ struct CC {
     Throttle th_vol{50}, th_mic{50}, th_bright{350};
 };
 static CC cc;
+static GtkWidget* g_cc_anim = nullptr;   // обгортка cc.root з запеченим блюром: на ній — класи анімації появи/зникнення
 
 static void cc_close();
 static void go_page(const char* name);
@@ -2237,8 +2238,9 @@ static void go_page(const char* name) {
 
 static void cc_open(const char* page = "main") {
     if (cc.hide_timer) { g_source_remove(cc.hide_timer); cc.hide_timer = 0; }
-    gtk_widget_remove_css_class(cc.root, "cc-out");
+    gtk_widget_remove_css_class(g_cc_anim ? g_cc_anim : cc.root, "cc-out");
     bool was_open = cc.open;
+    if (!was_open) sysui::close_other_overlays("cc");   // CC відкривається — решта оверлеїв згортаються
     cc.open = true;
     apply_theme();
     if (!was_open) {
@@ -2266,12 +2268,12 @@ static void cc_open(const char* page = "main") {
 static void cc_close() {
     if (!cc.open) return;
     cc.open = false;
-    gtk_widget_add_css_class(cc.root, "cc-out");
+    gtk_widget_add_css_class(g_cc_anim ? g_cc_anim : cc.root, "cc-out");
     cc.hide_timer = g_timeout_add(180, [](gpointer) -> gboolean {
         cc.hide_timer = 0;
         if (!cc.open) {
             gtk_widget_set_visible(cc.win, FALSE);
-            gtk_widget_remove_css_class(cc.root, "cc-out");
+            gtk_widget_remove_css_class(g_cc_anim ? g_cc_anim : cc.root, "cc-out");
             for (GtkWidget* t : cc.anim_tiles) gtk_widget_remove_css_class(t, "tile-in");
             clear_box(nfp.list);   // звільняємо картки сповіщень
         }
@@ -2375,8 +2377,14 @@ static void build_ui(GtkApplication* app) {
     gtk_stack_add_named(GTK_STACK(cc.stack), build_sys_page(), "system");
     gtk_stack_add_named(GTK_STACK(cc.stack), build_notif_page(), "notifs");
     gtk_box_append(GTK_BOX(cc.root), cc.stack);
-    gtk_window_set_child(GTK_WINDOW(cc.win), cc.root);
-    sysui::pop_on_show(cc.win, cc.root, "sysui-pop-down");
+    // запечений блюр: підложка у межах cc.root (повноекранне вікно; позиція шару — (0,0))
+    g_cc_anim = sysui::bb::underlay(cc.win, cc.root, "control_center", 24);
+    gtk_widget_set_valign(g_cc_anim, GTK_ALIGN_START); gtk_widget_set_halign(g_cc_anim, GTK_ALIGN_END);
+    gtk_widget_set_margin_top(g_cc_anim, 8); gtk_widget_set_margin_end(g_cc_anim, 10);
+    gtk_widget_set_valign(cc.root, GTK_ALIGN_FILL); gtk_widget_set_halign(cc.root, GTK_ALIGN_FILL);
+    gtk_widget_set_margin_top(cc.root, 0); gtk_widget_set_margin_end(cc.root, 0);
+    gtk_window_set_child(GTK_WINDOW(cc.win), g_cc_anim);
+    sysui::pop_on_show(cc.win, g_cc_anim, "sysui-pop-down");
 
     // Escape: на підсторінці — назад, на головній — закрити
     GtkEventController* keys = gtk_event_controller_key_new();
@@ -2391,7 +2399,8 @@ static void build_ui(GtkApplication* app) {
     // Клік у прозору область навколо панелі → закрити (як у macOS).
     GtkGesture* outside = gtk_gesture_click_new();
     g_signal_connect(outside, "pressed", G_CALLBACK(+[](GtkGestureClick*, int, double x, double y, gpointer) {
-        if (gtk_widget_pick(cc.win, x, y, GTK_PICK_DEFAULT) == cc.win) cc_close();
+        GtkWidget* p = gtk_widget_pick(cc.win, x, y, GTK_PICK_DEFAULT);
+        if (p == cc.win || (p != cc.root && !gtk_widget_is_ancestor(p, cc.root))) cc_close();
     }), nullptr);
     gtk_widget_add_controller(cc.win, GTK_EVENT_CONTROLLER(outside));
 

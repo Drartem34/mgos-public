@@ -1,8 +1,8 @@
 colors:
 
   primary:
-    background: "#392e38"
-    foreground: "#cdcacd"
+    background: "#1f2024"
+    foreground: "#c7c7c8"
 
   cursor:
     text: CellBackground
@@ -14,8 +14,8 @@ colors:
 
   search:
     matches:
-      foreground: '#392e38'
-      background: '#cdcacd'
+      foreground: '#1f2024'
+      background: '#c7c7c8'
     focused_match:
       foreground: CellBackground
       background: CellForeground
@@ -25,29 +25,29 @@ colors:
     background: None
 
   footer_bar:
-    foreground: '#866e83'
-    background: '#cdcacd'
+    foreground: '#636a79'
+    background: '#c7c7c8'
 
   selection:
     text: CellBackground
     background: CellForeground
 
   normal:
-    black: "#392e38"
-    red: "#51CFF6"
-    green: "#71D2F5"
-    yellow: "#A4B6D7"
-    blue: "#9DDBF5"
-    magenta: "#ACD7F5"
-    cyan: "#E9D3E0"
-    white: "#cdcacd"
+    black: "#1f2024"
+    red: "#679CDE"
+    green: "#9C9CA6"
+    yellow: "#8A98B0"
+    blue: "#94A3BA"
+    magenta: "#99AAC6"
+    cyan: "#AAB6CE"
+    white: "#c7c7c8"
 
   bright:
-    black: "#866e83"
-    red: "#51CFF6"
-    green: "#71D2F5"
-    yellow: "#A4B6D7"
-    blue: "#9DDBF5"
-    magenta: "#ACD7F5"
-    cyan: "#E9D3E0"
-    white: "#cdcacd"
+    black: "#636a79"
+    red: "#679CDE"
+    green: "#9C9CA6"
+    yellow: "#8A98B0"
+    blue: "#94A3BA"
+    magenta: "#99AAC6"
+    cyan: "#AAB6CE"
+    white: "#c7c7c8"

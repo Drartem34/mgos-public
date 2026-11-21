@@ -1,0 +1,28 @@
+{
+    "checksum": "115309858a60963562e0af1af2be4526",
+    "wallpaper": "/home/doki/.cache/megumin-os/wp_poster_pixel.png",
+    "alpha": "100",
+    "special": {
+        "background": "#0a1018",
+        "foreground": "#c1c3c5",
+        "cursor": "#c1c3c5"
+    },
+    "colors": {
+        "color0": "#0a1018",
+        "color1": "#1B4E57",
+        "color2": "#414E4F",
+        "color3": "#B74639",
+        "color4": "#B5A42F",
+        "color5": "#F8E810",
+        "color6": "#3B7882",
+        "color7": "#c1c3c5",
+        "color8": "#59626d",
+        "color9": "#1B4E57",
+        "color10": "#414E4F",
+        "color11": "#B74639",
+        "color12": "#B5A42F",
+        "color13": "#F8E810",
+        "color14": "#3B7882",
+        "color15": "#c1c3c5"
+    }
+}

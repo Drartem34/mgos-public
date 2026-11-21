@@ -208,7 +208,7 @@ static void activate(GtkApplication* app, gpointer) {
 
     gtk_box_append(GTK_BOX(osd_box), center_box);
 
-    gtk_window_set_child(GTK_WINDOW(osd_window), osd_box);
+    gtk_window_set_child(GTK_WINDOW(osd_window), sysui::bb::underlay(osd_window, osd_box, "megumin_osd", 17, nullptr, true, true));   // запечений блюр
     gtk_widget_set_visible(osd_window, FALSE); 
 }
 

@@ -602,6 +602,7 @@ static void activate(GtkApplication* app, gpointer) {
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(g_anim_css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 2);
 
     g_win = gtk_application_window_new(app);
+    sysui::exclusive_overlay(g_win, "about");   // показ → інші оверлеї згортаються
     gtk_window_set_title(GTK_WINDOW(g_win), "Megumin OS — про систему");
     sysui::release_on_hide(g_win);
     GtkWindow* w = GTK_WINDOW(g_win);
@@ -722,9 +723,12 @@ static void activate(GtkApplication* app, gpointer) {
     gtk_box_append(GTK_BOX(body), btns);
 
     gtk_box_append(GTK_BOX(g_card), body);
-    gtk_box_append(GTK_BOX(root), g_card);
+    GtkWidget* card_bb = sysui::bb::underlay(g_win, g_card, "about", 24);   // запечений блюр під карткою
+    gtk_widget_set_halign(card_bb, GTK_ALIGN_CENTER); gtk_widget_set_valign(card_bb, GTK_ALIGN_CENTER);
+    gtk_widget_set_vexpand(card_bb, TRUE);
+    gtk_box_append(GTK_BOX(root), card_bb);
     gtk_window_set_child(w, root);
-    sysui::pop_on_show(g_win, g_card);
+    sysui::pop_on_show(g_win, card_bb);
 
     GtkEventController* key = gtk_event_controller_key_new();
     g_signal_connect(key, "key-pressed", G_CALLBACK(on_key), nullptr);

@@ -17,6 +17,9 @@
 #include <csignal>
 #include <glib/gstdio.h>
 #include <map>
+#include <set>
+#include <regex>
+#include <algorithm>
 
 namespace cpop {
 
@@ -40,7 +43,7 @@ static double g_content_a = 0;
 static int g_cal_off = 0;                        // зсув місяців у календарі
 static double g_play_round = 4;                  // форма кнопки Play: 1 — квадрат, 4 — «коло»
 static double g_amp = 0;                         // амплітуда хвилі прогресу
-static const double OPEN_MS = 430, CLOSE_MS = 230;
+static const double OPEN_MS = 430, CLOSE_MS = 540;
 static const int BAYER[4][4] = {{0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}};
 
 static void hide_pop();
@@ -59,12 +62,34 @@ static GSubprocess* g_sh_proc = nullptr;
 static GtkWidget *g_drop_qr = nullptr, *g_sh_allow = nullptr;
 static bool g_sh_opened = false;
 static GtkWidget *g_last_bubble = nullptr, *g_last_bar = nullptr;
+// Mg Share (свої пристрої): pair / push через mgos-share
+static GSubprocess* g_dv_proc = nullptr;
+static std::string g_dv_mode, g_dv_target;
+static void dv_stop();
+static void dv_pair(GtkButton* = nullptr, gpointer = nullptr);
+static void sh_start();
 
 static std::string fs_basename(const std::string& p) {
     gchar* b = g_path_get_basename(p.c_str()); std::string r = b; g_free(b); return r;
 }
-static double ease_out_back(double k) { const double c1 = 1.25, c3 = c1 + 1; double x = k - 1; return 1 + c3 * x * x * x + c1 * x * x; }
+static double ease_out_soft(double k) { double x = 1 - k; return 1 - x * x * x; }   // м'яке гальмування, без overshoot
+// Стартова «форма» бульбашки годинника (перечитується при кожному show_pop) — картка морфиться з неї
+static double g_fbg[4] = {0.118, 0.118, 0.18, 0.8}, g_ffg[3] = {0.9, 0.9, 0.9}, g_fbd[4] = {1, 1, 1, 0.1};
+static double g_tx = 10, g_ty = 6, g_th = 18;     // де саме в бульбашці малюється текст годинника (лівий верх, висота)
+static std::string g_from_text;
+static std::string g_ffamily;            // шрифт справжньої мітки годинника — малюємо ним, щоб підміна не «блимала»
+static double g_fpx = 14; static int g_fweight = 700;
+static const char* g_ptext_family = nullptr;   // тимчасова підміна сімейства в ptext
+static PangoLayout* g_lay = nullptr;           // копія Pango-шару справжньої мітки годинника
+static GtkWidget* g_hidden_bubble = nullptr;       // бульбашка, яку ми сховали на час блоку
 static double ease_in_out(double k) { return k < 0.5 ? 4 * k * k * k : 1 - std::pow(-2 * k + 2, 3) / 2; }
+// Пружинне згортання блоку в бульбашку: швидке схлопування (0..k0) → затухаючі коливання розміру з овершутом
+static double spring_close(double k) {
+    // справжня згасаюча пружина: e^(-a·t)·(cos(b·t) + a/b·sin(b·t)) — починається з 1 зі швидкістю 0, один плавний рух,
+    // трохи «пролітає» нуль (бульбашку) і осідає без сіпань
+    const double a = 6.0, b = 7.0;
+    return std::exp(-a * k) * (std::cos(b * k) + a / b * std::sin(b * k));
+}
 static gint64 now_us() { return g_get_monotonic_time(); }
 
 // ===================== ТЕКСТ =====================
@@ -72,7 +97,7 @@ static gint64 now_us() { return g_get_monotonic_time(); }
 static int ptext(cairo_t* cr, const std::string& s, double x, double y, double size, PangoWeight wt,
                  double r, double g, double b, double a, int align = 0, double spacing = 0) {
     PangoLayout* l = pango_cairo_create_layout(cr);
-    PangoFontDescription* fd = pango_font_description_from_string("JetBrainsMono Nerd Font");
+    PangoFontDescription* fd = pango_font_description_from_string(g_ptext_family ? g_ptext_family : "JetBrainsMono Nerd Font");
     pango_font_description_set_absolute_size(fd, size * PANGO_SCALE);
     pango_font_description_set_weight(fd, wt);
     pango_layout_set_font_description(l, fd);
@@ -719,31 +744,278 @@ static void focus_start(int minutes) {
 static void on_focus(GtkButton*, gpointer) { if (g_focus_end) focus_stop(); else focus_start(25); }
 static void on_break(GtkButton*, gpointer) { focus_start(5); }
 
-// Суфікс для годинника в бульбашці, поки йде таймер
+// ===================== РОЗУМНИЙ ГОДИННИК: ЖИВІ АКТИВНОСТІ =====================
+// Джерела: фокус-таймер, завантаження Steam (appmanifest_*.acf), таймери у вікнах браузера (hyprctl clients),
+// файли ~/.cache/mgos/activities/*.json {id, icon, text, progress 0..1|null, until_epoch|null, start_epoch?}.
+// Жодних демонів: один таймер у процесі топбару — 1 с, коли є відлік, інакше 3 с (IO — не частіше за 3 с).
+struct Act {
+    std::string id, icon, text;
+    double progress = -1;        // 0..1 або -1
+    double until = 0;            // unix-секунди кінця (відлік) або 0
+    double start = 0;            // unix-секунди старту (для прогресу відліку) або 0
+    double frozen = -1;          // браузерний таймер на паузі: залишок, с
+    int prio = 50;
+};
+static std::vector<Act> g_acts;          // зовнішні (без фокус-таймера)
+static GtkWidget* g_acts_da = nullptr;
+static guint g_act_src = 0;
+static double g_act_io = 0;
+static std::map<std::string, std::pair<long long, double>> g_btimer;   // адреса вікна → (останній залишок, коли змінився)
+
+static double real_now() { return g_get_real_time() / 1e6; }
+static std::string act_dir() { return std::string(g_get_user_cache_dir()) + "/mgos/activities"; }
+static std::string cut(const std::string& s, int n) {
+    if (g_utf8_strlen(s.c_str(), -1) <= n) return s;
+    gchar* e = g_utf8_offset_to_pointer(s.c_str(), n - 1);
+    return s.substr(0, e - s.c_str()) + "…";
+}
+static double act_left(const Act& a) { return a.frozen >= 0 ? a.frozen : std::max(0.0, a.until - real_now()); }
+static double act_progress(const Act& a) {
+    if (a.progress >= 0) return std::clamp(a.progress, 0.0, 1.0);
+    if (a.until > 0 && a.start > 0 && a.until > a.start) return std::clamp(1 - act_left(a) / (a.until - a.start), 0.0, 1.0);
+    return -1;
+}
+static std::string act_icon(const Act& a) { return !a.icon.empty() ? a.icon : (a.until > 0 || a.frozen >= 0) ? "\U000F051B" : "\U000F0E4B"; }
+// short: для бульбашки («󰓓 Hades 42%», «󰔛 чай 04:59»); full — для картки «Активності»
+static std::string act_value(const Act& a) {
+    if (a.until > 0 || a.frozen >= 0) return mmss((long long)std::ceil(act_left(a)));
+    if (a.progress >= 0) return std::to_string((int)std::lround(std::clamp(a.progress, 0.0, 1.0) * 100)) + "%";
+    return "";
+}
+static std::string act_short(const Act& a) {
+    std::string s = act_icon(a);
+    if (!a.text.empty()) s += " " + cut(a.text, 14);
+    std::string v = act_value(a);
+    if (!v.empty()) s += " " + v;
+    return s;
+}
+static std::vector<Act> acts_all() {
+    std::vector<Act> v = g_acts;
+    if (g_focus_end) {
+        Act f;
+        f.id = "focus"; f.prio = 90;
+        f.icon = g_focus_min <= 5 ? "\U000F0176" : "\U000F051B";
+        f.text = g_focus_min <= 5 ? "Перерва" : "Фокус";
+        f.until = real_now() + std::max<double>(0, (g_focus_end - now_us()) / 1e6);
+        f.start = f.until - g_focus_min * 60.0;
+        v.push_back(f);
+    }
+    std::stable_sort(v.begin(), v.end(), [](const Act& a, const Act& b) { return a.prio > b.prio; });
+    return v;
+}
+
+static std::string acf_get(const std::string& s, const std::string& key) {
+    size_t p = s.find("\"" + key + "\"");
+    if (p == std::string::npos) return "";
+    p = s.find('"', p + key.size() + 2);
+    if (p == std::string::npos) return "";
+    size_t e = s.find('"', p + 1);
+    return e == std::string::npos ? "" : s.substr(p + 1, e - p - 1);
+}
+static void acts_scan_steam(std::vector<Act>& out) {
+    std::vector<std::string> roots = {sysui::home() + "/.local/share/Steam", sysui::home() + "/.steam/steam",
+                                      sysui::home() + "/.var/app/com.valvesoftware.Steam/.local/share/Steam"};
+    std::vector<std::string> libs;
+    for (auto& r : roots) {
+        std::string vdf;
+        gchar* t = nullptr;
+        if (g_file_get_contents((r + "/steamapps/libraryfolders.vdf").c_str(), &t, nullptr, nullptr)) {
+            vdf = t; g_free(t);
+            for (size_t p = 0; (p = vdf.find("\"path\"", p)) != std::string::npos; p += 6) {
+                size_t a = vdf.find('"', p + 6), b = a == std::string::npos ? a : vdf.find('"', a + 1);
+                if (b != std::string::npos) libs.push_back(vdf.substr(a + 1, b - a - 1) + "/steamapps");
+            }
+        }
+        libs.push_back(r + "/steamapps");
+    }
+    std::sort(libs.begin(), libs.end());
+    libs.erase(std::unique(libs.begin(), libs.end()), libs.end());
+    for (auto& d : libs) {
+        GDir* dir = g_dir_open(d.c_str(), 0, nullptr);
+        if (!dir) continue;
+        while (const gchar* n = g_dir_read_name(dir)) {
+            std::string fn = n;
+            if (fn.rfind("appmanifest_", 0) != 0 || fn.size() < 4 || fn.substr(fn.size() - 4) != ".acf") continue;
+            std::string path = d + "/" + fn;
+            GStatBuf st;
+            if (g_stat(path.c_str(), &st) != 0 || real_now() - st.st_mtime > 180) continue;   // Steam не пише — не качає
+            gchar* t = nullptr;
+            if (!g_file_get_contents(path.c_str(), &t, nullptr, nullptr)) continue;
+            std::string s = t; g_free(t);
+            long flags = atol(acf_get(s, "StateFlags").c_str());
+            double tot = atof(acf_get(s, "BytesToDownload").c_str()), got = atof(acf_get(s, "BytesDownloaded").c_str());
+            if (!(flags & (256 | 1024 | 1048576)) || (flags & 512) || tot <= 0) continue;
+            Act a;
+            a.id = "steam:" + fn; a.icon = "\U000F04D3"; a.prio = 40;
+            a.text = acf_get(s, "name");
+            a.progress = std::clamp(got / tot, 0.0, 1.0);
+            out.push_back(a);
+        }
+        g_dir_close(dir);
+    }
+}
+static void acts_scan_files(std::vector<Act>& out) {
+    std::string d = act_dir();
+    GDir* dir = g_dir_open(d.c_str(), 0, nullptr);
+    if (!dir) return;
+    while (const gchar* n = g_dir_read_name(dir)) {
+        std::string fn = n;
+        if (fn.size() < 6 || fn.substr(fn.size() - 5) != ".json") continue;
+        std::string path = d + "/" + fn;
+        try {
+            std::ifstream f(path);
+            json j = json::parse(f);
+            Act a;
+            a.id = j.value("id", fn);
+            a.icon = j.value("icon", std::string());
+            a.text = j.value("text", std::string());
+            if (j.contains("progress") && j["progress"].is_number()) a.progress = j["progress"].get<double>();
+            if (j.contains("until_epoch") && j["until_epoch"].is_number()) a.until = j["until_epoch"].get<double>();
+            if (j.contains("start_epoch") && j["start_epoch"].is_number()) a.start = j["start_epoch"].get<double>();
+            if (j.contains("prio") && j["prio"].is_number()) a.prio = j["prio"].get<int>();
+            if (a.until > 0 && a.until < real_now() - 2) { g_unlink(path.c_str()); continue; }   // відлік закінчився
+            out.push_back(a);
+        } catch (...) {}
+    }
+    g_dir_close(dir);
+}
+// Таймери в браузері: «таймер/timer» у заголовку вікна + mm:ss або hh:mm:ss → зворотний відлік
+static void acts_scan_browser(std::vector<Act>& out) {
+    static const std::regex re(R"((?:^|[^0-9:])(?:(\d{1,2}):)?(\d{1,2}):(\d{2})(?![0-9:]))");
+    json cl;
+    try { cl = json::parse(sysui::hypr_request("j/clients")); } catch (...) { return; }
+    std::set<std::string> seen;
+    double now = real_now();
+    for (auto& c : cl) {
+        std::string cls = c.value("class", std::string()), title = c.value("title", std::string());
+        gchar* lc = g_utf8_strdown(cls.c_str(), -1);
+        std::string lcls = lc; g_free(lc);
+        bool br = false;
+        for (const char* b : {"firefox", "chrom", "brave", "zen", "vivaldi", "librewolf", "opera", "edge", "floorp", "waterfox", "thorium", "helium"})
+            if (lcls.find(b) != std::string::npos) br = true;
+        if (!br) continue;
+        gchar* lt = g_utf8_strdown(title.c_str(), -1);
+        std::string ltitle = lt; g_free(lt);
+        if (ltitle.find("таймер") == std::string::npos && ltitle.find("timer") == std::string::npos) continue;
+        if (ltitle.find("stopwatch") != std::string::npos || ltitle.find("секундомір") != std::string::npos) continue;
+        std::smatch m;
+        if (!std::regex_search(title, m, re)) continue;
+        long long secs = (m[1].matched ? atoll(m[1].str().c_str()) * 3600 : 0) + atoll(m[2].str().c_str()) * 60 + atoll(m[3].str().c_str());
+        if (secs <= 0) continue;
+        std::string addr = c.value("address", std::string("?"));
+        seen.insert(addr);
+        auto it = g_btimer.find(addr);
+        if (it == g_btimer.end() || it->second.first != secs) g_btimer[addr] = {secs, now};
+        double since = now - g_btimer[addr].second;
+        Act a;
+        a.id = "browser:" + addr; a.prio = 70; a.icon = "\U000F051B"; a.text = "Таймер";
+        if (since > 4) a.frozen = (double)secs;          // заголовок не змінюється — таймер на паузі
+        else { a.until = now + secs - since; a.start = 0; }
+        out.push_back(a);
+    }
+    for (auto it = g_btimer.begin(); it != g_btimer.end();) it = seen.count(it->first) ? std::next(it) : g_btimer.erase(it);
+}
+
+static void acts_refresh_ui() {
+    if (g_acts_da && g_open) gtk_widget_queue_draw(g_acts_da);
+}
+static gboolean acts_tick(gpointer);
+static void acts_rearm(bool fast) {
+    if (g_act_src) g_source_remove(g_act_src);
+    g_act_src = g_timeout_add_seconds(fast ? 1 : 3, acts_tick, nullptr);
+}
+static bool acts_countdown() {
+    if (g_focus_end) return true;
+    for (auto& a : g_acts) if (a.until > 0) return true;
+    return false;
+}
+static gboolean acts_tick(gpointer) {
+    g_act_src = 0;
+    double n = real_now();
+    if (n - g_act_io >= 2.9 && !g_tick) {   // не скануємо файли/hyprctl під час морфа — без мікро-фризів
+        g_act_io = n;
+        std::vector<Act> v;
+        acts_scan_files(v);
+        acts_scan_steam(v);
+        acts_scan_browser(v);
+        g_acts = v;
+    }
+    update_clock(nullptr);
+    acts_refresh_ui();
+    acts_rearm(acts_countdown());
+    return G_SOURCE_REMOVE;
+}
+// Запускається один раз із топбару; сам таймер живе лише в процесі топбару
+static void acts_start() { if (!g_act_src) acts_rearm(false); }
+
+// Що показати поруч із часом: активності по черзі (кожні 5 с), найважливіша першою
 static std::string clock_suffix() {
-    if (!g_focus_end) return "";
-    long long left = std::max<long long>(0, (g_focus_end - now_us()) / 1000000 + 1);
-    return std::string("  ") + (g_focus_min <= 5 ? "\U000F0176 " : "\U000F13AB ") + mmss(left);
+    std::vector<Act> v = acts_all();
+    if (v.empty()) return "";
+    size_t i = v.size() > 1 ? ((long long)real_now() / 5) % v.size() : 0;
+    return "  " + act_short(v[i]);
+}
+
+static void draw_acts(GtkDrawingArea*, cairo_t* cr, int w, int h, gpointer) {
+    std::vector<Act> v = acts_all();
+    if (v.empty()) {
+        ptext(cr, "Немає активних завдань", w / 2.0, h / 2.0 - 16, 11.5, PANGO_WEIGHT_BOLD, 1, 1, 1, 0.5, 2);
+        ptext(cr, "mgos-timer 5m \"чай\"", w / 2.0, h / 2.0 + 3, 10, PANGO_WEIGHT_NORMAL, 1, 1, 1, 0.32, 2);
+        return;
+    }
+    const double RH = 38;
+    int maxrows = std::max(1, (int)(h / RH));
+    for (int i = 0; i < (int)v.size() && i < maxrows; i++) {
+        const Act& a = v[i];
+        double y = i * RH;
+        ptext(cr, act_icon(a) + "  " + cut(a.text.empty() ? "Активність" : a.text, 24), 2, y + 2, 12, PANGO_WEIGHT_BOLD, 1, 1, 1, 0.92);
+        std::string val = act_value(a);
+        ptext(cr, val, w - 2, y + 2, 12, PANGO_WEIGHT_BOLD, 1, 1, 1, 0.7, 1);
+        double pr = act_progress(a);
+        double bx = 2, bw = w - 4, by = y + 24, bh = 6;
+        auto rr = [&](double x, double ww) {
+            double r = bh / 2;
+            cairo_new_path(cr);
+            cairo_arc(cr, x + ww - r, by + r, r, -M_PI / 2, M_PI / 2);
+            cairo_arc(cr, x + r, by + r, r, M_PI / 2, 1.5 * M_PI);
+            cairo_close_path(cr);
+        };
+        rr(bx, bw);
+        cairo_set_source_rgba(cr, 1, 1, 1, 0.12);
+        cairo_fill(cr);
+        if (pr >= 0 && pr > 0.005) {
+            pw::RGB c = accent_px(0.5, 0);
+            rr(bx, std::max(bh, bw * pr));
+            cairo_set_source_rgba(cr, c.r, c.g, c.b, 0.95);
+            cairo_fill(cr);
+        }
+    }
+    if ((int)v.size() > maxrows)
+        ptext(cr, "+" + std::to_string(v.size() - maxrows) + " ще", w - 2, h - 14, 10, PANGO_WEIGHT_NORMAL, 1, 1, 1, 0.5, 1);
 }
 
 // ===================== ФОН + МОРФ =====================
-static void draw_bg(GtkDrawingArea*, cairo_t* cr, int w, int h, gpointer) {
+static int g_card_x = 0, g_card_y = 0;   // реальна (ціла) позиція картки — до неї «прибиваємо» текст бульбашки
+static double morph_y(double h) { return h < g_from_h ? g_top + (g_from_h - h) * 0.5 : g_top; }
+
+static void draw_bg_core(cairo_t* cr, int w, int h) {
     double v = std::clamp(g_v, 0.0, 1.0);
-    double r = 10 + (24 - 10) * v;
-    r = std::min({r, w / 2.0, h / 2.0});
-    auto path = [&]() {
+    auto lerp = [&](double a, double b) { return a + (b - a) * v; };
+    double r = std::min({lerp(10, 24), w / 2.0, h / 2.0});
+    auto path = [&](double in) {
+        double rr = std::max(0.0, r - in);
         cairo_new_path(cr);
-        cairo_arc(cr, w - r, r, r, -M_PI / 2, 0);
-        cairo_arc(cr, w - r, h - r, r, 0, M_PI / 2);
-        cairo_arc(cr, r, h - r, r, M_PI / 2, M_PI);
-        cairo_arc(cr, r, r, r, M_PI, 1.5 * M_PI);
+        cairo_arc(cr, w - in - rr, in + rr, rr, -M_PI / 2, 0);
+        cairo_arc(cr, w - in - rr, h - in - rr, rr, 0, M_PI / 2);
+        cairo_arc(cr, in + rr, h - in - rr, rr, M_PI / 2, M_PI);
+        cairo_arc(cr, in + rr, in + rr, rr, M_PI, 1.5 * M_PI);
         cairo_close_path(cr);
     };
-    double op = sysui::settings().topbar_opacity / 100.0;
-    double a = op + (0.965 - op) * v;
     cairo_save(cr);
-    path();
-    cairo_set_source_rgba(cr, 0.118 + (0.078 - 0.118) * v, 0.118 + (0.078 - 0.118) * v, 0.18 + (0.094 - 0.18) * v, a);
+    // запечений блюр під плашкою: росте разом із карткою (позиція — як у layout_morph; шар на весь монітор)
+    sysui::bb::paint(cr, std::max(0.0, g_cx - w / 2.0), morph_y(h), w, h, r);
+    path(0);
+    cairo_set_source_rgba(cr, lerp(g_fbg[0], 0.078), lerp(g_fbg[1], 0.078), lerp(g_fbg[2], 0.094), lerp(g_fbg[3], 0.965));
     cairo_fill_preserve(cr);
     cairo_clip(cr);
     // хвилі шапки «проявляються» разом із розростанням
@@ -751,18 +1023,57 @@ static void draw_bg(GtkDrawingArea*, cairo_t* cr, int w, int h, gpointer) {
     g_wv.t = g_t;
     g_wv.style = sysui::settings().pixel_style;   // «Стиль піксельних шапок» у Налаштуваннях
     g_wv.draw(cr, w, std::min(h, 128));
+    // Час годинника «їде» всередині картки: з місця в бульбашці до заголовка блоку (і назад при закритті)
+    if (!g_from_text.empty()) {
+        double p = g_drop_mode ? 0 : v * v * (3 - 2 * v);
+        double a = std::clamp(1 - (v - 0.45) / 0.4, 0.0, 1.0);
+        if (a > 0.001) {
+            const double sc = 1.0;   // розмір тексту не міняємо під час «пружини» — дробовий кегль давав блимання/розмиття
+            double size = g_fpx * sc + (g_drop_mode ? 0 : 14) * p;
+            double x = (g_tx * sc + (w - g_from_w * sc) / 2) * (1 - p) + 26 * p;
+            double cy = (g_ty + (h - g_from_h) / 2 + g_th / 2) * (1 - p) + 46 * p;
+            double th = g_th * size / g_fpx;
+            if (v <= 0.02 && !g_drop_mode) {   // біля бульбашки текст стоїть на екрані нерухомо, на цілих пікселях (картка тремтить ±1px)
+                x = std::round(g_cx - g_from_w / 2 + g_tx) - g_card_x;
+                cy = std::round(g_top + g_ty) - g_card_y + th / 2;
+            }
+            double cr_ = g_ffg[0] * (1 - p) + 0.96 * p, cg_ = g_ffg[1] * (1 - p) + 0.96 * p, cb_ = g_ffg[2] * (1 - p) + 0.97 * p;
+            if (g_lay) {   // той самий шар, що й у топбарі, лише масштабуємо до заголовка
+                cairo_save(cr);
+                cairo_translate(cr, x, cy - th / 2);
+                cairo_scale(cr, size / g_fpx, size / g_fpx);
+                cairo_set_source_rgba(cr, cr_, cg_, cb_, a);
+                pango_cairo_update_layout(cr, g_lay);
+                pango_cairo_show_layout(cr, g_lay);
+                cairo_restore(cr);
+            } else {
+                ptext(cr, g_from_text, x, cy - th / 2, size, PANGO_WEIGHT_BOLD, cr_, cg_, cb_, a);
+            }
+        }
+    }
     cairo_restore(cr);
-    path();
+    path(0.5);
     cairo_set_line_width(cr, 1);
-    cairo_set_source_rgba(cr, 1, 1, 1, 0.09);
+    cairo_set_source_rgba(cr, lerp(g_fbd[0], 1), lerp(g_fbd[1], 1), lerp(g_fbd[2], 1), lerp(g_fbd[3], 0.09));
     cairo_stroke(cr);
 }
 
+static void draw_bg(GtkDrawingArea*, cairo_t* cr, int w, int h, gpointer) {
+    draw_bg_core(cr, w, h);
+}
+
 static void layout_morph() {
-    double w = g_from_w + (g_W - g_from_w) * g_v, h = g_from_h + (g_H - g_from_h) * g_v;
-    w = std::max(8.0, w); h = std::max(8.0, h);
-    gtk_widget_set_size_request(g_bg, (int)std::lround(w), (int)std::lround(h));
-    gtk_fixed_move(GTK_FIXED(g_fixed), g_card, std::max(0.0, g_cx - w / 2), g_top);
+    double dw = (g_W - g_from_w) * g_v, dh = (g_H - g_from_h) * g_v;
+    if (g_v < 0) {
+        double s = std::max(-0.3, g_v * (g_from_w > 0 ? (g_W - g_from_w) / g_from_w : 5.0));   // той самий нахил, що й при g_v>0 — рух без злому
+        dw = g_from_w * s;
+        dh = g_from_h * s;
+    }
+    double w = std::max(8.0, g_from_w + dw), h = std::max(8.0, g_from_h + dh);
+    int iw = (int)std::lround(w), ih = (int)std::lround(h);
+    g_card_x = (int)std::lround(std::max(0.0, g_cx - iw / 2.0)); g_card_y = (int)std::lround(morph_y(ih));
+    gtk_widget_set_size_request(g_bg, iw, ih);
+    gtk_fixed_move(GTK_FIXED(g_fixed), g_card, g_card_x, g_card_y);
 }
 
 static gboolean on_tick(GtkWidget*, GdkFrameClock* fc, gpointer) {
@@ -770,18 +1081,23 @@ static gboolean on_tick(GtkWidget*, GdkFrameClock* fc, gpointer) {
     if (!g_t0) g_t0 = now;
     g_t = (now - g_t0) / 1e6;
     double k = std::clamp((now - g_anim_start) / 1000.0 / (g_open ? OPEN_MS : CLOSE_MS), 0.0, 1.0);
-    g_v = g_open ? g_v_from + (1 - g_v_from) * ease_out_back(k) : g_v_from * (1 - ease_in_out(k));
+    g_v = g_open ? g_v_from + (1 - g_v_from) * ease_out_soft(k) : g_v_from * spring_close(k);
     layout_morph();
 
-    if (g_open && k >= 1 && !g_content_on) {
+    if (g_open && k >= 0.92 && !g_content_on) {   // вміст проявляється вже наприкінці розростання
         g_content_on = true;
         g_content_a = 0;
         gtk_widget_set_opacity(g_content, 0);
         gtk_widget_set_visible(g_content, TRUE);
     }
     if (g_content_on && g_content_a < 1) {
-        g_content_a = std::min(1.0, g_content_a + 0.12);
+        g_content_a = std::min(1.0, g_content_a + 0.1);
         gtk_widget_set_opacity(g_content, pw::smooth(g_content_a));
+    }
+    if (!g_open && gtk_widget_get_visible(g_content)) {   // при закритті вміст плавно зникає, поки картка стискається
+        g_content_a = std::min(g_content_a - 0.25, std::max(0.0, 1.0 - k / 0.12));
+        gtk_widget_set_opacity(g_content, pw::smooth(g_content_a));
+        if (g_content_a <= 0) gtk_widget_set_visible(g_content, FALSE);
     }
     // форма кнопки Play: грає — квадрат (1), пауза — «коло» (4)
     double want = playing(cur()) ? 1.0 : 4.0;
@@ -796,7 +1112,20 @@ static gboolean on_tick(GtkWidget*, GdkFrameClock* fc, gpointer) {
         for (GtkWidget* a : g_px_areas) if (gtk_widget_get_mapped(a)) gtk_widget_queue_draw(a);
     }
     if (!g_open && k >= 1) {
+        gtk_widget_set_visible(g_content, FALSE);
         gtk_widget_set_visible(g_win, FALSE);
+        sysui::bb::release();
+        if (g_hidden_bubble) {
+            gtk_widget_set_opacity(g_hidden_bubble, 1);   // без CSS-переходу (cp-still), інакше бульбашка «доплавує» 200 мс
+            GtkWidget* b = g_hidden_bubble; g_hidden_bubble = nullptr;
+            g_object_ref(b);
+            g_timeout_add(250, [](gpointer d) -> gboolean {   // знімаємо cp-still, коли курсор уже не над бульбашкою
+                GtkWidget* w = GTK_WIDGET(d);
+                if (g_hidden_bubble == w) { g_object_unref(w); return G_SOURCE_REMOVE; }
+                if (gtk_widget_get_state_flags(w) & GTK_STATE_FLAG_PRELIGHT) return G_SOURCE_CONTINUE;
+                gtk_widget_remove_css_class(w, "cp-still"); g_object_unref(w); return G_SOURCE_REMOVE;
+            }, b);
+        }
         g_tick = 0;
         if (g_poll) { g_source_remove(g_poll); g_poll = 0; }
         sysui::trim();
@@ -806,13 +1135,57 @@ static gboolean on_tick(GtkWidget*, GdkFrameClock* fc, gpointer) {
 }
 static void ensure_tick() { if (!g_tick) g_tick = gtk_widget_add_tick_callback(g_win, on_tick, nullptr, nullptr); }
 
+// Зчитати «стартову форму» бульбашки: позицію/розмір, кольори (тема), текст і де він малюється
+static bool capture_bubble(GtkWidget* bubble, GtkWidget* bar) {
+    graphene_rect_t r;
+    if (!gtk_widget_compute_bounds(bubble, bar, &r)) return false;
+    g_from_w = r.size.width; g_from_h = r.size.height;
+    g_cx = r.origin.x + r.size.width / 2; g_top = r.origin.y;
+    bool light = gtk_widget_has_css_class(bar, "light-theme"), mac = gtk_widget_has_css_class(bar, "macos");
+    double op = sysui::settings().topbar_opacity / 100.0;
+    if (light) { g_fbg[0] = g_fbg[1] = g_fbg[2] = 0.961; g_fbg[3] = std::min(1.0, op + 0.1); }
+    else { g_fbg[0] = g_fbg[1] = 0.118; g_fbg[2] = 0.18; g_fbg[3] = op; }
+    if (mac) g_fbg[3] = 0;
+    bool brd = sysui::settings().topbar_border && !mac;
+    g_fbd[0] = g_fbd[1] = g_fbd[2] = light ? 0 : 1;
+    g_fbd[3] = brd ? (light ? 0.1 : 0.1) : 0;
+    if (clock_label) {
+        GdkRGBA c;
+        gtk_widget_get_color(clock_label, &c);
+        g_ffg[0] = c.red; g_ffg[1] = c.green; g_ffg[2] = c.blue;
+        g_from_text = gtk_label_get_text(GTK_LABEL(clock_label));
+        PangoLayout* l = gtk_widget_create_pango_layout(clock_label, g_from_text.c_str());
+        int tw, th;
+        pango_layout_get_pixel_size(l, &tw, &th);
+        if (g_lay) { g_object_unref(g_lay); g_lay = nullptr; }
+        if (PangoLayout* rl = gtk_label_get_layout(GTK_LABEL(clock_label))) {   // справжній шар мітки: той самий шрифт, вага, інтервали
+            g_lay = pango_layout_copy(rl);
+            pango_layout_get_pixel_size(rl, &tw, &th);
+        }
+        g_object_unref(l);
+        graphene_rect_t lr;
+        if (gtk_widget_compute_bounds(clock_label, bubble, &lr)) {
+            // мітка в позиції bounds сидить без відступів CSS бульбашки — а на екрані текст по центру плашки
+            g_tx = (g_from_w - tw) / 2.0;
+            g_ty = (g_from_h - th) / 2.0;
+            g_th = th;
+        }
+    }
+    return true;
+}
+
 static void hide_pop() {
     if (!g_win || !g_open) return;
     g_open = false;
     g_v_from = std::clamp(g_v, 0.0, 1.05);
     g_anim_start = now_us();
     g_content_on = false;
-    gtk_widget_set_visible(g_content, FALSE);
+    // бульбашка могла змінити розмір (текст активності) — перечитуємо її місце, зберігаючи поточну ширину картки
+    double cur_w = g_from_w + (g_W - g_from_w) * g_v;
+    if (g_last_bubble && capture_bubble(g_last_bubble, g_last_bar) && g_W > g_from_w) {
+        g_v_from = std::clamp((cur_w - g_from_w) / (g_W - g_from_w), 0.0, 1.05);
+        g_v = g_v_from;
+    }
     ensure_tick();
 }
 
@@ -874,7 +1247,7 @@ static void drop_reset() {
     g_drop_files.clear();
     std::string st = qs_status();
     (void)st;
-    drop_ui("\U000F0552", "КИНЬТЕ ФАЙЛ СЮДИ", "з'явиться QR-код — наведіть камеру телефона", "", false);
+    drop_ui("\U000F0552", "КИНЬТЕ ФАЙЛ СЮДИ", "QR-код для будь-кого або іконка свого пристрою нижче", "", false);
     gtk_widget_remove_css_class(g_drop_zone, "hot");
 }
 
@@ -971,6 +1344,14 @@ static void qs_send(GtkButton* = nullptr, gpointer = nullptr) {
 }
 
 static void qs_cancel(GtkButton*, gpointer) {
+    if (g_dv_proc) {
+        bool pairing = g_dv_mode == "pair";
+        dv_stop();
+        if (pairing && !g_drop_files.empty()) sh_start();
+        else if (pairing) drop_reset();
+        else { g_drop_files.clear(); hide_pop(); }
+        return;
+    }
     if (g_sh_proc) { sh_stop(); g_drop_files.clear(); hide_pop(); return; }
     if (!g_qs_proc) return;
     g_subprocess_force_exit(g_qs_proc);
@@ -1048,7 +1429,7 @@ static void sh_read_line(GObject* src, GAsyncResult* res, gpointer proc) {
 }
 
 static void sh_start() {
-    sh_stop();
+    sh_stop(); dv_stop();
     g_sh_opened = false;
     if (g_drop_files.empty()) return;
     gtk_widget_remove_css_class(g_drop_zone, "done");
@@ -1090,10 +1471,252 @@ static void sh_allow(GtkButton*, gpointer) {
     gtk_widget_set_visible(g_sh_allow, FALSE);
     g_child_watch_add(pid, [](GPid p, gint, gpointer) {
         g_spawn_close_pid(p);
-        if (g_drop_files.empty()) return;
+        if (g_drop_files.empty()) { if (g_open && g_drop_mode) dv_pair(); return; }
         if (!g_open && g_last_bubble && g_last_bar) show_pop(g_last_bubble, g_last_bar, true);
         sh_start();
     }, nullptr);
+}
+
+
+// ===================== Mg Share: свої пристрої =====================
+// Іконки з'єднаних пристроїв під зоною дропу. Стан пише служба mgos-share daemon у
+// ~/.cache/mgos/share-devices.tsv (id, ім'я, тип, час останнього «привіт»); «онлайн» = привіт < 45 с.
+struct MgDev { std::string id, name, kind; gint64 seen = 0; };
+static GtkWidget* g_dv_row = nullptr;
+static GFileMonitor* g_dv_mon = nullptr;
+static guint g_dv_tick = 0;
+static std::string g_dv_sig;
+
+static std::string dv_tsv() { return std::string(g_get_user_cache_dir()) + "/mgos/share-devices.tsv"; }
+static bool dv_online(const MgDev& d) { return d.seen > 0 && time(nullptr) - d.seen < 45; }
+static std::vector<MgDev> dv_load() {
+    std::vector<MgDev> v;
+    gchar* txt = nullptr;
+    if (!g_file_get_contents(dv_tsv().c_str(), &txt, nullptr, nullptr)) return v;
+    std::istringstream ss(txt);
+    g_free(txt);
+    for (std::string ln; std::getline(ss, ln);) {
+        std::vector<std::string> f;
+        size_t a = 0, b;
+        while ((b = ln.find('\t', a)) != std::string::npos) { f.push_back(ln.substr(a, b - a)); a = b + 1; }
+        f.push_back(ln.substr(a));
+        if (f.size() < 4 || f[0].empty()) continue;
+        v.push_back({f[0], f[1], f[2], g_ascii_strtoll(f[3].c_str(), nullptr, 10)});
+    }
+    return v;
+}
+static std::string dv_upper(const std::string& s) { gchar* u = g_utf8_strup(s.c_str(), -1); std::string r = u; g_free(u); return r; }
+
+static void dv_stop() {
+    if (!g_dv_proc) return;
+    g_subprocess_send_signal(g_dv_proc, SIGTERM);
+    g_object_unref(g_dv_proc); g_dv_proc = nullptr;
+    g_dv_mode.clear();
+}
+
+static void dv_rebuild();
+static void dv_push(const std::string& id, const std::string& name);
+
+static GtkWidget* dv_chip(const std::string& glyph, const std::string& name, bool online, bool add) {
+    GtkWidget* b = gtk_button_new();
+    gtk_widget_add_css_class(b, "cp-dv");
+    if (online) gtk_widget_add_css_class(b, "online");
+    if (add) gtk_widget_add_css_class(b, "add");
+    gtk_widget_set_cursor_from_name(b, "pointer");
+    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    GtkWidget* g = gtk_label_new(glyph.c_str());
+    gtk_widget_add_css_class(g, "cp-dv-glyph");
+    GtkWidget* n = gtk_label_new(name.c_str());
+    gtk_widget_add_css_class(n, "cp-dv-name");
+    gtk_label_set_ellipsize(GTK_LABEL(n), PANGO_ELLIPSIZE_END);
+    gtk_label_set_max_width_chars(GTK_LABEL(n), 9);
+    gtk_box_append(GTK_BOX(box), g);
+    gtk_box_append(GTK_BOX(box), n);
+    gtk_button_set_child(GTK_BUTTON(b), box);
+    return b;
+}
+
+static void dv_rebuild() {
+    if (!g_dv_row) return;
+    while (GtkWidget* c = gtk_widget_get_first_child(g_dv_row)) gtk_box_remove(GTK_BOX(g_dv_row), c);
+    auto devs = dv_load();
+    g_dv_sig.clear();
+    for (auto& d : devs) {
+        bool on = dv_online(d);
+        g_dv_sig += d.id + (on ? "1" : "0");
+        GtkWidget* b = dv_chip(d.kind == "laptop" ? "\U000F0322" : "\U000F011C", d.name, on, false);
+        gtk_widget_set_tooltip_text(b, on ? "Відкрито Mg Share — надішле одразу" : "Надішле, щойно відкриєте Mg Share на пристрої");
+        g_object_set_data_full(G_OBJECT(b), "id", g_strdup(d.id.c_str()), g_free);
+        g_object_set_data_full(G_OBJECT(b), "name", g_strdup(d.name.c_str()), g_free);
+        g_signal_connect(b, "clicked", G_CALLBACK(+[](GtkButton* b, gpointer) {
+            std::string id = (const char*)g_object_get_data(G_OBJECT(b), "id");
+            std::string nm = (const char*)g_object_get_data(G_OBJECT(b), "name");
+            if (g_drop_files.empty()) {
+                gtk_label_set_text(GTK_LABEL(g_drop_status), ("Киньте файл сюди — і натисніть на " + nm).c_str());
+                gtk_widget_set_visible(g_drop_status, TRUE);
+                return;
+            }
+            dv_push(id, nm);
+        }), nullptr);
+        gtk_box_append(GTK_BOX(g_dv_row), b);
+    }
+    GtkWidget* add = dv_chip("\U000F0415", devs.empty() ? "Додати телефон" : "Додати", false, true);
+    gtk_label_set_max_width_chars(GTK_LABEL(gtk_widget_get_last_child(gtk_button_get_child(GTK_BUTTON(add)))), 14);
+    gtk_widget_set_tooltip_text(add, "З'єднати новий пристрій через застосунок Mg Share");
+    g_signal_connect(add, "clicked", G_CALLBACK(dv_pair), nullptr);
+    gtk_box_append(GTK_BOX(g_dv_row), add);
+    // «онлайн» старіє без подій — перевіряємо, поки блок дропу відкритий
+    if (!g_dv_tick)
+        g_dv_tick = g_timeout_add_seconds(5, [](gpointer) -> gboolean {
+            if (!g_open || !g_drop_mode) { g_dv_tick = 0; return G_SOURCE_REMOVE; }
+            std::string sig;
+            for (auto& d : dv_load()) sig += d.id + (dv_online(d) ? "1" : "0");
+            if (sig != g_dv_sig) dv_rebuild();
+            return G_SOURCE_CONTINUE;
+        }, nullptr);
+}
+
+static void dv_finish_hide() {
+    g_timeout_add(2600, [](gpointer) -> gboolean { if (g_open && g_drop_mode && !g_dv_proc) hide_pop(); return G_SOURCE_REMOVE; }, nullptr);
+}
+
+static void dv_handle(const std::string& l) {
+    std::string val = l.find('|') == std::string::npos ? "" : l.substr(l.find('|') + 1);
+    auto status = [](const std::string& t) {
+        gtk_label_set_text(GTK_LABEL(g_drop_status), t.c_str());
+        gtk_widget_set_visible(g_drop_status, !t.empty());
+    };
+    if (g_dv_mode == "pair") {
+        if (l.rfind("QR|", 0) == 0) {
+            drop_ui("", "ДОДАТИ ПРИСТРІЙ", "Mg Share на телефоні → «Додати пристрій»", "Наведіть телефон на цей QR — один раз, і все", true);
+            set_btn_label(g_qs_cancel, "\U000F0156  СКАСУВАТИ");
+            sh_show_qr(val);
+        } else if (l.rfind("PAIRED|", 0) == 0) {
+            std::string nm = val.substr(val.find('|') + 1);
+            g_dv_mode.clear();
+            drop_ui("\U000F012C", "З'ЄДНАНО", nm, g_drop_files.empty() ? "Тепер кидайте файли на його іконку" : "Натисніть на його іконку, щоб надіслати", false);
+            gtk_widget_add_css_class(g_drop_zone, "done");
+            dv_rebuild();
+        } else if (l.rfind("EXPIRED", 0) == 0) {
+            g_dv_mode.clear();
+            drop_ui("\U000F0026", "ЧАС ВИЙШОВ", "", "QR діє 5 хвилин — натисніть «Додати» ще раз", false);
+        } else if (l.rfind("ERROR|", 0) == 0) {
+            g_dv_mode.clear();
+            drop_ui("\U000F0026", "НЕ ВИЙШЛО", "", val == "nonet" ? "Немає Wi-Fi — підключіться до тієї ж мережі, що й телефон" : "Служба Mg Share не відповідає (" + val + ")", false);
+        }
+        return;
+    }
+    // push
+    std::string who = g_dv_target;
+    if (l.rfind("WAIT", 0) == 0) {
+        gtk_label_set_text(GTK_LABEL(g_drop_glyph), "\U000F011C");
+        status("Відкрийте Mg Share на «" + who + "» (плитка в шторці) — файл прилетить сам");
+    } else if (l.rfind("FOUND", 0) == 0) {
+        status("«" + who + "» на зв'язку…");
+    } else if (l.rfind("SENDING|", 0) == 0) {
+        g_object_set_data_full(G_OBJECT(g_drop_zone), "dv-cur", g_strdup(val.c_str()), g_free);
+        status("Надсилаю " + val + "…");
+    } else if (l.rfind("PROG|", 0) == 0) {
+        const char* cur = (const char*)g_object_get_data(G_OBJECT(g_drop_zone), "dv-cur");
+        status(std::string("Надсилаю ") + (cur ? cur : "") + " · " + val + "%");
+    } else if (l.rfind("DONE", 0) == 0) {
+        std::string sub = sh_sub();
+        g_drop_files.clear();
+        g_dv_mode.clear();
+        if (!g_open) {
+            std::string c = "notify-send -a 'Mg Share' -i emblem-ok-symbolic " + std::string(g_shell_quote(("Надіслано на " + who).c_str())) +
+                            " " + g_shell_quote(sub.c_str());
+            g_spawn_command_line_async(c.c_str(), nullptr);
+        }
+        drop_ui("\U000F012C", "НА «" + dv_upper(who) + "»", sub, "", false);
+        gtk_widget_add_css_class(g_drop_zone, "done");
+        dv_finish_hide();
+    } else if (l.rfind("ERROR|", 0) == 0) {
+        g_dv_mode.clear();
+        drop_ui("\U000F0026", "НЕ ВИЙШЛО", sh_sub(),
+                val == "timeout" ? "«" + who + "» так і не відкрили за 15 хвилин" :
+                val == "auth"    ? "«" + who + "» більше не довіряє цьому ПК — з'єднайте заново" :
+                val == "unknown" ? "Такого пристрою вже немає" :
+                                   "Не вдалося надіслати (" + val + ")", false);
+    }
+}
+
+static void dv_read_line(GObject* src, GAsyncResult* res, gpointer proc) {
+    gsize len = 0;
+    gchar* line = g_data_input_stream_read_line_finish_utf8(G_DATA_INPUT_STREAM(src), res, &len, nullptr);
+    if (line) {
+        if (proc == g_dv_proc && g_drop_content) dv_handle(line);
+        g_free(line);
+        g_data_input_stream_read_line_async(G_DATA_INPUT_STREAM(src), G_PRIORITY_DEFAULT, nullptr, dv_read_line, proc);
+        return;
+    }
+    g_object_unref(src);
+    if (proc == g_dv_proc) {
+        g_object_unref(g_dv_proc); g_dv_proc = nullptr;
+        if (!g_dv_mode.empty()) { std::string m = g_dv_mode; g_dv_mode.clear(); if (m == "push") dv_handle("ERROR|daemon"); }
+    }
+    g_object_unref(G_OBJECT(proc));
+}
+
+static bool dv_spawn(const std::vector<std::string>& args, const std::string& mode) {
+    std::vector<const char*> argv;
+    std::string tool = sh_tool();
+    argv.push_back(tool.c_str());
+    for (auto& a : args) argv.push_back(a.c_str());
+    argv.push_back(nullptr);
+    GError* err = nullptr;
+    g_dv_proc = g_subprocess_newv(argv.data(), (GSubprocessFlags)(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_SILENCE), &err);
+    if (!g_dv_proc) { if (err) g_error_free(err); return false; }
+    g_dv_mode = mode;
+    GDataInputStream* in = g_data_input_stream_new(g_subprocess_get_stdout_pipe(g_dv_proc));
+    g_data_input_stream_read_line_async(in, G_PRIORITY_DEFAULT, nullptr, dv_read_line, g_object_ref(g_dv_proc));
+    return true;
+}
+
+static std::string sh_check() {
+    std::string chk;
+    gchar* o = nullptr;
+    std::string c = sh_tool() + " check";
+    if (g_spawn_command_line_sync(c.c_str(), &o, nullptr, nullptr, nullptr) && o) chk = g_strstrip(o);
+    g_free(o);
+    return chk;
+}
+
+static void dv_push(const std::string& id, const std::string& name) {
+    sh_stop(); dv_stop();
+    g_dv_target = name;
+    std::vector<std::string> args = {"push", id};
+    for (auto& f : g_drop_files) args.push_back(f);
+    gtk_widget_remove_css_class(g_drop_zone, "done");
+    if (!dv_spawn(args, "push")) { drop_ui("\U000F0026", "НЕ ВИЙШЛО", sh_sub(), "Не вдалося запустити mgos-share", false); return; }
+    drop_ui("\U000F011C", "НА «" + dv_upper(name) + "»", sh_sub(), "Готую…", true);
+    set_btn_label(g_qs_cancel, "\U000F0156  СКАСУВАТИ");
+}
+
+static void dv_pair(GtkButton*, gpointer) {
+    sh_stop(); dv_stop();
+    gtk_widget_remove_css_class(g_drop_zone, "done");
+    std::string chk = sh_check();
+    if (chk == "nonet") { drop_ui("\U000F0026", "НЕМАЄ WI-FI", "", "Підключіться до тієї ж мережі, що й телефон", false); return; }
+    if (chk == "firewall") {
+        drop_ui("\U000F033E", "ОДИН КРОК", "", "Дозвольте телефону підключатися до цього ПК по Wi-Fi (пароль — лише один раз)", false);
+        gtk_widget_set_visible(g_sh_allow, TRUE);
+        return;
+    }
+    if (!dv_spawn({"pair"}, "pair")) return;
+    drop_ui("\U000F0432", "ГОТУЮ QR…", "", "", true);
+}
+
+static void dv_watch() {
+    if (g_dv_mon) return;
+    std::string dir = std::string(g_get_user_cache_dir()) + "/mgos";
+    g_mkdir_with_parents(dir.c_str(), 0755);
+    GFile* f = g_file_new_for_path(dv_tsv().c_str());
+    g_dv_mon = g_file_monitor_file(f, G_FILE_MONITOR_WATCH_MOVES, nullptr, nullptr);
+    g_object_unref(f);
+    if (g_dv_mon) g_signal_connect(g_dv_mon, "changed", G_CALLBACK(+[](GFileMonitor*, GFile*, GFile*, GFileMonitorEvent, gpointer) {
+        if (g_open && g_drop_mode) dv_rebuild();
+    }), nullptr);
 }
 
 static void drop_files(GSList* files) {
@@ -1244,6 +1867,12 @@ static void build_drop() {
     for (GtkWidget* w : {vis, g_drop_title, g_drop_sub, g_drop_pin}) gtk_box_append(GTK_BOX(g_drop_zone), w);
     gtk_box_append(GTK_BOX(g_drop_content), g_drop_zone);
 
+    g_dv_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_set_halign(g_dv_row, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(g_drop_content), g_dv_row);
+    dv_rebuild();
+    dv_watch();
+
     g_drop_status = gtk_label_new("");
     gtk_widget_add_css_class(g_drop_status, "cp-artist");
     gtk_label_set_wrap(GTK_LABEL(g_drop_status), TRUE);
@@ -1356,7 +1985,17 @@ static void build(GtkWindow* bar) {
     g_signal_connect(sc, "scroll", G_CALLBACK(on_cal_scroll), nullptr);
     gtk_widget_add_controller(g_cal, sc);
     gtk_box_append(GTK_BOX(cal), g_cal);
-    gtk_box_append(GTK_BOX(body), cal);
+    GtkWidget* lcol = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    gtk_box_append(GTK_BOX(lcol), cal);
+    // Активності: завантаження Steam, таймери, фокус — повний список із прогрес-барами
+    GtkWidget* ac = card_box("АКТИВНОСТІ");
+    g_acts_da = gtk_drawing_area_new();
+    gtk_widget_set_vexpand(g_acts_da, TRUE);
+    gtk_widget_set_size_request(g_acts_da, -1, 44);
+    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(g_acts_da), draw_acts, nullptr, nullptr);
+    gtk_box_append(GTK_BOX(ac), g_acts_da);
+    gtk_box_append(GTK_BOX(lcol), ac);
+    gtk_box_append(GTK_BOX(body), lcol);
 
     // Права колонка
     GtkWidget* right = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
@@ -1413,6 +2052,8 @@ static void build(GtkWindow* bar) {
     GtkWidget* tc = card_box("СЬОГОДНІ");
     g_bars = gtk_drawing_area_new();
     gtk_widget_set_size_request(g_bars, -1, 72);
+    gtk_widget_set_vexpand(g_bars, TRUE);
+    gtk_widget_set_vexpand(tc, TRUE);   // права колонка добирає висоту лівої — низ блоку рівний
     gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(g_bars), draw_bars, nullptr, nullptr);
     gtk_box_append(GTK_BOX(tc), g_bars);
     GtkWidget* fr = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
@@ -1466,6 +2107,7 @@ static void show_pop(GtkWidget* bubble, GtkWidget* bar, bool drop = false) {
     if (!g_win) build(GTK_WINDOW(bar));
     g_last_bubble = bubble; g_last_bar = bar;
     if (g_open && drop == g_drop_mode) return;
+    if (!g_open) sysui::close_other_overlays("clock");   // відкриваємо годинник — решта оверлеїв згортаються
     if (g_open) {                       // інший режим — миттєво згортаємо і відкриваємо заново
         g_open = false; g_v = 0; g_content_on = false;
         gtk_widget_set_visible(g_content, FALSE);
@@ -1477,16 +2119,13 @@ static void show_pop(GtkWidget* bubble, GtkWidget* bar, bool drop = false) {
     g_content = drop ? g_drop_content : g_main_content;
     g_W = drop ? g_drop_W : g_main_W;
     g_H = drop ? g_drop_H : g_main_H;
-    if (drop && !g_qs_proc) drop_reset();
+    if (drop && !g_qs_proc && !g_dv_proc) drop_reset();
+    if (drop) dv_rebuild();
     // той самий монітор, що й топбар
     if (GdkSurface* s = gtk_native_get_surface(GTK_NATIVE(bar)))
         if (GdkMonitor* mon = gdk_display_get_monitor_at_surface(gtk_widget_get_display(bar), s))
-            gtk_layer_set_monitor(GTK_WINDOW(g_win), mon);
-    graphene_rect_t r;
-    if (gtk_widget_compute_bounds(bubble, bar, &r)) {
-        g_from_w = r.size.width; g_from_h = r.size.height;
-        g_cx = r.origin.x + r.size.width / 2; g_top = r.origin.y;
-    }
+            { gtk_layer_set_monitor(GTK_WINDOW(g_win), mon); sysui::bb::set_monitor(mon); }
+    capture_bubble(bubble, bar);
     // акцент і палітра — як у топбару / інсталятора
     std::string acc = sysui::accent();
     g_wv.set_accent(acc);                      // хвилі — у відтінку акценту (±8°), без мандрів по палітрі
@@ -1501,9 +2140,13 @@ static void show_pop(GtkWidget* bubble, GtkWidget* bar, bool drop = false) {
     g_cal_off = 0;
     cal_title_update();
     layout_morph();
+    gtk_widget_add_css_class(bubble, "cp-still");
+    gtk_widget_set_opacity(bubble, 0);          // сама бульбашка ховається — замість неї «живе» картка
+    g_hidden_bubble = bubble;
     gtk_widget_set_visible(g_win, TRUE);
     ensure_tick();
     mp_refresh();
+    acts_refresh_ui();
     if (!g_poll) g_poll = g_timeout_add_seconds(1, [](gpointer) -> gboolean { mp_refresh(); return G_SOURCE_CONTINUE; }, nullptr);
 }
 
@@ -1576,8 +2219,17 @@ button.cp-flat:hover label { color: #ffffff; }
 .cp-drop-glyph { font-family: "JetBrainsMono Nerd Font"; font-size: 44px; color: #f5f5f7; margin-bottom: 4px; }
 .cp-drop-pin { font-family: "JetBrainsMono Nerd Font", monospace; font-weight: 800; font-size: 22px; letter-spacing: 4px;
                color: #f5f5f7; margin-top: 6px; }
+.module-box.cp-still, .module-box.cp-still:hover, .module-box.cp-still:active { transition: none; transform: none; }
 .module-box.drop-hot { background-color: rgba(255,255,255,0.28); box-shadow: 0 0 0 2px alpha(#f5f5f7, 0.85); }
 .cp-qr { background-color: #ffffff; border-radius: 18px; padding: 10px; }
 .cp-drop.qr { border-style: solid; border-color: alpha(#f5f5f7, 0.14); }
 .cp-drop-glyph { font-size: 64px; }
+button.cp-dv { background-color: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.07); border-radius: 14px;
+               padding: 8px 10px 6px 10px; min-width: 64px; box-shadow: none; transition: background-color 140ms ease, border-color 140ms ease; }
+button.cp-dv:hover { background-color: rgba(255,255,255,0.11); }
+button.cp-dv.online { border-color: alpha(#30d158, 0.75); }
+button.cp-dv.add { border-style: dashed; border-color: alpha(#f5f5f7, 0.22); background-color: transparent; }
+.cp-dv-glyph { font-family: "JetBrainsMono Nerd Font"; font-size: 22px; color: alpha(#f5f5f7, 0.55); }
+button.cp-dv.online .cp-dv-glyph { color: #f5f5f7; }
+.cp-dv-name { font-family: "SF Pro Display", "Inter", sans-serif; font-size: 11px; color: alpha(#f5f5f7, 0.7); }
 )"; }

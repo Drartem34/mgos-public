@@ -300,7 +300,7 @@ static void activate(GtkApplication* app, gpointer) {
     gtk_box_append(GTK_BOX(text_box), body_label);
     gtk_box_append(GTK_BOX(osd_box), text_box);
 
-    gtk_window_set_child(GTK_WINDOW(osd_window), osd_box);
+    gtk_window_set_child(GTK_WINDOW(osd_window), sysui::bb::underlay(osd_window, osd_box, "notify_osd", 17, nullptr, true, true));   // запечений блюр
     gtk_widget_set_visible(osd_window, FALSE);
 }
 

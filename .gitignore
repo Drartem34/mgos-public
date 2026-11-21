@@ -21,3 +21,5 @@ __pycache__/
 # зібраний графічний інсталятор (збирається arch-installer/build.sh)
 /arch-installer/mgos-setup
 /arch-installer/mgos-setup.new
+kiosk/files.new/
+kiosk/files.old/

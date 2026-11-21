@@ -1,0 +1,28 @@
+{
+    "checksum": "8c9e44ca0d208df1111bf19345d5a0c5",
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_yuuka-kazami-lying-on-sofa-touhou-moewalls-com.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#31211d",
+        "foreground": "#cbc7c6",
+        "cursor": "#cbc7c6"
+    },
+    "colors": {
+        "color0": "#31211d",
+        "color1": "#A28C70",
+        "color2": "#DF996A",
+        "color3": "#B07888",
+        "color4": "#B48F94",
+        "color5": "#CE9FA4",
+        "color6": "#E1CDAA",
+        "color7": "#cbc7c6",
+        "color8": "#7d6a67",
+        "color9": "#A28C70",
+        "color10": "#DF996A",
+        "color11": "#B07888",
+        "color12": "#B48F94",
+        "color13": "#CE9FA4",
+        "color14": "#E1CDAA",
+        "color15": "#cbc7c6"
+    }
+}

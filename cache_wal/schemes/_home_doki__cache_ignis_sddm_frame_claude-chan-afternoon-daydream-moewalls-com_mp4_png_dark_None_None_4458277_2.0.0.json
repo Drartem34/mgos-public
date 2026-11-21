@@ -1,0 +1,28 @@
+{
+    "checksum": "c9ede9986aa6fdef72480959125a824b",
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_claude-chan-afternoon-daydream-moewalls-com.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#1f1819",
+        "foreground": "#c7c5c5",
+        "cursor": "#c7c5c5"
+    },
+    "colors": {
+        "color0": "#1f1819",
+        "color1": "#F68F4A",
+        "color2": "#E58E5D",
+        "color3": "#777B8A",
+        "color4": "#B4968A",
+        "color5": "#DCB09A",
+        "color6": "#EBC7A8",
+        "color7": "#c7c5c5",
+        "color8": "#755f64",
+        "color9": "#F68F4A",
+        "color10": "#E58E5D",
+        "color11": "#777B8A",
+        "color12": "#B4968A",
+        "color13": "#DCB09A",
+        "color14": "#EBC7A8",
+        "color15": "#c7c5c5"
+    }
+}

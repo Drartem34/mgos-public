@@ -292,6 +292,7 @@ static void ipc_server_thread() {
         char buffer[256] = {0};
         ssize_t r = read(client, buffer, sizeof(buffer) - 1); (void)r;
         if (strstr(buffer, "toggle")) g_idle_add(handle_ipc, nullptr);
+        else if (strstr(buffer, "hide")) g_idle_add([](gpointer) -> gboolean { if (gtk_widget_get_visible(clip_window)) gtk_widget_set_visible(clip_window, FALSE); return G_SOURCE_REMOVE; }, nullptr);
         close(client);
     }
 }
@@ -460,6 +461,7 @@ static void activate(GtkApplication* app, gpointer) {
     apply_css();
 
     clip_window = gtk_application_window_new(app);
+    sysui::exclusive_overlay(clip_window, "clipboard");   // показ → інші оверлеї згортаються
     sysui::release_on_hide(clip_window);
     sysui::pop_on_show(clip_window, nullptr, "sysui-pop-down");
     gtk_layer_init_for_window(GTK_WINDOW(clip_window));
@@ -532,7 +534,7 @@ static void activate(GtkApplication* app, gpointer) {
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), inner);
     gtk_box_append(GTK_BOX(container), scroll);
 
-    gtk_window_set_child(GTK_WINDOW(clip_window), container);
+    gtk_window_set_child(GTK_WINDOW(clip_window), sysui::bb::underlay(clip_window, container, "clipboard", 22));   // запечений блюр
 
     GtkEventController* key_ctrl = gtk_event_controller_key_new();
     gtk_event_controller_set_propagation_phase(key_ctrl, GTK_PHASE_CAPTURE);

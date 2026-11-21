@@ -1,0 +1,28 @@
+{
+    "checksum": "e99c59fb44e6d475c36a676ebd40d44c",
+    "wallpaper": "/home/doki/.cache/ignis/sddm_frame_arona-stargazing-blue-archive-moewalls-com.mp4.png",
+    "alpha": "100",
+    "special": {
+        "background": "#202b4b",
+        "foreground": "#c7cad2",
+        "cursor": "#c7cad2"
+    },
+    "colors": {
+        "color0": "#202b4b",
+        "color1": "#126FD0",
+        "color2": "#156ED6",
+        "color3": "#4979CA",
+        "color4": "#188CF4",
+        "color5": "#1FA2F4",
+        "color6": "#5A8FD8",
+        "color7": "#c7cad2",
+        "color8": "#6f7588",
+        "color9": "#126FD0",
+        "color10": "#156ED6",
+        "color11": "#4979CA",
+        "color12": "#188CF4",
+        "color13": "#1FA2F4",
+        "color14": "#5A8FD8",
+        "color15": "#c7cad2"
+    }
+}

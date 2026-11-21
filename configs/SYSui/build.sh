@@ -7,13 +7,15 @@ cd "$(dirname "$(readlink -f "$0")")"
 declare -A MAP=( [dock]=dock [topbar]=topbar [runner]=runner_osd [wallpapers]=wallpapers
                  [cc]=cc_osd [clipboard_osd]=clipboard_osd [osd_hub]=osd_hub
                  [powermenu_osd]=powermenu_osd [controller_addon]=controller_addon [about_osd]=about_osd
-                 [pixel_wallpaper]=pixel_wallpaper [welcome]=welcome )
+                 [pixel_wallpaper]=pixel_wallpaper [welcome]=welcome [genie_osd]=genie_osd [cards_osd]=cards_osd [dashboard]=dashboard )
 RESTART=0; ARGS=()
 for a in "$@"; do [ "$a" = "--restart" ] && RESTART=1 || ARGS+=("$a"); done
 # mgos-pageout (C, без GTK) — «стискання» схованих програм у zram; ставить mgos-zram setup з cap_sys_nice
 PO=0; NEW=()
 for a in "${ARGS[@]}"; do [ "$a" = pageout ] && PO=1 || NEW+=("$a"); done
 if [ ${#ARGS[@]} -eq 0 ] || [ $PO -eq 1 ]; then gcc -O2 -s -Wall mgos_pageout.c -o mgos-pageout && echo "✓ mgos-pageout"; fi
+# mgos-hidbat (C) — заряд Magic Mouse / Keyboard по Bluetooth для topbar; ставить інсталятор з cap_dac_override
+if [ ${#ARGS[@]} -eq 0 ] || [ $PO -eq 1 ]; then gcc -O2 -s -Wall mgos_hidbat.c -o mgos-hidbat && echo "✓ mgos-hidbat"; fi
 [ $PO -eq 1 ] && [ ${#NEW[@]} -eq 0 ] && exit 0
 ARGS=("${NEW[@]}")
 [ ${#ARGS[@]} -eq 0 ] && ARGS=("${!MAP[@]}")
@@ -22,7 +24,8 @@ pids=()
 for src in "${ARGS[@]}"; do
     out=${MAP[$src]}; [ -z "$out" ] && { echo "невідомий модуль: $src"; exit 1; }
     OPT=-O2; { [ "$src" = pixel_wallpaper ] || [ "$src" = welcome ]; } && OPT="-O3 -ffast-math"   # шпалери рахують десятки тисяч пікселів щокадру
-    ( g++ -std=c++17 $OPT -s "$src.cpp" -o "$out.new" $FLAGS && echo "✓ $out" ) & pids+=($!)
+    X=""; [ "$src" = dock ] && X="$(pkg-config --cflags --libs libinput libudev)"   # жест 3 пальці вниз (dock_genie.h)
+    ( g++ -std=c++17 $OPT -s "$src.cpp" -o "$out.new" $FLAGS $X && echo "✓ $out" ) & pids+=($!)
 done
 fail=0; for p in "${pids[@]}"; do wait $p || fail=1; done
 [ $fail -ne 0 ] && { echo "✗ збірка впала, старі бінарники не чіпаю"; rm -f *.new; exit 1; }
@@ -35,6 +38,8 @@ if [ $RESTART -eq 1 ]; then
         pkill -9 -x "$out" 2>/dev/null || true
         # wallpapers перезапускає wallpapers_watch.sh сам; pixel_wallpaper — лише якщо це поточні шпалери
         [ "$out" = welcome ] && continue   # привітання запускається лише на першому вході
+        [ "$out" = genie_osd ] && continue   # помічник «джина» запускає док сам, на час жесту
+        [ "$out" = cards_osd ] && continue   # шар карток простору запускає док сам
         [ "$out" = pixel_wallpaper ] && ! grep -q '^pixel:' ~/.cache/ignis/last_wallpaper.txt 2>/dev/null && continue
         [ "$out" != wallpapers ] && { sleep 0.3; hyprctl dispatch exec "$PWD/$out" >/dev/null; }
     done

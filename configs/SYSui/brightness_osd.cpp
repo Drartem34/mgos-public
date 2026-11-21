@@ -56,8 +56,8 @@ window { background: transparent; }
 .bri-box { background-color: )" + bg + R"(; border: 1px solid rgba(128,128,128,0.2); border-radius: 15px; padding: 0 15px; }
 .bri-icon { color: )" + fg + R"(; font-size: 20px; margin-right: 12px; }
 .pct { color: )" + fg + R"(; font-size: 12px; font-weight: 800; margin-left: 12px; min-width: 58px; opacity: 0.75; }
-progressbar trough { background-color: )" + trough + R"(; min-height: 4px; min-width: 4px; border-radius: 2px; box-shadow: none; }
-progressbar progress { background-color: )" + accent + R"(; min-height: 4px; min-width: 4px; border-radius: 2px; box-shadow: none;
+.bri-box progressbar trough { background-color: )" + trough + R"(; min-height: 4px; min-width: 4px; border-radius: 2px; box-shadow: none; }
+.bri-box progressbar progress { background-color: )" + accent + R"(; min-height: 4px; min-width: 4px; border-radius: 2px; box-shadow: none;
                        transition: all 0.3s cubic-bezier(0.25, 0.1, 0.25, 1); }
 .seg { min-height: 6px; min-width: 40px; border-radius: 3px; background-color: )" + trough + R"(; transition: background-color 200ms ease; }
 .seg.on { background-color: )" + accent + R"(; box-shadow: 0 0 6px )" + sysui::rgba(accent, 0.55) + R"(; }
@@ -260,7 +260,7 @@ static void activate(GtkApplication* app, gpointer) {
     gtk_box_append(GTK_BOX(box), g_segs);
     gtk_box_append(GTK_BOX(box), g_pct);
     gtk_widget_set_visible(g_pct, FALSE);
-    gtk_window_set_child(GTK_WINDOW(g_win), box);
+    gtk_window_set_child(GTK_WINDOW(g_win), sysui::bb::underlay(g_win, box, "brightness_osd", 15, nullptr, true, true));   // запечений блюр
     gtk_widget_set_visible(g_win, FALSE);
 
     setup_socket();
