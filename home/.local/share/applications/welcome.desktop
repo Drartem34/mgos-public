@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Привітання mgOS
+Name[en]=mgOS Welcome
+Comment=Привітання та перше налаштування Megumin OS
+Comment[en]=Megumin OS welcome and first setup
+Exec=/home/doki/.local/bin/eos-welcome
+Icon=com.megumin.installer
+Categories=System;
+StartupNotify=false

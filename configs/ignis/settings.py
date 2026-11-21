@@ -598,7 +598,7 @@ TP_DEFAULTS = {
     "tp_drag_lock": False, "tp_dwt": False, "tp_middle": False, "tp_natural": False, "tp_scroll": 80,
     "tp_swipe_invert": False, "tp_swipe_dist": 300, "tp_swipe_new": True, "tp_swipe_forever": True,
     # Три пальці вниз: minimize — вікно в док з анімацією, що йде за пальцями (SYSui/dock_genie.h) | runner | off
-    "tp_swipe_down": "minimize", "tp_min_dist": 300, "genie_squash": True, "genie_grow": True, "genie_speed": 100, "genie_anim": True, "tp_swipe_up": "fullscreen", "tp_tap3": "runner", "dock_stash_cards": True,
+    "tp_swipe_down": "minimize", "tp_min_dist": 300, "genie_squash": True, "genie_grow": True, "launch_splash": True, "genie_speed": 100, "genie_anim": True, "tp_swipe_up": "fullscreen", "tp_tap3": "runner", "dock_stash_cards": True,
     "kb_delay": 250, "kb_rate": 35,
     # Миша (усі звичайні миші): значення = старий input-блок hyprland.conf (flat, 0.3)
     "ms_speed": 65, "ms_accel": "flat", "ms_natural": False, "ms_scroll": 100, "ms_left": False,
@@ -691,19 +691,62 @@ def hypr_monitors():
 MGOS_FAN = str(Path.home() / ".local/bin/mgos-fan")
 
 
+_GPU_T = {"t": None, "ts": 0.0, "busy": False}
+
+
+def _gpu_temp():
+    """Температура NVIDIA (пропрієтарний драйвер не дає hwmon) — nvidia-smi у фоновому потоці, кеш 10 с, UI не чекає."""
+    import threading
+    now = time.time()
+    if not _GPU_T["busy"] and now - _GPU_T["ts"] > 10 and shutil.which("nvidia-smi"):
+        _GPU_T["busy"] = True
+        def run():
+            try:
+                out = subprocess.run(["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"],
+                                     capture_output=True, text=True, timeout=4).stdout.split()
+                _GPU_T["t"] = int(float(out[0])) if out else None
+            except Exception:
+                _GPU_T["t"] = None
+            _GPU_T["ts"] = time.time(); _GPU_T["busy"] = False
+        threading.Thread(target=run, daemon=True).start()
+    return _GPU_T["t"]
+
+
 def fan_status():
-    """rpm/temp/profile/mode/writable/split — напряму з sysfs, БЕЗ процесів (викликається раз на 2 с з UI-потоку).
-    Кулер Samsung — лише профілі прошивки, без PWM; логіка режимів — у ~/.local/bin/mgos-fan."""
+    """rpm/temp/profile/mode/writable/split + датчики — напряму з sysfs, БЕЗ блокуючих процесів (раз на 2 с з UI-потоку).
+    Ноутбук Samsung: кулер — лише профілі прошивки (platform_profile). Десктоп (MSI nct6687): CPU — k10temp/coretemp,
+    кулери — через hwmon материнки. Логіка режимів — у ~/.local/bin/mgos-fan."""
     def rd(path, default=""):
         try: return Path(path).read_text().strip()
         except Exception: return default
-    st = {"rpm": "0", "temp": "0"}
-    for h in Path("/sys/class/hwmon").glob("hwmon*"):
+    def c(path):
+        v = rd(path)
+        return int(v) // 1000 if v.lstrip("-").isdigit() else None
+    st = {"rpm": "0", "temp": "0", "sensors": []}
+    cpu = None
+    for h in sorted(Path("/sys/class/hwmon").glob("hwmon*")):
         name = rd(h / "name")
         if name == "acpi_fan": st["rpm"] = rd(h / "fan1_input", "0")
-        elif name == "coretemp": st["temp"] = str(int(rd(h / "temp1_input", "0") or 0) // 1000)
+        elif name == "coretemp": cpu = c(h / "temp1_input")
+        elif name in ("k10temp", "zenpower") and cpu is None: cpu = c(h / "temp1_input")   # Tctl
+        elif name in ("nct6687", "nct6683", "nct6775", "nct6798", "it87"):
+            if st["rpm"] == "0": st["rpm"] = rd(h / "fan1_input", "0")                      # CPU_FAN1
+            st["pwm_writable"] = "1" if os.access(h / "pwm1", os.W_OK) else "0"
+            try: st["fan_chip"] = os.path.basename(os.readlink(h / "device" / "driver"))   # драйвер, а не назва чипа
+            except OSError: st["fan_chip"] = name
+            board = [t for f in h.glob("temp*_input")                       # без датчика CPU (AMD TSI / PECI)
+                     if not any(x in rd(str(f).replace("_input", "_label")).upper() for x in ("TSI", "PECI", "CPU"))
+                     for t in [c(f)] if t is not None and 0 < t < 110]
+            if board: st["sensors"].append(("Материнка", max(board)))
+        elif name == "nvme":
+            t = c(h / "temp1_input")
+            if t: st["sensors"].append(("NVMe", t))
+    if cpu is not None: st["temp"] = str(cpu)
+    g = _gpu_temp()
+    if g: st["sensors"].insert(0, ("GPU", g))
     pp = "/sys/firmware/acpi/platform_profile"
     st["profile"] = rd(pp)
+    st["laptop"] = "1" if os.path.exists(pp) else "0"
     st["mode"] = rd(Path.home() / ".config/mgos/fan.conf", "auto") or "auto"
     st["writable"] = "1" if os.access(pp, os.W_OK) else "0"
     st["split"] = "0" if Path("/etc/systemd/system/power-profiles-daemon.service.d/mgos-fan.conf").exists() else "1"   # 1 = PPD стоковий (старий блок прибрано — інакше гріється кіоск)
@@ -734,24 +777,30 @@ def save_fan_curve(pts):
 
 
 class FanCurveWidget(QWidget):
-    """Сітка «температура × оберти»: крива з точками, які можна тягати. Смуги = профілі прошивки Samsung
-    (кулер Galaxy Book керується лише ними). Жива точка — поточна температура CPU і реальні оберти."""
+    """Крива кулера «температура CPU → оберти». Точки тягаються; клік по порожньому — нова точка,
+    подвійний клік або ПКМ по точці — прибрати. Ноутбук Samsung: смуги = 4 профілі прошивки;
+    десктоп: вісь у відсотках PWM. Жива точка — поточна температура CPU і реальні оберти."""
     T_MIN, T_MAX = 30, 100
+    MIN_GAP = 3          # мінімум °C між сусідніми точками
+    MAX_PTS = 8
 
-    def __init__(self, on_change, parent=None):
+    def __init__(self, on_change, laptop=False, parent=None):
         super().__init__(parent)
         self.on_change = on_change
+        self.laptop = laptop
         self.pts = load_fan_curve()
         self.drag = -1
         self.hover = -1
         self.live = None   # (°C, rpm)
-        self.setMinimumHeight(230)
+        self.setMinimumHeight(240)
         self.setMouseTracking(True)
-        self.save_timer = QTimer(self, singleShot=True, interval=350)
+        self.save_timer = QTimer(self, singleShot=True, interval=400)
         self.save_timer.timeout.connect(lambda: (save_fan_curve(self.pts), self.on_change()))
 
+    # ---- геометрія ----
     def plot(self):
-        return QRectF(64, 12, self.width() - 64 - 14, self.height() - 12 - 30)
+        left = 64 if self.laptop else 46
+        return QRectF(left, 14, self.width() - left - 14, self.height() - 14 - 34)
 
     def to_px(self, t, v):
         r = self.plot()
@@ -774,35 +823,57 @@ class FanCurveWidget(QWidget):
     def set_live(self, temp, rpm):
         self.live = (temp, rpm); self.update()
 
+    def set_points(self, pts):
+        self.pts = sorted(pts); self.drag = self.hover = -1; self.update(); self.save_timer.start()
+
     def reset(self):
-        self.pts = list(FAN_CURVE_DEFAULT); self.update(); self.save_timer.start()
+        self.set_points(list(FAN_CURVE_DEFAULT))
 
     def _nearest(self, pos):
-        best, bd = -1, 14.0
+        best, bd = -1, 16.0
         for i, (t, v) in enumerate(self.pts):
             d = (self.to_px(t, v) - QPointF(pos)).manhattanLength()
             if d < bd: best, bd = i, d
         return best
 
+    def _clamp(self, i, t, v):
+        lo = self.pts[i - 1][0] + self.MIN_GAP if i > 0 else self.T_MIN
+        hi = self.pts[i + 1][0] - self.MIN_GAP if i < len(self.pts) - 1 else self.T_MAX
+        return int(round(max(lo, min(hi, t)))), int(round(max(0, min(100, v))))
+
+    # ---- миша ----
     def mousePressEvent(self, e):
-        self.drag = self._nearest(e.position())
-        if self.drag < 0 and self.plot().contains(e.position()) and e.button() == Qt.MouseButton.LeftButton:
-            t, v = self.from_px(e.position())          # клік по порожньому місцю — нова точка
-            if len(self.pts) < 8:
-                self.pts.append((int(round(t)), int(round(max(0, min(100, v))))))
-                self.pts.sort(); self.drag = self.pts.index(min(self.pts, key=lambda q: abs(q[0] - t)))
-                self.save_timer.start()
-        elif self.drag >= 0 and e.button() == Qt.MouseButton.RightButton and len(self.pts) > 2:
-            self.pts.pop(self.drag); self.drag = -1; self.save_timer.start()   # ПКМ — прибрати точку
+        pos = e.position()
+        i = self._nearest(pos)
+        if e.button() == Qt.MouseButton.RightButton:
+            if i >= 0 and len(self.pts) > 2:
+                self.pts.pop(i); self.hover = -1; self.save_timer.start()
+        elif e.button() == Qt.MouseButton.LeftButton:
+            if i >= 0:
+                self.drag = i
+                self.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
+            elif self.plot().adjusted(-6, -6, 6, 6).contains(pos) and len(self.pts) < self.MAX_PTS:
+                t, v = self.from_px(pos)
+                t = int(round(max(self.T_MIN, min(self.T_MAX, t))))
+                # не ближче MIN_GAP до сусідів (раніше можна було поставити дві точки на одну температуру)
+                if all(abs(t - q[0]) >= self.MIN_GAP for q in self.pts):
+                    self.pts.append((t, int(round(max(0, min(100, v))))))
+                    self.pts.sort()
+                    self.drag = [q[0] for q in self.pts].index(t)
+                    self.save_timer.start()
         self.update()
         e.accept()   # не віддаємо вікну: інакше воно почне рухатися (startSystemMove)
+
+    def mouseDoubleClickEvent(self, e):
+        i = self._nearest(e.position())
+        if i >= 0 and len(self.pts) > 2:
+            self.pts.pop(i); self.drag = self.hover = -1; self.save_timer.start(); self.update()
+        e.accept()
 
     def mouseMoveEvent(self, e):
         if self.drag >= 0:
             t, v = self.from_px(e.position())
-            lo = self.pts[self.drag - 1][0] + 2 if self.drag > 0 else self.T_MIN
-            hi = self.pts[self.drag + 1][0] - 2 if self.drag < len(self.pts) - 1 else self.T_MAX
-            self.pts[self.drag] = (int(round(max(lo, min(hi, t)))), int(round(max(0, min(100, v)))))
+            self.pts[self.drag] = self._clamp(self.drag, t, v)
             self.save_timer.start()
         else:
             h = self._nearest(e.position())
@@ -812,10 +883,27 @@ class FanCurveWidget(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, e):
+        if self.drag >= 0:
+            self.hover = self.drag
+            self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
         self.drag = -1; self.update()
 
     def leaveEvent(self, e):
         self.hover = -1; self.update()
+
+    # ---- малювання ----
+    def _bubble(self, p, anchor, text, color, above=True):
+        f = QFont(FONT_UI); f.setPixelSize(11); f.setWeight(QFont.Weight.DemiBold); p.setFont(f)
+        fm = QFontMetricsF(f)
+        w, h = fm.horizontalAdvance(text) + 16, 22
+        x = max(2, min(self.width() - w - 2, anchor.x() - w / 2))
+        y = anchor.y() - h - 10 if above else anchor.y() + 10
+        if y < 2: y = anchor.y() + 10
+        if y + h > self.height() - 2: y = anchor.y() - h - 10
+        rr = QRectF(x, y, w, h)
+        p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(T["knob_shadow"], 70)); p.drawRoundedRect(rr.translated(0, 1.5), 8, 8)
+        p.setBrush(QColor(color)); p.drawRoundedRect(rr, 8, 8)
+        p.setPen(QColor("white")); p.drawText(rr, Qt.AlignmentFlag.AlignCenter, text)
 
     def paintEvent(self, e):
         p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -823,58 +911,348 @@ class FanCurveWidget(QWidget):
         acc = QColor(ACCENT[0])
         txt2 = QColor(T["text2"])
         f = QFont(FONT_UI); f.setPixelSize(10); p.setFont(f)
-        # смуги профілів
-        for i, (lo, hi, name) in enumerate(FAN_BANDS):
-            top, bot = self.to_px(0, hi).y(), self.to_px(0, lo).y()
-            c = QColor(acc); c.setAlpha(10 + i * 9)
-            p.fillRect(QRectF(r.left(), top, r.width(), bot - top), c)
+        # фон області графіка
+        p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(T["text"], 6)); p.drawRoundedRect(r, 8, 8)
+        if self.laptop:   # смуги профілів прошивки Samsung
+            for i, (lo, hi, name) in enumerate(FAN_BANDS):
+                top, bot = self.to_px(0, hi).y(), self.to_px(0, lo).y()
+                p.setPen(txt2)
+                p.drawText(QRectF(0, top, r.left() - 8, bot - top), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, name)
+        else:
             p.setPen(txt2)
-            p.drawText(QRectF(0, top, r.left() - 8, bot - top), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, name)
-        # сітка
-        grid = QColor(T["text2"]); grid.setAlpha(40)
-        p.setPen(QPen(grid, 1, Qt.PenStyle.DotLine))
-        for t in range(self.T_MIN, self.T_MAX + 1, 10):
-            x = self.to_px(t, 0).x(); p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()))
+            for v in (0, 25, 50, 75, 100):
+                y = self.to_px(0, v).y()
+                p.drawText(QRectF(0, y - 7, r.left() - 8, 14), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, f"{v}%")
+        grid = tint(T["text"], 22)
+        p.setPen(QPen(grid, 1))
         for v in (25, 50, 75):
-            y = self.to_px(0, v).y(); p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y))
-        p.setPen(QPen(grid, 1)); p.setBrush(Qt.BrushStyle.NoBrush); p.drawRoundedRect(r, 6, 6)
+            y = self.to_px(0, v).y(); p.drawLine(QPointF(r.left() + 1, y), QPointF(r.right() - 1, y))
+        for t in range(self.T_MIN + 10, self.T_MAX, 10):
+            x = self.to_px(t, 0).x(); p.drawLine(QPointF(x, r.top() + 1), QPointF(x, r.bottom() - 1))
         p.setPen(txt2)
         for t in range(self.T_MIN, self.T_MAX + 1, 10):
             x = self.to_px(t, 0).x()
-            p.drawText(QRectF(x - 20, r.bottom() + 4, 40, 14), Qt.AlignmentFlag.AlignCenter, f"{t}°")
-        p.drawText(QRectF(r.left(), r.bottom() + 16, r.width(), 14), Qt.AlignmentFlag.AlignCenter, "Температура CPU")
-        # крива + заливка під нею
+            p.drawText(QRectF(x - 20, r.bottom() + 5, 40, 14), Qt.AlignmentFlag.AlignCenter, f"{t}°")
+        p.drawText(QRectF(r.left(), r.bottom() + 19, r.width(), 14), Qt.AlignmentFlag.AlignCenter, "Температура CPU")
+        # крива + заливка
         path = QPainterPath(self.to_px(self.T_MIN, self.pts[0][1]))
         for t, v in self.pts: path.lineTo(self.to_px(t, v))
         path.lineTo(self.to_px(self.T_MAX, self.pts[-1][1]))
         fill = QPainterPath(path); fill.lineTo(r.bottomRight()); fill.lineTo(r.bottomLeft()); fill.closeSubpath()
         g = QLinearGradient(r.topLeft(), r.bottomLeft())
-        c1 = QColor(acc); c1.setAlpha(70); c2 = QColor(acc); c2.setAlpha(0)
-        g.setColorAt(0, c1); g.setColorAt(1, c2)
-        p.fillPath(fill, QBrush(g))
-        pen = QPen(acc, 2.4); pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin); pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        g.setColorAt(0, tint(acc, 95)); g.setColorAt(1, tint(acc, 8))
+        p.save(); clip = QPainterPath(); clip.addRoundedRect(r, 8, 8); p.setClipPath(clip)
+        p.fillPath(fill, QBrush(g)); p.restore()
+        pen = QPen(acc, 2.6); pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin); pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush); p.drawPath(path)
-        # точки
-        for i, (t, v) in enumerate(self.pts):
-            c = self.to_px(t, v); rad = 7 if i in (self.drag, self.hover) else 5.5
-            p.setPen(QPen(QColor("white"), 2)); p.setBrush(acc); p.drawEllipse(c, rad, rad)
-            if i in (self.drag, self.hover):
-                p.setPen(QColor(T["text"]))
-                lbl = f"{t}°C · {v}% · {next(n for lo, hi, n in FAN_BANDS if v < hi or hi == 100)}"
-                p.drawText(QRectF(c.x() - 80, c.y() - 26, 160, 14), Qt.AlignmentFlag.AlignCenter, lbl)
-        # жива точка
+        # жива температура
         if self.live:
             t, rpm = self.live
-            tt = max(self.T_MIN, min(self.T_MAX, t))
-            c = self.to_px(tt, self.value_at(tt))
-            lc = QColor("#ff9f0a")
-            p.setPen(QPen(lc, 1, Qt.PenStyle.DashLine)); p.drawLine(QPointF(c.x(), r.top()), QPointF(c.x(), r.bottom()))
-            p.setPen(QPen(QColor("white"), 2)); p.setBrush(lc); p.drawEllipse(c, 5, 5)
-            p.setPen(lc)
-            lbl = f"зараз {t}°C · " + (f"{rpm} об/хв" if rpm else "кулер стоїть")
-            x = c.x() + 8 if c.x() < r.center().x() else c.x() - 168
-            p.drawText(QRectF(x, r.top() + 4, 160, 14),
-                       (Qt.AlignmentFlag.AlignLeft if c.x() < r.center().x() else Qt.AlignmentFlag.AlignRight) | Qt.AlignmentFlag.AlignVCenter, lbl)
+            if t:
+                tt = max(self.T_MIN, min(self.T_MAX, t))
+                c = self.to_px(tt, self.value_at(tt))
+                lc = QColor("#ff9f0a")
+                p.setPen(QPen(tint(lc, 160), 1, Qt.PenStyle.DashLine)); p.drawLine(QPointF(c.x(), r.top() + 2), QPointF(c.x(), r.bottom() - 2))
+                p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(lc, 60)); p.drawEllipse(c, 10, 10)
+                p.setPen(QPen(QColor("white"), 2)); p.setBrush(lc); p.drawEllipse(c, 5, 5)
+                if self.hover < 0 and self.drag < 0:
+                    self._bubble(p, QPointF(c.x(), r.top() + 26), f"зараз {t}°C · " + (f"{rpm} об/хв" if rpm else "кулер стоїть"), "#ff9f0a")
+        # точки
+        for i, (t, v) in enumerate(self.pts):
+            c = self.to_px(t, v); act = i in (self.drag, self.hover)
+            rad = 7.5 if act else 6
+            p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(T["knob_shadow"], 80)); p.drawEllipse(c + QPointF(0, 1), rad, rad)
+            p.setPen(QPen(QColor("white"), 2.2)); p.setBrush(acc); p.drawEllipse(c, rad, rad)
+        a = self.drag if self.drag >= 0 else self.hover
+        if 0 <= a < len(self.pts):
+            t, v = self.pts[a]
+            band = f" · {next(n for lo, hi, n in FAN_BANDS if v < hi or hi == 100)}" if self.laptop else ""
+            self._bubble(p, self.to_px(t, v), f"{t}°C → {v}%{band}", ACCENT[0])
+
+
+# ---------- Історія датчиків (пише ~/.local/bin/mgos-sensors) ----------
+SENSORS_LOG = Path.home() / ".cache" / "mgos" / "sensors.csv"
+SC = {k: i for i, k in enumerate(["ts", "cpu", "gpu", "board", "nvme", "gpufan"] + [f"fan{i}" for i in range(1, 9)])}
+
+
+class SensorHistory:
+    """Читає sensors.csv інкрементально (лише нові рядки), тримає останні 8 днів у пам'яті."""
+    def __init__(self):
+        self.rows, self.off, self.ino = [], 0, None
+
+    def load(self):
+        try: st = SENSORS_LOG.stat()
+        except OSError: return self.rows
+        if st.st_ino != self.ino or st.st_size < self.off:   # файл обрізали/замінили — читаємо заново
+            self.rows, self.off, self.ino = [], 0, st.st_ino
+        if st.st_size == self.off: return self.rows
+        try:
+            with open(SENSORS_LOG, "rb") as f:
+                f.seek(self.off); chunk = f.read()
+        except OSError: return self.rows
+        end = chunk.rfind(b"\n")
+        if end < 0: return self.rows
+        self.off += end + 1
+        n = len(SC)
+        for line in chunk[:end].decode(errors="replace").splitlines():
+            if not line or line[0] == "#": continue
+            parts = line.split()
+            try: row = [int(x) if x != "-" else None for x in parts[:n]]
+            except ValueError: continue
+            if len(row) < 2 or row[0] is None: continue
+            row += [None] * (n - len(row))
+            self.rows.append(row)
+        cut = time.time() - 8 * 86400
+        if self.rows and self.rows[0][0] < cut:
+            self.rows = [r for r in self.rows if r[0] >= cut]
+        return self.rows
+
+    def series(self, key, t0, t1, buckets=240):
+        """Усереднення по кошиках: [(ts, value)]; порожні кошики пропускаються (у графіку — розрив)."""
+        ci = SC[key]
+        step = max(1.0, (t1 - t0) / buckets)
+        acc = {}
+        for r in self.rows:
+            ts = r[0]
+            if ts < t0 or ts > t1: continue
+            v = r[ci]
+            if v is None: continue
+            b = int((ts - t0) / step)
+            s = acc.get(b)
+            if s: s[0] += v; s[1] += 1
+            else: acc[b] = [v, 1]
+        return [(t0 + (b + 0.5) * step, s[0] / s[1]) for b, s in sorted(acc.items())], step
+
+
+SENSOR_HIST = SensorHistory()
+HIST_COLORS = {"cpu": "#0a84ff", "gpu": "#30d158", "board": "#bf5af2", "nvme": "#ff9f0a",
+               "fan1": "#64d2ff", "fan2": "#5e5ce6", "fan3": "#ff375f", "fan4": "#ffd60a",
+               "fan5": "#ac8e68", "fan6": "#66d4cf", "fan7": "#ff9f0a", "fan8": "#bf5af2"}
+HIST_NAMES = {"cpu": "CPU", "gpu": "GPU", "board": "Материнка", "nvme": "NVMe", "fan1": "CPU-кулер"}
+DAYS_UA = ["пн", "вт", "ср", "чт", "пт", "сб", "нд"]
+
+
+def temp_color(t):
+    return "#30d158" if t < 60 else "#ff9f0a" if t < 80 else "#ff453a"
+
+
+def smooth_path(pts):
+    """Плавна лінія через точки (середини відрізків + quadTo), як у графіках macOS."""
+    path = QPainterPath(pts[0])
+    if len(pts) == 2: path.lineTo(pts[1]); return path
+    for i in range(1, len(pts) - 1):
+        mid = (pts[i] + pts[i + 1]) / 2
+        path.quadTo(pts[i], mid)
+    path.lineTo(pts[-1])
+    return path
+
+
+class HistoryChart(QWidget):
+    """Графік історії в стилі macOS (Монітор активності / Акції): легенда-перемикачі з поточними значеннями,
+    плавні лінії, градієнт під першою серією, при наведенні — вертикальна лінія і бульбашка зі значеннями."""
+    def __init__(self, title, unit, nice_step, height=210, parent=None):
+        super().__init__(parent)
+        self.title, self.unit, self.nice_step = title, unit, nice_step
+        self.series = []          # [dict(key, label, color, pts, now)]
+        self.off = set()          # вимкнені в легенді ключі
+        self.t0 = self.t1 = 0
+        self.gap = 60
+        self.hover_x = None
+        self.legend_rects = []
+        self.setMinimumHeight(height)
+        self.setMouseTracking(True)
+
+    def set_data(self, series, t0, t1, gap):
+        self.series, self.t0, self.t1, self.gap = series, t0, t1, gap
+        self.update()
+
+    def plot(self):
+        return QRectF(44, 50, self.width() - 44 - 10, self.height() - 50 - 24)
+
+    def visible(self):
+        return [s for s in self.series if s["key"] not in self.off and s["pts"]]
+
+    def mousePressEvent(self, e):
+        for rect, key in self.legend_rects:
+            if rect.contains(e.position()):
+                if key in self.off: self.off.discard(key)
+                elif len([s for s in self.series if s["key"] not in self.off]) > 1: self.off.add(key)
+                self.update(); break
+        e.accept()
+
+    def mouseMoveEvent(self, e):
+        r = self.plot()
+        self.hover_x = e.position().x() if r.left() <= e.position().x() <= r.right() and e.position().y() >= r.top() - 4 else None
+        over = any(rect.contains(e.position()) for rect, _ in self.legend_rects)
+        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor if over else Qt.CursorShape.ArrowCursor))
+        self.update()
+
+    def leaveEvent(self, e):
+        self.hover_x = None; self.update()
+
+    def _range(self, vis):
+        vals = [v for s in vis for _, v in s["pts"]]
+        if not vals: return 0, self.nice_step * 4
+        lo, hi = min(vals), max(vals)
+        step = self.nice_step
+        while (hi - lo) / step > 5: step *= 2
+        lo = max(0, (int(lo // step) - (1 if lo % step < step * 0.2 else 0)) * step)
+        hi = (int(hi // step) + 1) * step
+        if hi - lo < step * 2: hi = lo + step * 2
+        return lo, hi
+
+    def _fmt_time(self, ts, span):
+        lt = time.localtime(ts)
+        if span <= 26 * 3600: return time.strftime("%H:%M", lt)
+        return f"{DAYS_UA[lt.tm_wday]} {lt.tm_mday:02d}.{lt.tm_mon:02d}"
+
+    def paintEvent(self, e):
+        p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = self.plot()
+        txt, txt2 = QColor(T["text"]), QColor(T["text2"])
+        # заголовок
+        f = QFont(FONT_UI); f.setPixelSize(12); f.setWeight(QFont.Weight.DemiBold); p.setFont(f); p.setPen(txt)
+        p.drawText(QRectF(4, 2, 200, 16), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.title)
+        # легенда (праворуч від заголовка, перенос — ні: обрізаємо назви)
+        f = QFont(FONT_UI); f.setPixelSize(11); f.setWeight(QFont.Weight.Medium); p.setFont(f)
+        fm = QFontMetricsF(f)
+        self.legend_rects = []
+        x = 4; y = 20
+        for s in self.series:
+            on = s["key"] not in self.off and s["pts"]
+            now = s.get("now")
+            label = s["label"] + (f"  {now:.0f}{'' if self.unit == '°C' else ' '}{self.unit}" if now is not None else "")
+            w = fm.horizontalAdvance(label) + 24
+            if x + w > self.width() - 4: break
+            rect = QRectF(x, y, w, 18)
+            p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(QColor(s["color"]), 46 if on else 0)); p.drawRoundedRect(rect, 9, 9)
+            if not on:
+                p.setPen(QPen(tint(T["text"], 40), 1)); p.setBrush(Qt.BrushStyle.NoBrush); p.drawRoundedRect(rect.adjusted(.5, .5, -.5, -.5), 9, 9)
+            p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor(s["color"]) if on else tint(T["text"], 70))
+            p.drawEllipse(QPointF(x + 10, y + 9), 3.5, 3.5)
+            p.setPen(txt if on else txt2)
+            p.drawText(QRectF(x + 18, y, w - 20, 18), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
+            self.legend_rects.append((rect, s["key"]))
+            x += w + 6
+        # область графіка
+        p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(T["text"], 6)); p.drawRoundedRect(r, 8, 8)
+        vis = self.visible()
+        f = QFont(FONT_UI); f.setPixelSize(10); p.setFont(f)
+        if not vis or self.t1 <= self.t0:
+            p.setPen(txt2)
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, "Ще збираю дані — графік з'явиться за хвилину")
+            return
+        lo, hi = self._range(vis)
+        span = self.t1 - self.t0
+        X = lambda ts: r.left() + (ts - self.t0) / span * r.width()
+        Y = lambda v: r.bottom() - (v - lo) / (hi - lo) * r.height()
+        step = self.nice_step
+        while (hi - lo) / step > 5: step *= 2
+        grid = tint(T["text"], 20)
+        v = lo
+        while v <= hi + 0.1:
+            y = Y(v)
+            if lo < v < hi:
+                p.setPen(QPen(grid, 1)); p.drawLine(QPointF(r.left() + 1, y), QPointF(r.right() - 1, y))
+            p.setPen(txt2)
+            lbl = f"{v / 1000:.1f}k" if v >= 1000 else f"{v:.0f}"
+            p.drawText(QRectF(0, y - 7, r.left() - 6, 14), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, lbl + ("°" if self.unit == "°C" else ""))
+            v += step
+        p.setPen(txt2)
+        for i in range(5):
+            ts = self.t0 + span * (i + 0.5) / 5
+            p.drawText(QRectF(X(ts) - 40, r.bottom() + 5, 80, 14), Qt.AlignmentFlag.AlignCenter, self._fmt_time(ts, span))
+        # серії
+        p.save(); clip = QPainterPath(); clip.addRoundedRect(r, 8, 8); p.setClipPath(clip)
+        for si, s in enumerate(vis):
+            segs, cur, prev = [], [], None
+            for ts, val in s["pts"]:
+                if prev is not None and ts - prev > self.gap * 2.5:
+                    segs.append(cur); cur = []
+                cur.append(QPointF(X(ts), Y(val))); prev = ts
+            segs.append(cur)
+            col = QColor(s["color"])
+            for seg in segs:
+                if not seg: continue
+                if len(seg) == 1: seg = [seg[0] - QPointF(1.5, 0), seg[0] + QPointF(1.5, 0)]
+                path = smooth_path(seg)
+                if si == 0:
+                    fill = QPainterPath(path); fill.lineTo(QPointF(seg[-1].x(), r.bottom())); fill.lineTo(QPointF(seg[0].x(), r.bottom())); fill.closeSubpath()
+                    g = QLinearGradient(r.topLeft(), r.bottomLeft()); g.setColorAt(0, tint(col, 80)); g.setColorAt(1, tint(col, 4))
+                    p.fillPath(fill, QBrush(g))
+                pen = QPen(col, 2.2 if si == 0 else 1.8); pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin); pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush); p.drawPath(path)
+        p.restore()
+        # наведення
+        if self.hover_x is not None:
+            ts = self.t0 + (self.hover_x - r.left()) / r.width() * span
+            rows = []
+            for s in vis:
+                best = min(s["pts"], key=lambda q: abs(q[0] - ts))
+                if abs(best[0] - ts) <= self.gap * 1.5: rows.append((s, best))
+            p.setPen(QPen(tint(T["text"], 90), 1)); p.drawLine(QPointF(self.hover_x, r.top()), QPointF(self.hover_x, r.bottom()))
+            for s, (bts, bv) in rows:
+                c = QPointF(X(bts), Y(bv))
+                p.setPen(QPen(QColor("white"), 2)); p.setBrush(QColor(s["color"])); p.drawEllipse(c, 4.5, 4.5)
+            if rows:
+                f = QFont(FONT_UI); f.setPixelSize(11); p.setFont(f); fm = QFontMetricsF(f)
+                head = time.strftime("%H:%M" if span <= 26 * 3600 else "%d.%m %H:%M", time.localtime(ts))
+                lines = [(None, head)] + [(s["color"], f"{s['label']}  {bv:.0f} {self.unit}") for s, (bts, bv) in rows]
+                w = max(fm.horizontalAdvance(t) for _, t in lines) + 30
+                h = 10 + 17 * len(lines)
+                bx = self.hover_x + 12 if self.hover_x + 12 + w < self.width() - 2 else self.hover_x - 12 - w
+                box = QRectF(bx, r.top() + 6, w, h)
+                p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(T["knob_shadow"], 90)); p.drawRoundedRect(box.translated(0, 2), 9, 9)
+                p.setBrush(T["card"]); p.setPen(QPen(T["card_border"], 1)); p.drawRoundedRect(box, 9, 9)
+                for i, (col, t) in enumerate(lines):
+                    yy = box.top() + 5 + 17 * i
+                    if col:
+                        p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor(col)); p.drawEllipse(QPointF(box.left() + 12, yy + 8.5), 3.5, 3.5)
+                        p.setPen(txt)
+                    else:
+                        p.setPen(txt2)
+                    p.drawText(QRectF(box.left() + 22 if col else box.left() + 10, yy, w - 26, 17), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, t)
+
+
+class StatTile(QWidget):
+    """Плитка-віджет macOS: назва, велике значення кольором стану, підпис і спарклайн останньої години."""
+    def __init__(self, title, min_span=10, parent=None):
+        super().__init__(parent)
+        self.title, self.min_span = title, min_span   # min_span — щоб коливання на 1–2° не виглядали стрибками
+        self.value, self.sub, self.color, self.spark = "—", "", "#8e8e93", []
+        self.setMinimumSize(130, 104)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def set(self, value, sub, color, spark):
+        self.value, self.sub, self.color, self.spark = value, sub, color, spark
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rr = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        p.setPen(QPen(T["card_border"], 1)); p.setBrush(T["card"]); p.drawRoundedRect(rr, 14, 14)
+        col = QColor(self.color)
+        # спарклайн унизу
+        if len(self.spark) >= 2:
+            vals = [v for _, v in self.spark]
+            lo, hi = min(vals), max(vals)
+            if hi - lo < self.min_span: mid = (hi + lo) / 2; lo, hi = mid - self.min_span / 2, mid + self.min_span / 2
+            t0, t1 = self.spark[0][0], self.spark[-1][0]
+            sr = QRectF(10, self.height() - 34, self.width() - 20, 26)
+            pts = [QPointF(sr.left() + (t - t0) / max(1, t1 - t0) * sr.width(), sr.bottom() - (v - lo) / (hi - lo) * sr.height()) for t, v in self.spark]
+            path = smooth_path(pts)
+            fill = QPainterPath(path); fill.lineTo(QPointF(pts[-1].x(), sr.bottom() + 6)); fill.lineTo(QPointF(pts[0].x(), sr.bottom() + 6)); fill.closeSubpath()
+            g = QLinearGradient(sr.topLeft(), sr.bottomLeft()); g.setColorAt(0, tint(col, 70)); g.setColorAt(1, tint(col, 0))
+            p.fillPath(fill, QBrush(g))
+            p.setPen(QPen(col, 1.6)); p.setBrush(Qt.BrushStyle.NoBrush); p.drawPath(path)
+        f = QFont(FONT_UI); f.setPixelSize(11); f.setWeight(QFont.Weight.DemiBold); p.setFont(f)
+        p.setPen(QColor(T["text2"])); p.drawText(QRectF(14, 10, self.width() - 28, 16), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.title.upper())
+        f = QFont(FONT_UI); f.setPixelSize(24); f.setWeight(QFont.Weight.Bold); p.setFont(f)
+        p.setPen(col if self.value != "—" else QColor(T["text2"]))
+        p.drawText(QRectF(14, 27, self.width() - 28, 30), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.value)
+        if self.sub:
+            f = QFont(FONT_UI); f.setPixelSize(10); p.setFont(f); p.setPen(QColor(T["text2"]))
+            p.drawText(QRectF(14, 55, self.width() - 28, 14), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.sub)
 
 # MFG Unlocker (github.com/dashdogy/MFG-Unlocker): конфіг спільний з ~/.local/bin/mfg-unlocker-run
 MFG_CFG = Path.home() / ".config" / "mfg-unlocker" / "config.json"
@@ -3209,7 +3587,7 @@ PAGES = [
     ("keyboard", "Клавіатура", G["keyboard"], "#8e8e93", 3),
     ("magickb", "Magic Keyboard", G["keyboard"], "#c7c7cc", 3),
     ("games", "Ігри", "\U000F0297", "#ff453a", 5),
-    ("power", "Батарея", G["battery"], "#30d158", 4),
+    ("power", "Продуктивність", "\U000F04C5", "#ff9f0a", 4),   # id «power» лишився — на нього посилаються --page і док
     ("system", "Система", G["cog"], "#8e8e93", 4),
     ("about", "Про систему", G["info"], "#8e8e93", 4),
     ("help", "Довідка", "\U000F02D7", "#0a84ff", 4),
@@ -4482,6 +4860,8 @@ class MeguminSettings(QWidget):
               self.sw("genie_squash", True), "minimize"),
             R("Відкриття з іконки", "Запуск програми з доку: вікно виростає з її іконки (зворотно до «здачі»). Без анімацій / в еко-режимі — з'являється миттєво",
               self.sw("genie_grow", True), "minimize"),
+            R("Вікно-заглушка при запуску", "Запуск з доку чи runner: одразу з'являється прозоре вікно з іконкою програми і спінером, а коли програма готова — вона заповнює це вікно",
+              self.sw("launch_splash", True), "minimize"),
             R("Швидкість «здачі»", "Тривалість анімації вікно → іконка",
               self.sl("genie_speed", 50, 200, "%", width=220), "minimize"),
         ])
@@ -4950,14 +5330,16 @@ class MeguminSettings(QWidget):
     # --- Дашборд робочого столу 1 (логіка — dashboard_settings.py) ---
     def create_dashboard_page(self):
         page, lay = self.page_base("dashboard")
-        self.hero(lay, "dashboard", "Віджети на робочому столі 1: годинник, система, мережа, погода, музика, нотатки, швидкі дії, календар.")
+        self.hero(lay, "dashboard", "Віджети на робочому столі 1: продуктивність, ігри Steam, погода, тривога, курс НБУ, музика, оновлення, календар та інше.")
         import dashboard_settings
         dashboard_settings.build_page(self, lay, SettingRow, MeguminSwitch, SegmentedSelector, GroupCard)
         return page
 
-    # --- Батарея ---
+    # --- Продуктивність (колишня «Батарея») ---
     def create_power_page(self):
         page, lay = self.page_base("power")
+        fs = fan_status()
+        laptop = fs.get("laptop") == "1"
         bat = ""
         for d in glob.glob("/sys/class/power_supply/BAT*"):
             try:
@@ -4965,12 +5347,102 @@ class MeguminSettings(QWidget):
                 st = open(d + "/status").read().strip()
                 bat = f"Заряд {cap}% · " + {"Charging": "заряджається", "Discharging": "від батареї", "Full": "заряджена"}.get(st, "від мережі")
             except Exception: pass
-        self.hero(lay, "power", bat or "Режим енергоспоживання процесора.")
+        self.hero(lay, "power", bat or "Температури, кулери та режим живлення.")
+        self.page_words[self._building] += ["батарея", "температура", "кулер", "вентилятор", "історія", "графік", "продуктивність", "сенсори"]
+
+        # живі плитки
+        tiles = QWidget(); tl = QHBoxLayout(tiles); tl.setContentsMargins(0, 0, 0, 0); tl.setSpacing(10)
+        self.perf_tiles = {k: StatTile(n, ms) for k, n, ms in (("cpu", "Процесор", 15), ("gpu", "Відеокарта", 15), ("fan1", "CPU-кулер", 600), ("nvme", "Диск NVMe", 15))}
+        for t in self.perf_tiles.values(): tl.addWidget(t)
+        lay.addWidget(tiles)
+
+        # історія
+        self.section(lay, "Історія")
+        hist = QWidget(); hl = QVBoxLayout(hist); hl.setContentsMargins(14, 12, 14, 12); hl.setSpacing(10)
+        top = QHBoxLayout(); top.setContentsMargins(0, 0, 0, 0)
+        cap_l = QLabel("Записується у фоні кожні 15 с, зберігається 7 днів"); cap_l.setProperty("role", "desc")
+        top.addWidget(cap_l); top.addStretch()
+        self.hist_range = SegmentedSelector("hist_range", [("1h", "1 год"), ("6h", "6 год"), ("24h", "24 год"), ("7d", "7 днів")],
+                                            self.settings.get("hist_range", "1h"),
+                                            lambda k, v: (self.save_setting(k, v), self.refresh_history()))
+        top.addWidget(self.hist_range)
+        hl.addLayout(top)
+        self.temp_chart = HistoryChart("Температури", "°C", 10)
+        self.fan_chart = HistoryChart("Кулери", "об/хв", 250, height=180)
+        hl.addWidget(self.temp_chart); hl.addWidget(self.fan_chart)
+        lay.addWidget(GroupCard([hist]))
+
+        # живлення
+        self.section(lay, "Живлення")
         lay.addWidget(self.create_card([
-            SettingRow("", "", "Режим живлення", "Економ — довше від батареї, Макс — для ігор",
+            SettingRow("", "", "Режим живлення", "Економ — тихіше й холодніше, Макс — для ігор і збирання",
                        PowerProfileSelector(self.settings.get("power_profile", "balanced"), self.save_setting)),
-            SettingRow("", "", "Споживання енергії", "Що з'їдає батарею (btop)", on_click=lambda: self.launch_app("kitty -e btop")),
+            SettingRow("", "", "Що навантажує систему", "Процеси, памʼять і диск (btop)", on_click=lambda: self.launch_app("kitty -e btop")),
         ]))
+
+        # кулери
+        self.section(lay, "Кулери")
+        self.fan_selector = SegmentedSelector("fan_mode", [("auto", "Авто"), ("quiet", "Тихий"), ("balanced", "Баланс"),
+                                                           ("performance", "Макс"), ("curve", "Крива")],
+                                              fs.get("mode", "auto"), self.save_setting)
+        self.fan_row = SettingRow("", "", "Режим кулера", "Зараз: …", self.fan_selector)
+        rows = [self.fan_row]
+        if laptop and (fs.get("writable") != "1" or fs.get("split") != "1"):
+            rows.append(SettingRow("", "", "Дозволити керування кулером",
+                                   "Один раз потрібен пароль: права на профіль прошивки кулера",
+                                   LinkButton("Дозволити", self.install_fan_rule)))
+        if not laptop and fs.get("pwm_writable") != "1":
+            rows.append(SettingRow("", "", "Драйвер кулерів материнки",
+                                   f"Стандартний драйвер {fs.get('fan_chip', '')} лише показує оберти. Щоб керувати кулерами, "
+                                   "потрібен nct6687 (один раз, з паролем)",
+                                   LinkButton("Встановити", self.install_nct6687)))
+        lay.addWidget(self.create_card(rows))
+        # крива: видно в режимі «Крива»
+        self.fan_curve_card = QWidget(); cl = QVBoxLayout(self.fan_curve_card); cl.setContentsMargins(0, 0, 0, 0); cl.setSpacing(6)
+        self.fan_curve = FanCurveWidget(lambda: self.settings.get("fan_mode") == "curve" and
+                                        subprocess.Popen([MGOS_FAN, "set", "curve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
+                                        laptop=laptop)
+        hint = QLabel("Тягніть точки. Клік по порожньому місцю — нова точка, подвійний клік або правий клік по точці — прибрати. "
+                      + ("Прошивка Samsung вміє лише 4 рівні, тому оберти змінюються сходинками за смугами." if laptop else
+                         "Без драйвера nct6687 крива лише зберігається — оберти не зміняться." if fs.get("pwm_writable") != "1" else ""))
+        hint.setProperty("role", "desc"); hint.setWordWrap(True)
+        box = QWidget(); bl = QVBoxLayout(box); bl.setContentsMargins(14, 12, 14, 10); bl.setSpacing(8)
+        bl.addWidget(self.fan_curve); bl.addWidget(hint)
+        rl2 = QHBoxLayout(); rl2.setSpacing(8)
+        pl = QLabel("Готові криві:"); pl.setProperty("role", "desc"); rl2.addWidget(pl)
+        for name, pts in (("Тиха", [(45, 10), (60, 25), (75, 50), (88, 100)]),
+                          ("Збалансована", list(FAN_CURVE_DEFAULT)),
+                          ("Холодна", [(35, 25), (50, 45), (65, 70), (78, 100)])):
+            rl2.addWidget(LinkButton(name, lambda p=pts: self.fan_curve.set_points(list(p))))
+        rl2.addStretch(); bl.addLayout(rl2)
+        cl.addWidget(GroupCard([box]))
+        lay.addWidget(self.fan_curve_card)
+        self.settings["fan_mode"] = fs.get("mode", "auto")   # правда — у mgos-fan, не в settings.json
+        self.fan_curve_card.setVisible(self.settings["fan_mode"] == "curve")
+
+        # пам'ять і zram
+        self.section(lay, "Пам'ять і zram")
+        self.page_words[self._building] += ["zram", "пам'ять", "swap", "своп", "ігровий режим", "оперативна"]
+        z = self.zram_json()
+        self.mem_zram_row = SettingRow("", "", "Стиснена пам'ять (zram)", self.zram_perf_text(z),
+                                       None if z.get("enabled") else LinkButton("Налаштувати", lambda: self.launch_app(
+                                           f"kitty --class mgos-zram-setup -e sudo {Path.home()}/.local/bin/mgos-zram setup")))
+        self.mem_boost_row = SettingRow("", "", "Ігровий режим пам'яті",
+                                        self.boost_text(z), self.sw("mem_boost", True))
+        mrows = [self.mem_zram_row, self.mem_boost_row]
+        if not z.get("boost"):
+            mrows.append(SettingRow("", "", "Увімкнути ігровий режим",
+                                    "Фонова служба перемикає zram на агресивний режим, коли запущена гра або бракує памʼяті "
+                                    "(один раз, з паролем)",
+                                    LinkButton("Встановити", lambda: self.launch_app(
+                                        f"kitty --class mgos-zram-setup -e bash -c 'sudo {Path.home()}/.local/bin/mgos-zram boost-install; "
+                                        "read -rp \"Enter — закрити\"'"))))
+        mrows.append(SettingRow("", "", "Стиснути фонові програми зараз",
+                                "Firefox, Telegram, Discord, Spotify, VS Code — їхня памʼять іде в zram, при зверненні повертається",
+                                LinkButton("Стиснути", self.pageout_bg_now)))
+        lay.addWidget(self.create_card(mrows))
+
+        # економія
         self.section(lay, "Економія та оптимізація")
         lay.addWidget(self.create_card([
             SettingRow("", "", "Запечений блюр на весь екран",
@@ -4982,32 +5454,9 @@ class MeguminSettings(QWidget):
                        "Вимкни — повернеться звичайне живе розмиття Hyprland",
                        self.sw("baked_blur", True)),
         ]))
-        self.section(lay, "Кулер")
-        self.fan_selector = SegmentedSelector("fan_mode", [("auto", "Авто"), ("quiet", "Тихий"), ("balanced", "Баланс"),
-                                                           ("performance", "Макс"), ("curve", "Крива")],
-                                              fan_status().get("mode", "auto"), self.save_setting)
-        self.fan_row = SettingRow("", "", "Режим кулера", "Зараз: …", self.fan_selector)
-        rows = [self.fan_row]
-        fs = fan_status()
-        if fs.get("writable") != "1" or fs.get("split") != "1":
-            rows.append(SettingRow("", "", "Дозволити керування кулером",
-                                   "Один раз потрібен пароль: права на профіль прошивки кулера",
-                                   LinkButton("Дозволити", self.install_fan_rule)))
-        lay.addWidget(self.create_card(rows))
-        # графік кривої: видно завжди, працює в режимі «Крива»
-        self.fan_curve_card = QWidget(); cl = QVBoxLayout(self.fan_curve_card); cl.setContentsMargins(0, 0, 0, 0); cl.setSpacing(6)
-        self.fan_curve = FanCurveWidget(lambda: self.settings.get("fan_mode") == "curve" and
-                                        subprocess.Popen([MGOS_FAN, "set", "curve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
-        hint = QLabel("Тягніть точки: при якій температурі які оберти. Клік по порожньому місцю — нова точка, правий клік — прибрати. "
-                      "Прошивка Samsung вміє лише 4 рівні, тому реальні оберти змінюються сходинками за смугами.")
-        hint.setProperty("role", "desc"); hint.setWordWrap(True)
-        box = QWidget(); bl = QVBoxLayout(box); bl.setContentsMargins(14, 12, 14, 10); bl.setSpacing(6)
-        bl.addWidget(self.fan_curve); bl.addWidget(hint)
-        rl2 = QHBoxLayout(); rl2.addStretch(); rl2.addWidget(LinkButton("За замовчуванням", self.fan_curve.reset)); bl.addLayout(rl2)
-        cl.addWidget(GroupCard([box]))
-        lay.addWidget(self.fan_curve_card)
-        self.settings["fan_mode"] = fan_status().get("mode", "auto")   # правда — у mgos-fan, не в settings.json
-        self.fan_curve_card.setVisible(self.settings["fan_mode"] == "curve")
+        self._fan_once = False
+        self._hist_tick = 0
+        self.refresh_history()
         self.refresh_fan()
         if not getattr(self, "fan_timer", None):
             self.fan_timer = QTimer(self, interval=2000)
@@ -5015,23 +5464,117 @@ class MeguminSettings(QWidget):
             self.fan_timer.start()
         return page
 
+    def refresh_history(self):
+        tc = getattr(self, "temp_chart", None)
+        if tc is None: return
+        rows = SENSOR_HIST.load()
+        span = {"1h": 3600, "6h": 6 * 3600, "24h": 86400, "7d": 7 * 86400}.get(self.settings.get("hist_range", "1h"), 3600)
+        t1 = time.time(); t0 = t1 - span
+        last = rows[-1] if rows else None
+        def mk(keys):
+            out = []
+            for k in keys:
+                pts, step = SENSOR_HIST.series(k, t0, t1)
+                if not pts or (k.startswith("fan") and max(v for _, v in pts) <= 0): continue
+                now = last[SC[k]] if last and last[SC[k]] is not None else None
+                out.append(dict(key=k, label=HIST_NAMES.get(k, f"Кулер {k[3:]}"), color=HIST_COLORS[k], pts=pts, now=now))
+            return out, step
+        temps, step = mk(["cpu", "gpu", "board", "nvme"])
+        fans, _ = mk([f"fan{i}" for i in range(1, 9)])
+        gap = max(30, step)
+        tc.set_data(temps, t0, t1, gap)
+        self.fan_chart.set_data(fans, t0, t1, gap)
+        # спарклайни плиток — остання година
+        self._spark = {k: SENSOR_HIST.series(k, t1 - 3600, t1, 60)[0] for k in ("cpu", "gpu", "fan1", "nvme")}
+        self._gpufan = last[SC["gpufan"]] if last else None
+
     def refresh_fan(self):
         row = getattr(self, "fan_row", None)
         if row is None: return
-        # оновлюємо лише видиму сторінку «Батарея» і лише коли вікно не згорнуте
-        if getattr(self, "_fan_once", False) and not (row.isVisible() and self.isVisible()): return
+        # оновлюємо лише видиму сторінку і лише коли вікно не згорнуте
+        try:
+            if self._fan_once and not (row.isVisible() and self.isVisible()): return
+        except RuntimeError: return   # сторінку перебудували — старий рядок уже видалено
         self._fan_once = True
         st = fan_status()
         rpm = int(st.get("rpm", "0") or 0)
         spin = f"{rpm} об/хв" if rpm else "зупинений"
         names = {"low-power": "економ", "quiet": "тихий", "balanced": "баланс", "performance": "макс"}
-        txt = f"Зараз: {spin} · CPU {st.get('temp', '?')}°C · крива прошивки «{names.get(st.get('profile', ''), st.get('profile', '?'))}»"
+        if st.get("laptop") == "1":
+            txt = f"Зараз: {spin} · крива прошивки «{names.get(st.get('profile', ''), st.get('profile', '?'))}»"
+        else:
+            txt = f"CPU-кулер {spin}" + ("" if st.get("pwm_writable") == "1" else " · керування недоступне без драйвера")
         try: row.desc_lbl.setText(txt)
         except Exception: pass
+        cpu = int(st.get("temp", "0") or 0)
         fc = getattr(self, "fan_curve", None)
         if fc is not None:
-            try: fc.set_live(int(st.get("temp", "0") or 0), rpm)
+            try: fc.set_live(cpu, rpm)
             except Exception: pass
+        # плитки
+        self._hist_tick = (self._hist_tick + 1) % 8
+        if self._hist_tick == 0: self.refresh_history()   # раз на ~16 с — нові точки з mgos-sensors
+        if self._hist_tick % 3 == 0: self.refresh_mem()     # zram / ігровий режим — раз на ~6 с
+        tiles = getattr(self, "perf_tiles", None)
+        if tiles:
+            sens = dict(st.get("sensors", []))
+            sp = getattr(self, "_spark", {})
+            tiles["cpu"].set(f"{cpu}°C" if cpu else "—", "", temp_color(cpu), sp.get("cpu", []))
+            g = sens.get("GPU")
+            gf = getattr(self, "_gpufan", None)
+            tiles["gpu"].set(f"{g}°C" if g else "—", f"кулер {gf}%" if gf is not None else "", temp_color(g or 0), sp.get("gpu", []))
+            tiles["fan1"].set(f"{rpm}" if rpm else "стоїть", "об/хв" if rpm else "", ACCENT[0], sp.get("fan1", []))
+            n = sens.get("NVMe")
+            tiles["nvme"].set(f"{n}°C" if n else "—", "", "#30d158" if (n or 0) < 55 else "#ff9f0a" if (n or 0) < 70 else "#ff453a", sp.get("nvme", []))
+
+    def zram_json(self):
+        try:
+            return json.loads(subprocess.run([str(Path.home() / ".local/bin/mgos-zram"), "json"],
+                                             capture_output=True, text=True, timeout=3).stdout)
+        except Exception:
+            return {}
+
+    def zram_perf_text(self, z):
+        if not z.get("enabled"): return "Вимкнено — стиснена памʼять у RAM замість повільного swap на диску"
+        ratio = f" (стиснення ×{z['orig_mb'] / z['used_mb']:.1f})" if z.get("used_mb") else ""
+        return (f"{z['size_mb'] / 1024:.0f} ГБ · {z.get('algo') or 'zstd'} · зараз {z['orig_mb']} МБ даних займають "
+                f"{z['used_mb']} МБ RAM{ratio}")
+
+    def boost_text(self, z):
+        base = "Коли йде гра або бракує памʼяті — охочіше стискати в zram, тримати запас вільної RAM, без фонового ущільнення"
+        if not z.get("boost"): return base + " · служба не встановлена"
+        if not self.settings.get("mem_boost", True): return base + " · вимкнено"
+        if z.get("boost_mode") == "game":
+            return f"Зараз: ігровий — {z.get('boost_reason') or 'активний'} (swappiness {z.get('swappiness')})"
+        return f"Зараз: звичайний (swappiness {z.get('swappiness')}) · вмикається сам, коли запускаєте гру"
+
+    def refresh_mem(self):
+        row = getattr(self, "mem_zram_row", None)
+        if row is None: return
+        try:
+            if not row.isVisible(): return
+        except RuntimeError: return
+        z = self.zram_json()
+        try:
+            row.desc_lbl.setText(self.zram_perf_text(z))
+            self.mem_boost_row.desc_lbl.setText(self.boost_text(z))
+        except Exception: pass
+
+    def pageout_bg_now(self):
+        cmd = ("pids=$(pgrep -u \"$USER\" -x 'firefox|telegram-desktop|Telegram|discord|Discord|vesktop|spotify|code|code-oss|chromium|chrome|obsidian|thunderbird' "
+               "| tr '\\n' ' '); [ -n \"$pids\" ] && nice -n 19 /usr/local/bin/mgos-pageout --tree $pids")
+        subprocess.Popen(["bash", "-c", cmd], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        QTimer.singleShot(2500, self.refresh_mem)
+
+    def install_nct6687(self):
+        cmd = ("echo 'mgOS: драйвер кулерів материнки MSI (nct6687). Потрібен пароль.'; echo; "
+               "yay -S --needed --noconfirm nct6687d-dkms-git && "
+               "echo nct6687 | sudo tee /etc/modules-load.d/msi-sensors.conf >/dev/null && "
+               "echo 'blacklist nct6683' | sudo tee /etc/modprobe.d/nct6683-blacklist.conf >/dev/null && "
+               "{ sudo modprobe -r nct6683; sudo modprobe nct6687; } && echo '✓ Готово' || echo '✗ Не вдалося'; "
+               "echo; read -rp 'Enter — закрити'")
+        subprocess.Popen(["kitty", "--class", "mgos-recovery", "-e", "bash", "-c", cmd], start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def install_fan_rule(self):
         cmd = (f"echo 'mgOS: дозволяю керування кулером (потрібен пароль один раз)'; "
@@ -5055,9 +5598,28 @@ class MeguminSettings(QWidget):
             SettingRow("", "", "Оновлення", "Пакети системи (yay)", on_click=lambda: self.launch_app("kitty -e yay")),
             SettingRow("", "", "Монітор ресурсів", "btop", on_click=lambda: self.launch_app("kitty -e btop")),
         ]))
+        self.section(lay, "Місцезнаходження")
+        self.page_words[self._building] += ["геолокація", "місто", "місцезнаходження", "погода", "location", "розташування"]
+        loc = QLineEdit(self.settings.get("location", "")); loc.setPlaceholderText("Автоматично (за IP)"); loc.setFixedWidth(240)
+        self.loc_info = QLabel(""); self.loc_info.setStyleSheet(f"color: {T['text2']}; font-size: 11px;")
+        def loc_done(e=loc):
+            v = e.text().strip()
+            if v == self.settings.get("location", ""): return
+            self.save_setting("location", v)
+            self.reset_weather_cache()
+            subprocess.Popen(["pkill", "-USR1", "-x", "dashboard"])   # дашборд перечитає віджети з новим містом
+            self.loc_info.setText("")
+        loc.editingFinished.connect(loc_done)
+        lay.addWidget(self.create_card([
+            SettingRow("", "", "Місто", "Для погоди в дашборді та сонця/хмар у піксельних шпалерах. "
+                       "Порожньо — визначати за IP (часто показує місто провайдера, а не ваше). Можна латиницею: Lviv, Kyiv, Odesa", loc),
+            SettingRow("", "", "Перевірити", "Яке місце бачить сервіс погоди (wttr.in)",
+                       LinkButton("Перевірити", lambda e=loc: self.check_location(e.text().strip()))),
+        ]))
+        lay.addWidget(self.loc_info)
         self.section(lay, "Оболонка")
         lay.addWidget(self.create_card([
-            SettingRow("", "", "Перезапустити Ignis", "Підняти оболонку після збою", on_click=lambda: self.launch_app("ignis quit; sleep 0.6; hyprctl dispatch exec 'ignis init'")),
+            SettingRow("", "", "Перезапустити Ignis", "Alt+Tab (перемикач вікон)", on_click=lambda: self.launch_app("ignis quit; sleep 0.6; hyprctl dispatch exec 'env GSK_RENDERER=cairo ignis init'")),
             SettingRow("", "", "Перезапустити модулі SYSui", "Топбар, док, Control Center та OSD", on_click=lambda: self.launch_app("bash ~/.config/SYSui/restart_all.sh")),
         ]))
         self.section(lay, "Відновлення")
@@ -5068,6 +5630,27 @@ class MeguminSettings(QWidget):
                        LinkButton("Відкрити", self.launch_local_installer)),
         ]))
         return page
+
+    def reset_weather_cache(self):
+        """Місто змінилось — старий кеш погоди (дашборд, «Хмари») більше не наш."""
+        for f in (Path.home() / ".cache/mgos/dashboard_weather.json", Path.home() / ".cache/megumin-os/clouds_weather.txt"):
+            try: f.unlink()
+            except OSError: pass
+
+    def check_location(self, city):
+        import urllib.parse
+        self.loc_info.setText("Перевіряю…"); QApplication.processEvents()
+        url = "https://wttr.in/" + urllib.parse.quote(city.replace(" ", "+"), safe="+") + "?format=j1"
+        try:
+            out = subprocess.run(["curl", "-sf", "-m", "10", "-A", "curl", url], capture_output=True, text=True, timeout=12).stdout
+            d = json.loads(out)
+            a = d["nearest_area"][0]
+            name = ", ".join(x[0]["value"] for x in (a.get("areaName"), a.get("region"), a.get("country")) if x and x[0]["value"])
+            t = d["current_condition"][0].get("temp_C", "?")
+            src = "за IP" if not city else f"«{city}»"
+            self.loc_info.setText(f"   {src} → {name}  ({a.get('latitude')}, {a.get('longitude')}), зараз {t}°C")
+        except Exception:
+            self.loc_info.setText("   Не вдалося: немає звʼязку з wttr.in або місто не знайдено")
 
     # --- Системні звуки ---
     def create_sounds_page(self):

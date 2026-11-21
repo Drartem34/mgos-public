@@ -75,12 +75,39 @@ EOF2
     zramctl
     swapon --show
     ;;
+boost-install)   # ігровий режим пам'яті: служба mgos-memboost (root, бо змінює vm.* sysctl)
+    [ "$(id -u)" -eq 0 ] || { echo "Потрібен root: sudo $0 boost-install"; exit 1; }
+    U_HOME=$(getent passwd "${SUDO_USER:-root}" | cut -d: -f6)
+    SRC="$U_HOME/.local/bin/mgos-memboost"
+    [ -f "$SRC" ] || { echo "Немає $SRC"; exit 1; }
+    install -o root -g root -m 755 "$SRC" /usr/local/bin/mgos-memboost   # root-копія: користувач не змінить код служби
+    cat > /etc/systemd/system/mgos-memboost.service <<'EOF2'
+[Unit]
+Description=mgOS: агресивніший zram під час ігор і нестачі пам'яті
+After=systemd-zram-setup@zram0.service
+
+[Service]
+ExecStart=/usr/local/bin/mgos-memboost
+Restart=on-failure
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
+EOF2
+    systemctl daemon-reload && systemctl enable --now mgos-memboost.service && systemctl restart mgos-memboost.service
+    echo "✓ Ігровий режим пам'яті увімкнено"
+    ;;
 json)
     read -r o c s < <(status_vals)
     on=false; [ "$s" -gt 0 ] && on=true
     cap=false; getcap /usr/local/bin/mgos-pageout 2>/dev/null | grep -q cap_sys_nice && cap=true
     zs=false; [ "$(cat /sys/module/zswap/parameters/enabled 2>/dev/null)" = Y ] && zs=true
-    printf '{"enabled": %s, "orig_mb": %d, "used_mb": %d, "size_mb": %d, "pageout": %s, "zswap": %s}\n' "$on" "$o" "$c" "$s" "$cap" "$zs"
+    bi=false; [ -x /usr/local/bin/mgos-memboost ] && systemctl is-active -q mgos-memboost.service && bi=true
+    { read -r bm br < /run/mgos-memboost; } 2>/dev/null || bm=normal
+    sw=$(cat /proc/sys/vm/swappiness)
+    br=${br:-}; br=${br//\"/}
+    printf '{"enabled": %s, "orig_mb": %d, "used_mb": %d, "size_mb": %d, "pageout": %s, "zswap": %s, "boost": %s, "boost_mode": "%s", "boost_reason": "%s", "swappiness": %d, "algo": "%s"}\n' \
+        "$on" "$o" "$c" "$s" "$cap" "$zs" "$bi" "${bm:-normal}" "$br" "$sw" "$(sed -n 's/.*\[\([a-z0-9-]*\)\].*/\1/p' /sys/block/zram0/comp_algorithm 2>/dev/null)"
     ;;
 status|*)
     if read -r o c s < <(status_vals) && [ "$s" -gt 0 ]; then

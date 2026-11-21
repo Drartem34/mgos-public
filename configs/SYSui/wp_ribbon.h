@@ -382,7 +382,9 @@ static gboolean on_tick(GtkWidget*, GdkFrameClock* fc, gpointer) {
     if (!anim) { p = p_target; pv = 0; pos = target; posv = 0; }
     else {
         if (p_target > 0.5) spring(p, pv, p_target, 170, 19, dt);     // розгортання з легким перебігом
-        else spring(p, pv, p_target, 300, 2 * std::sqrt(300.0), dt);   // згортання без перебігу
+        // згортання — та сама затухаюча пружина, що в розширеного годинника (clock_popover.h spring_close:
+        // a=6, b=7 за 540 мс → k≈291, c≈22): схлопується, трохи «пролітає» бульбашку і осідає
+        else spring(p, pv, p_target, 291, 22.2, dt);
         spring(pos, posv, target, 230, 2 * std::sqrt(230.0) * 0.92, dt);
     }
     if ((int)lround(pos) != last_center) { last_center = (int)lround(pos); update_window(); }
@@ -412,6 +414,13 @@ static R target_rect(double W, double H) {
 }
 static R panel_rect(double W, double H) {
     R T = target_rect(W, H);
+    if (p < 0) {   // перебіг пружини за бульбашку: стискаємо саму бульбашку навколо її центру (як годинник, до −30%)
+        // стрічка в ~45 разів ширша за бульбашку: нахил «як при розгортанні» впирав би перебіг у −30% одразу,
+        // і бульбашка «зависала» стиснутою. Фіксований коефіцієнт — плавне «пружне» стискання до ~−18% і назад
+        double s = std::max(-0.3, p * 2.6);
+        double w = std::max(8.0, bw * (1 + s)), h = std::max(8.0, bh * (1 + s));
+        return {bx + (bw - w) / 2, by + (bh - h) / 2, w, h, h / 2};
+    }
     double q = p, qh = p - 0.10 * std::sin(M_PI * clamp01(p));   // висота трохи відстає — «стікає» вниз
     return {bx + (T.x - bx) * q, by + (T.y - by) * q,
             bw + (T.w - bw) * q, bh + (T.h - bh) * qh, bh / 2 + (T.r - bh / 2) * clamp01(p)};

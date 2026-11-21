@@ -22,6 +22,10 @@ print("1" if s.get("sounds_enabled", True) else "0", s.get("sound_theme", "mgos"
       int(s.get("sounds_volume", 70)), "1" if ev in s.get("sounds_off", []) else "0")
 PY
 )
+# журнал: що й хто грав (останні 300 рядків) — «звідки цей звук?» → tail $XDG_RUNTIME_DIR/mgos-sound.log
+LOG="${XDG_RUNTIME_DIR:-/tmp}/mgos-sound.log"
+printf '%s  %-22s  від: %s\n' "$(date +%T)" "$ev" "$(ps -o args= -p $PPID 2>/dev/null | cut -c1-80)" >> "$LOG"
+[ "$(wc -l < "$LOG")" -gt 400 ] && tail -300 "$LOG" > "$LOG.t" && mv -f "$LOG.t" "$LOG"
 [ "$2" = --force ] || { [ "${on:-1}" = 1 ] && [ "${off:-0}" = 0 ] || exit 0; }
 pgrep -f 'Hyprland -c .*hyprland/kiosk\.conf' >/dev/null 2>&1 && [ "$2" != --force ] && exit 0   # kiosk — тиша
 find_snd() {  # $1 тема → шлях (з урахуванням Inherits)

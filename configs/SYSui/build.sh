@@ -7,7 +7,7 @@ cd "$(dirname "$(readlink -f "$0")")"
 declare -A MAP=( [dock]=dock [topbar]=topbar [runner]=runner_osd [wallpapers]=wallpapers
                  [cc]=cc_osd [clipboard_osd]=clipboard_osd [osd_hub]=osd_hub
                  [powermenu_osd]=powermenu_osd [controller_addon]=controller_addon [about_osd]=about_osd
-                 [pixel_wallpaper]=pixel_wallpaper [welcome]=welcome [genie_osd]=genie_osd [cards_osd]=cards_osd [dashboard]=dashboard )
+                 [pixel_wallpaper]=pixel_wallpaper [welcome]=welcome [genie_osd]=genie_osd [cards_osd]=cards_osd [dashboard]=dashboard [launch_splash]=mgos-launch )
 RESTART=0; ARGS=()
 for a in "$@"; do [ "$a" = "--restart" ] && RESTART=1 || ARGS+=("$a"); done
 # mgos-pageout (C, без GTK) — «стискання» схованих програм у zram; ставить mgos-zram setup з cap_sys_nice
@@ -40,6 +40,7 @@ if [ $RESTART -eq 1 ]; then
         [ "$out" = welcome ] && continue   # привітання запускається лише на першому вході
         [ "$out" = genie_osd ] && continue   # помічник «джина» запускає док сам, на час жесту
         [ "$out" = cards_osd ] && continue   # шар карток простору запускає док сам
+        [ "$out" = mgos-launch ] && continue   # splash запуску — разовий процес на кожен запуск програми
         [ "$out" = pixel_wallpaper ] && ! grep -q '^pixel:' ~/.cache/ignis/last_wallpaper.txt 2>/dev/null && continue
         [ "$out" != wallpapers ] && { sleep 0.3; hyprctl dispatch exec "$PWD/$out" >/dev/null; }
     done

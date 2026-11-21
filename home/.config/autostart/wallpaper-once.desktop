@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=wallpaper-once
+# mgOS: автозапуск EndeavourOS вимкнено (привітання mgOS запускає інсталятор при першому вході)
+Hidden=true

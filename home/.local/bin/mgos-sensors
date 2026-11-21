@@ -1,0 +1,62 @@
+#!/bin/bash
+# mgos-sensors — історія температур і кулерів для «Налаштування → Продуктивність».
+# Кожні 15 с дописує рядок у ~/.cache/mgos/sensors.csv, зберігає останні 7 днів.
+# Колонки: ts cpu gpu board nvme gpufan fan1..fan8   (°C, gpufan — %, fanN — об/хв; «-» — немає датчика)
+# Ноутбук: cpu — coretemp, fan1 — acpi_fan. Десктоп: cpu — k10temp (Tctl), board/fanN — чип материнки (nct/it87).
+LOG="$HOME/.cache/mgos/sensors.csv"
+STEP=15
+KEEP=$((7 * 24 * 3600 / STEP))
+mkdir -p "${LOG%/*}"
+exec 9>"${XDG_RUNTIME_DIR:-/tmp}/mgos-sensors.lock"
+flock -n 9 || exit 0   # уже працює
+
+CPU="" CHIP="" NVME="" ACPI=""
+for h in /sys/class/hwmon/hwmon*; do
+    case "$(cat "$h/name" 2>/dev/null)" in
+        coretemp) CPU="$h/temp1_input" ;;
+        k10temp|zenpower) [ -z "$CPU" ] && CPU="$h/temp1_input" ;;
+        nct6687|nct6683|nct6775|nct6798|nct6799|it87) CHIP="$h" ;;
+        nvme) [ -z "$NVME" ] && NVME="$h/temp1_input" ;;
+        acpi_fan) ACPI="$h/fan1_input" ;;
+    esac
+done
+BOARD=()   # датчики материнки без процесорного (AMD TSI / PECI)
+if [ -n "$CHIP" ]; then
+    for f in "$CHIP"/temp*_input; do
+        l=$(cat "${f%_input}_label" 2>/dev/null)
+        case "${l^^}" in *TSI*|*PECI*|*CPU*) ;; *) BOARD+=("$f") ;; esac
+    done
+fi
+NV=$(command -v nvidia-smi)
+
+c() { local v; v=$(cat "$1" 2>/dev/null) && [ -n "$v" ] && echo $((v / 1000)) || echo -; }
+
+[ -s "$LOG" ] || echo "# ts cpu gpu board nvme gpufan fan1 fan2 fan3 fan4 fan5 fan6 fan7 fan8" > "$LOG"
+n=0
+while :; do
+    cpu=$([ -n "$CPU" ] && c "$CPU" || echo -)
+    board=-
+    for f in "${BOARD[@]}"; do t=$(c "$f"); [ "$t" != - ] && [ "$t" -gt 0 ] && [ "$t" -lt 110 ] && { [ "$board" = - ] || [ "$t" -gt "$board" ]; } && board=$t; done
+    nvme=$([ -n "$NVME" ] && c "$NVME" || echo -)
+    gpu=- gfan=-
+    if [ -n "$NV" ]; then
+        IFS=', ' read -r gpu gfan < <(timeout 4 nvidia-smi --query-gpu=temperature.gpu,fan.speed --format=csv,noheader,nounits 2>/dev/null | head -1)
+        gpu=${gpu%%.*}; gfan=${gfan%%.*}
+        [[ "$gpu" =~ ^[0-9]+$ ]] || gpu=-; [[ "$gfan" =~ ^[0-9]+$ ]] || gfan=-
+    fi
+    fans=""
+    for i in 1 2 3 4 5 6 7 8; do
+        if [ "$i" = 1 ] && [ -n "$ACPI" ]; then v=$(cat "$ACPI" 2>/dev/null)
+        elif [ -n "$CHIP" ]; then v=$(cat "$CHIP/fan${i}_input" 2>/dev/null)
+        else v=""; fi
+        fans+=" ${v:--}"
+    done
+    echo "$(date +%s) $cpu $gpu $board $nvme $gfan$fans" >> "$LOG"
+    n=$((n + 1))
+    if [ $((n % 240)) = 0 ]; then   # раз на годину — обрізати до 7 днів
+        if [ "$(wc -l < "$LOG")" -gt $((KEEP + 300)) ]; then
+            { head -1 "$LOG"; tail -n "$KEEP" "$LOG"; } > "$LOG.tmp" && mv -f "$LOG.tmp" "$LOG"
+        fi
+    fi
+    sleep "$STEP"
+done

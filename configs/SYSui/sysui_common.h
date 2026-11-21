@@ -343,6 +343,7 @@ struct Settings {
     std::string panel_font = "SF Pro Display";
     // Піксельна анімація шапок (about, блок годинника): waves|virus|eq|rain|life
     std::string pixel_style = "waves";
+    std::string location;                 // місто для погоди/сонця (Налаштування → Система); "" — за IP
     // Економія: «запечений» блюр на весь екран — блюр лишається, відео-шпалера на паузі (кеш блюру не скидається)
     bool eco_fs_blur = true;
     bool hyprland_blur = true;            // загальний перемикач розмиття з «Налаштувань»
@@ -380,7 +381,7 @@ inline const Settings& settings() {
             gi("dock_files_count", n.dock_files_count, 1, 8); gi("dock_files_days", n.dock_files_days, 1, 30); gb("dock_reserve", n.dock_reserve); gb("dock_minimize_drag", n.dock_minimize_drag); gs("dock_stash_layout", n.dock_stash_layout); gb("dock_stash_zram", n.dock_stash_zram); gs("tp_swipe_down", n.tp_swipe_down); gi("tp_min_dist", n.tp_min_dist, 120, 800); gs("tp_swipe_up", n.tp_swipe_up); gb("dock_stash_cards", n.dock_stash_cards); gb("genie_squash", n.genie_squash); gb("genie_grow", n.genie_grow); gb("genie_anim", n.genie_anim); gi("genie_speed", n.genie_speed, 50, 200);
             gb("dock_recent", n.dock_recent); gi("dock_recent_count", n.dock_recent_count, 1, 15);
             gb("watchdog", n.watchdog); gb("sys_popups", n.sys_popups); gs("osd_position", n.osd_position); gs("notify_position", n.notify_position);
-            gb("topbar_power", n.topbar_power); gs("panel_font", n.panel_font); gs("pixel_style", n.pixel_style);
+            gb("topbar_power", n.topbar_power); gs("panel_font", n.panel_font); gs("pixel_style", n.pixel_style); gs("location", n.location);
             gb("eco_fs_blur", n.eco_fs_blur); gb("hyprland_blur", n.hyprland_blur); gb("eco_effects", n.eco_effects); gb("video_optimization", n.video_optimization);
             gb("wp_pause_covered", n.wp_pause_covered); gb("baked_blur", n.baked_blur);
         }
@@ -617,6 +618,7 @@ struct Under {
     double radius = 0, ox = 0, oy = 0, lw = 0, lh = 0;   // lw/lh — розмір шару на момент визначення позиції
     bool cx = false, bot = false;   // шар центрований по горизонталі / притиснутий до низу: при зміні розміру зсув рахуємо самі
     bool known = false, empty = true;   // empty — на моніторі немає вікон: тоді малюємо запечений блюр
+    bool below = false;   // шар ПІД вікнами (дашборд): запечений блюр завжди — xray тут неможливий
     guint pending = 0;
     std::function<void(std::vector<GtkWidget*>&)> plates;
 };
@@ -657,7 +659,7 @@ inline void under_schedule(Under* u, int ms) {
 inline void under_draw(GtkDrawingArea*, cairo_t* cr, int, int, gpointer d) {
     Under* u = (Under*)d;
     if (!enabled() || !u->known) return;
-    if (!u->empty) return;   // поверх програм — живий блюр Hyprland (запечений дає xray)
+    if (!u->empty && !u->below) return;   // поверх програм — живий блюр Hyprland (запечений дає xray)
     mon_name() = u->mon;
     std::vector<GtkWidget*> v;
     if (u->plates) u->plates(v); else v.push_back(u->child);
@@ -675,9 +677,9 @@ inline void under_draw(GtkDrawingArea*, cairo_t* cr, int, int, gpointer d) {
 }
 inline GtkWidget* underlay(GtkWidget* win, GtkWidget* child, const char* ns, double radius,
                            std::function<void(std::vector<GtkWidget*>&)> plates = nullptr,
-                           bool center_x = false, bool bottom = false) {
+                           bool center_x = false, bool bottom = false, bool below_windows = false) {
     Under* u = new Under;
-    u->cx = center_x; u->bot = bottom;
+    u->cx = center_x; u->bot = bottom; u->below = below_windows;
     u->win = win; u->child = child; u->ns = ns; u->radius = radius; u->plates = std::move(plates);
     GtkWidget* ov = gtk_overlay_new();
     u->area = gtk_drawing_area_new();

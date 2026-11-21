@@ -85,5 +85,6 @@
     "wp_pixel_color": "",
     "wp_pixel_fps": 10,
     "wp_pixel_style": "virus",
-    "wp_pixel_theme": "auto"
+    "wp_pixel_theme": "auto",
+    "hist_range": "1h"
 }

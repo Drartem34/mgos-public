@@ -136,7 +136,7 @@ hl.config({
         preserve_split       = true,
         smart_split          = false,
         smart_resizing       = true,
-        special_scale_factor = 0.9,
+        -- special_scale_factor прибрано: deprecated у 0.57 (тепер через workspace rules)
     },
 
     decoration = {
@@ -261,21 +261,16 @@ layer("dock",         { animation = "slide bottom" })
 layer("dock_cards",   { no_anim = true })             -- Простір (Super+A): картки док анімує сам
 
 layer("waybar",           { blur = true })
-layer("ignis_wallpapers", { blur = true, ignore_alpha = 0 })
-layer("ignis_dock",       { blur = true, ignore_alpha = 0 })
-layer("ignis_powermenu",  { blur = true, ignore_alpha = 0 })
-layer("ignis_about",      { blur = true, ignore_alpha = 0 })
 layer("ignis_switcher",   { blur = true, ignore_alpha = 0 })
-layer("ignis_launcher",   { blur = true, ignore_alpha = 0 })
-layer("ignis",            { blur = true, ignore_alpha = 0.5 })
-layer("ignis_clipboard",  { blur = true, ignore_alpha = 0 })
-layer("ignis_bar",        { blur = true, ignore_alpha = 0.5 })
 layer("mgos-dashboard",   { no_anim = true })   -- дашборд: без fade при зміні столу
 
 -- Живий блюр віджетів SYSui — у blur-layers.conf; його веде mgos-bakeblur
 legacy.source(HYPR .. "/blur-layers.conf")
 layer("mgos-genie",     { no_anim = true })   -- «джин»: 3 пальці вниз → вікно в док, кадри йдуть за пальцями
 layer("clock_popover",  { no_anim = true })   -- годинник-блок: морф малюємо самі
+layer("wp_ribbon",      { no_anim = true })   -- стрічка шпалер (Super+W): розростається з бульбашки годинника сама; слайд Hyprland ламав морф і «відкидав» бульбашку за екран
+layer("hyprpicker",     { no_anim = true })   -- Super+Shift+S: заморожений кадр — миттєво, без виїзду згори
+layer("selection",      { no_anim = true })   -- slurp (виділення області для скріншота) — миттєво
 layer("wallpapers",     { blur = true, ignore_alpha = 0.5 })
 
 
@@ -293,7 +288,8 @@ local startup = {
     -- UI & Daemons
     "~/.config/SYSui/wallpaper_restore.sh",   -- постер (swaybg) → живі шпалери поверх
     "systemctl --user start dunst.service",
-    "ignis init",
+    "env GSK_RENDERER=cairo ignis init",   -- лише Alt+Tab; cairo: ~100 МБ замість ~280 з GPU-рендером
+    "~/.local/bin/mgos-sensors",   -- історія температур і кулерів (Налаштування → Продуктивність)
     "wl-paste --type text --watch cliphist store",
     "wl-paste --type image --watch cliphist store",
 

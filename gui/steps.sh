@@ -602,7 +602,8 @@ step_home() {
     chmod +x ~/.local/bin/wal ~/.local/bin/mgos-power ~/.local/bin/mgos-sound ~/.local/bin/mgos-fan \
              ~/.local/bin/mgos-share ~/.local/bin/mgos-quickshare ~/.local/bin/mfg-unlocker-run \
              ~/.local/bin/mgos-wp-poster ~/.local/bin/mgos-close ~/.local/bin/mgos-zram ~/.local/bin/mgos-brightness ~/.local/bin/mgos-wp-optimize \
-             ~/.local/bin/hyprctl ~/.local/bin/mgos-bakeblur 2>/dev/null
+             ~/.local/bin/hyprctl ~/.local/bin/mgos-bakeblur ~/.local/bin/eos-welcome \
+             ~/.local/bin/mgos-launch ~/.local/bin/mgos-memboost ~/.local/bin/mgos-sensors 2>/dev/null
     rm -f "${XDG_RUNTIME_DIR:-/tmp}"/mgos-hyprlua.* 2>/dev/null   # обгортка hyprctl перевірить версію Hyprland заново
     _kiosk_shell_hooks   # mgOS перезаписав ~/.bashrc — повертаємо команду kiosk, якщо kioskOS встановлено
     bk ~/.local/share/applications/mimeinfo.cache
