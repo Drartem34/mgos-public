@@ -232,7 +232,32 @@ object Hub {
                     rxMeter.remove(e.name); Notif.cancel(app, Notif.ID_RX)
                     if (bg) Notif.received(app, e.from, e.name, e.uri, e.mime)
                 }
+                // вікно закрите → спливаюче сповіщення (з фону Android не дає відкрити браузер сам); відкрите — рядок у шторці
+                is Receiver.Event.LinkGot -> if (bg) Notif.link(app, e.from, e.url, e.text)
             }
+        }
+    }
+
+    /** Посилання / текст → ПК. Крихітний запит, тож без фонової служби: окремий потік і подія Done. */
+    fun sendLink(d: Device, url: String, text: String) {
+        fun emit(ev: SendEvent) = ui.post {
+            listeners.forEach { it.onSend(ev) }
+            if (!uiVisible && ev is SendEvent.Done) Notif.simple(app, if (ev.ok) "Надіслано" else "Не надіслано", ev.msg)
+        }
+        thread(name = "mg-link") {
+            emit(SendEvent.Progress("→ ${d.name}", 0, true))
+            if (!d.online) {
+                Link.discover(st, listOf(d))[d.id]?.let { d.ip = it; d.port = Link.PC_PORT }
+                d.online = d.ip.isNotEmpty() && Link.hello(st, d)
+            }
+            val ok = d.online && Link.sendLink(st, d, url, text)
+            emit(SendEvent.Done(when {
+                ok && url.isNotEmpty() -> "Посилання на ${d.name}"
+                ok -> "Текст на ${d.name} — уже в буфері обміну"
+                !d.online -> "${d.name} не знайдено — ноут у тій самій Wi-Fi і увімкнений?"
+                else -> "${d.name} не прийняв посилання — оновіть mgos-share на ПК"
+            }, ok))
+            changed()
         }
     }
 

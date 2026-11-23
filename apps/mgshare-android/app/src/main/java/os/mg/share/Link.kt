@@ -120,6 +120,23 @@ object Link {
         runCatching { val c = open(st, d, "POST", "/bye", 1500); c.doOutput = true; c.outputStream.close(); c.responseCode; c.disconnect() }
     }
 
+    /** Посилання (url) або просто текст → ПК. ПК показує сповіщення «Відкрити» / копіює текст у буфер. */
+    fun sendLink(st: Store, d: Device, url: String, text: String): Boolean = runCatching {
+        val c = open(st, d, "POST", "/link", 4000)
+        c.doOutput = true
+        c.setRequestProperty("Content-Type", "application/json")
+        val body = JSONObject().put("url", url).put("text", text).toString().toByteArray()
+        c.setFixedLengthStreamingMode(body.size)
+        c.outputStream.use { it.write(body) }
+        val ok = c.responseCode == 200
+        c.disconnect()
+        ok
+    }.getOrDefault(false)
+
+    /** Перше http(s)-посилання в тексті (браузери шлють «Заголовок\nhttps://…»). */
+    fun findUrl(s: String): String? =
+        Regex("""https?://[^\s<>"']+""", RegexOption.IGNORE_CASE).find(s)?.value?.trimEnd('.', ',', ')', ';', '!', '?')
+
     /** Надсилає файл на ПК. progress(байти надіслано). */
     fun upload(st: Store, d: Device, name: String, size: Long, input: InputStream, progress: (Long) -> Unit): Boolean {
         val path = "/file?name=" + URLEncoder.encode(name, "UTF-8").replace("+", "%20")

@@ -106,6 +106,33 @@ object Notif {
         post(ctx, id, n)
     }
 
+    /** Посилання з ПК: тап — відкрити в браузері; кнопки «Копіювати» / «Поділитися». Просто текст — лише копіювати. */
+    fun link(ctx: Context, from: String, url: String, text: String) {
+        val id = nextId++
+        val body = url.ifEmpty { text }
+        val copy = PendingIntent.getBroadcast(ctx, id, Intent(ctx, CopyReceiver::class.java).putExtra(CopyReceiver.TEXT, body)
+            .putExtra(CopyReceiver.NOTIF, id), PendingIntent.FLAG_IMMUTABLE)
+        val share = Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, body), null)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val b = builder(ctx, CH_GOT)
+            .setContentTitle(if (url.isNotEmpty()) "Посилання від $from" else "Текст від $from")
+            .setContentText(body)
+            .setStyle(Notification.BigTextStyle().bigText(if (url.isNotEmpty() && text.isNotBlank() && text != url) "$text\n$url" else body))
+            .setCategory(Notification.CATEGORY_MESSAGE)
+            .setAutoCancel(true)
+            .apply { if (Build.VERSION.SDK_INT < 26) @Suppress("DEPRECATION") setPriority(Notification.PRIORITY_HIGH).setDefaults(Notification.DEFAULT_ALL) }
+        if (url.isNotEmpty()) {
+            val view = PendingIntent.getActivity(ctx, id, Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), PendingIntent.FLAG_IMMUTABLE)
+            b.setContentIntent(view)
+                .addAction(Notification.Action.Builder(null, "Відкрити", view).build())
+        } else b.setContentIntent(copy)
+        b.addAction(Notification.Action.Builder(null, "Копіювати", copy).build())
+            .addAction(Notification.Action.Builder(null, "Поділитися",
+                PendingIntent.getActivity(ctx, id + 50_000, share, PendingIntent.FLAG_IMMUTABLE)).build())
+        post(ctx, id, b.build())
+    }
+
     fun simple(ctx: Context, title: String, text: String) {
         post(ctx, nextId++, builder(ctx, CH_GOT).setContentTitle(title).setContentText(text).setAutoCancel(true)
             .setContentIntent(openApp(ctx)).build())

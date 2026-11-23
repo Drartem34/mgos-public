@@ -60,6 +60,7 @@ class MainActivity : ComponentActivity(), Hub.Listener {
     private val st get() = Hub.st
     private val pending = mutableListOf<Uri>()        // файли з «Поділитися» / вибрані
     private var fromShare = false
+    private var pendingLink: Pair<String, String>? = null   // (url, текст) з «Поділитися» браузера / нотаток
     private var target: Device? = null
 
     private lateinit var card: LinearLayout
@@ -206,7 +207,16 @@ class MainActivity : ComponentActivity(), Hub.Listener {
         val direct = i.getStringExtra(Intent.EXTRA_SHORTCUT_ID)?.removePrefix(Shortcuts.PREFIX)
             ?: i.getStringExtra(EXTRA_DEV)
         val dev = direct?.let { id -> Hub.devices.firstOrNull { it.id == id } }
-        if (uris.isNotEmpty()) {
+        // «Поділитися» з браузера / YouTube / нотаток: файлу нема, є текст (часто «Заголовок\nhttps://…»)
+        val txt = if (i.action == Intent.ACTION_SEND && uris.isEmpty()) i.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.trim() else null
+        if (!txt.isNullOrEmpty()) {
+            val url = Link.findUrl(txt) ?: ""
+            val subj = i.getStringExtra(Intent.EXTRA_SUBJECT)?.trim().orEmpty()
+            pendingLink = url to (if (url.isNotEmpty() && txt == url && subj.isNotEmpty()) subj else txt)
+            pending.clear(); fromShare = true
+            if (dev != null) doSendLink(dev)
+        } else if (uris.isNotEmpty()) {
+            pendingLink = null
             pending.clear(); pending += uris; fromShare = true
             if (dev != null) doSend(dev, uris)
         } else if (dev != null && i.action == Intent.ACTION_VIEW) {
@@ -222,6 +232,11 @@ class MainActivity : ComponentActivity(), Hub.Listener {
         progBar.isIndeterminate = true
     }
 
+    private fun doSendLink(d: Device) {
+        val (url, text) = pendingLink ?: return
+        Hub.sendLink(d, url, text)
+    }
+
     override fun onSend(e: Hub.SendEvent) {
         progRow.visibility = View.VISIBLE
         when (e) {
@@ -235,7 +250,7 @@ class MainActivity : ComponentActivity(), Hub.Listener {
                 progBar.progress = if (e.ok) 100 else 0
                 progText.text = e.msg
                 if (e.ok && fromShare) {
-                    pending.clear(); fromShare = false
+                    pending.clear(); pendingLink = null; fromShare = false
                     card.postDelayed({ if (Hub.sending == 0) finish() }, 1200)
                 }
                 render()
@@ -263,6 +278,7 @@ class MainActivity : ComponentActivity(), Hub.Listener {
                 progBar.progress = 100
                 addGot(e)
             }
+            is Receiver.Event.LinkGot -> addLink(e)
         }
     }
 
@@ -282,6 +298,29 @@ class MainActivity : ComponentActivity(), Hub.Listener {
         }
         gotBox.addView(row, 0, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
         gotBox.visibility = View.VISIBLE
+    }
+
+    private fun addLink(e: Receiver.Event.LinkGot) {
+        val body = e.url.ifEmpty { e.text }
+        val row = TextView(this).apply {
+            text = if (e.url.isNotEmpty()) "🔗  ${Uri.parse(e.url).host ?: e.url}   ·   відкрити" else "✎  ${body.take(60)}   ·   копіювати"
+            setTextColor(fg); textSize = 14f; maxLines = 2
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            background = round(chip, dp(14).toFloat())
+            setOnClickListener {
+                if (e.url.isNotEmpty()) runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(e.url))) }
+                    .onFailure { toast("Немає браузера") }
+                else {
+                    getSystemService(android.content.ClipboardManager::class.java)
+                        ?.setPrimaryClip(android.content.ClipData.newPlainText("Mg Share", body))
+                    toast("Скопійовано")
+                }
+            }
+        }
+        gotBox.addView(row, 0, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+        gotBox.visibility = View.VISIBLE
+        progRow.visibility = View.VISIBLE; progBar.isIndeterminate = false; progBar.progress = 100
+        progText.text = (if (e.url.isNotEmpty()) "Посилання від " else "Текст від ") + e.from
     }
 
     // ---------- плитка в шторці (Android 13+ вміє попросити сам — системне вікно) ----------
@@ -526,7 +565,12 @@ class MainActivity : ComponentActivity(), Hub.Listener {
         bgHint.text = if (st.bgMode) "Увімкнено · ноут шле файли, навіть коли вікно закрите"
         else "Вимкнено · файли приходять, лише коли відкрите це вікно"
 
-        if (pending.isNotEmpty()) {
+        val pl = pendingLink
+        if (pl != null) {
+            banner.text = if (pl.first.isNotEmpty()) "Надіслати посилання: ${Uri.parse(pl.first).host ?: pl.first}"
+            else "Надіслати текст: ${pl.second.take(40)}"
+            banner.visibility = View.VISIBLE
+        } else if (pending.isNotEmpty()) {
             val first = runCatching { Hub.nameOf(pending[0]).first }.getOrDefault("файл")
             banner.text = if (pending.size == 1) "Надіслати: $first" else "Надіслати: $first і ще ${pending.size - 1}"
             banner.visibility = View.VISIBLE
@@ -569,7 +613,8 @@ class MainActivity : ComponentActivity(), Hub.Listener {
             setTextColor(if (d.online) green else dim); textSize = 12f
         })
         row.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
-        row.addView(button(if (pending.isNotEmpty()) "Надіслати" else "Файл…", true) {
+        row.addView(button(if (pending.isNotEmpty() || pendingLink != null) "Надіслати" else "Файл…", true) {
+            if (pendingLink != null) return@button doSendLink(d)
             if (Hub.sending > 0) return@button toast("Зачекайте — ще надсилаю")
             if (pending.isNotEmpty()) doSend(d, pending.toList())
             else { target = d; pick.launch(arrayOf("*/*")) }

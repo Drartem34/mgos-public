@@ -29,6 +29,8 @@ class Receiver(
         data class Progress(val name: String, val got: Long, val size: Long) : Event()
         data class Done(val from: String, val name: String, val uri: Uri, val mime: String) : Event()
         data class Failed(val name: String) : Event()
+        /** Посилання (url не порожній) або текст від ПК. */
+        data class LinkGot(val from: String, val url: String, val text: String) : Event()
     }
 
     @Volatile private var server: ServerSocket? = null
@@ -96,6 +98,22 @@ class Receiver(
             return respond(out, 403, """{"error":"auth"}""")
         }
         if (method == "GET" && path == "/ping") return respond(out, 200, """{"name":"${st.myName.replace("\"", "")}"}""")
+        if (method == "POST" && path == "/link") {
+            val n = h["content-length"]?.toIntOrNull() ?: return respond(out, 411, "{}")
+            if (n !in 0..65536) return respond(out, 413, "{}")
+            val b = ByteArray(n)
+            var got = 0
+            while (got < n) { val k = inp.read(b, got, n - got); if (k < 0) break; got += k }
+            if (got != n) return
+            val j = runCatching { org.json.JSONObject(String(b, Charsets.UTF_8)) }.getOrNull() ?: return respond(out, 400, "{}")
+            // відкриваємо лише http(s) — жодних intent:// / file:// навіть від свого ПК
+            val url = j.optString("url").trim().takeIf { Link.findUrl(it) == it } ?: ""
+            val text = j.optString("text").take(20000)
+            if (url.isEmpty() && text.isBlank()) return respond(out, 400, "{}")
+            respond(out, 200, """{"ok":true}""")
+            onEvent(Event.LinkGot(dev.name, url, text))
+            return
+        }
         if (method != "PUT" || !path.startsWith("/file?")) return respond(out, 404, "{}")
         val name = path.substringAfter("name=", "file").substringBefore('&').let { URLDecoder.decode(it, "UTF-8") }
             .substringAfterLast('/').ifBlank { "file" }

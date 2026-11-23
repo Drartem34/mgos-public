@@ -10,6 +10,8 @@
 #   mgos-share daemon          служба: приймає файли й «привіт» від своїх пристроїв (порт 47811 tcp+udp)
 #   mgos-share pair            QR для з'єднання з новим пристроєм → PAIRED|<id>|<name>
 #   mgos-share push ID FILE... надіслати на свій пристрій → WAIT|  SENDING|<name>  GOT|<name>  DONE|  ERROR|<код>
+#   mgos-share link [ID] [URL|ТЕКСТ]  посилання/текст на телефон (без ID — на єдиний/усі на зв'язку;
+#                              без тексту — з буфера обміну) → WAIT|  DONE|<id>  ERROR|<код>
 #   mgos-share devices         список своїх пристроїв: id<TAB>name<TAB>kind<TAB>online(0/1)
 #   mgos-share forget ID       забути пристрій
 #   mgos-share open            відкрити блок «Надіслати» в топбарі (іконки пристроїв)
@@ -466,6 +468,52 @@ def downloads_dir():
     return d
 
 
+URL_RE = None
+
+
+def find_url(s):
+    """Перше http(s)-посилання в тексті (браузери телефона шлють «Заголовок\\nhttps://…»)."""
+    global URL_RE
+    import re
+    URL_RE = URL_RE or re.compile(r"https?://[^\s<>\"']+", re.I)
+    m = URL_RE.search(s or "")
+    return m.group(0).rstrip(".,);!?") if m else ""
+
+
+def copy_text(t):
+    try:
+        subprocess.run(["wl-copy", "--", t], timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def notify_link(dev_name, url, text, icon="mail-attachment"):
+    """Посилання з телефона: сповіщення «Відкрити» (тап) / «Копіювати». Просто текст — одразу в буфер обміну."""
+    def run():
+        if not url:
+            copy_text(text)
+            try:
+                subprocess.run(["notify-send", "-a", "Mg Share", "-i", icon, f"Текст від {dev_name} — скопійовано",
+                                html.escape(text[:300])], timeout=10)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            return
+        title = text.replace(url, "").strip() if text else ""
+        body = f"{html.escape(title[:200])}\n{html.escape(url)}" if title else html.escape(url)
+        try:
+            r = subprocess.run(["notify-send", "-a", "Mg Share", "-i", icon, "-A", "default=Відкрити",
+                                "-A", "copy=Копіювати", f"Посилання від {dev_name}", body],
+                               capture_output=True, text=True, timeout=600).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            return
+        if r == "default":
+            subprocess.Popen(["xdg-open", url], start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif r == "copy":
+            copy_text(url)
+    threading.Thread(target=run, daemon=True).start()
+
+
 def notify_received(dev_name, path, icon="folder-download"):
     def run():
         try:
@@ -590,6 +638,18 @@ class Link:
                     if u.path == "/bye":
                         link.touch(a[0], self.client_address[0], None, gone=True)
                         return self.reply(200, {})
+                    if u.path == "/link":
+                        j = self.body_json()
+                        raw = str(j.get("url", "")).strip()
+                        url = raw if raw and find_url(raw) == raw else ""   # лише http(s): xdg-open не отримає file:// тощо
+                        text = str(j.get("text", ""))[:20000]
+                        if not url and not text.strip():
+                            return self.reply(400, {"error": "empty"})
+                        link.touch(a[0], self.client_address[0], None)
+                        av = avatar_path(a[0])
+                        notify_link(a[1].get("name", "телефону"), url, text,
+                                    av if a[1].get("avatar") and os.path.exists(av) else "mail-attachment")
+                        return self.reply(200, {"ok": True})
                     self.reply(404, {"error": "nf"})
                 except (ValueError, KeyError):
                     self.reply(400, {"error": "bad"})
@@ -746,6 +806,8 @@ class Link:
             j = json.loads(f.readline() or b"{}")
             if j.get("cmd") == "pair":
                 self.ctl_pair(say, gone)
+            elif j.get("cmd") == "link":
+                self.ctl_link(j.get("ids") or [], str(j.get("text", "")), say, gone)
             elif j.get("cmd") == "push":
                 self.ctl_push(j.get("id", ""), j.get("files", []), say, gone)
             elif j.get("cmd") == "ping":
@@ -844,6 +906,64 @@ class Link:
                         devs[did]["bg"] = False
                         save_devices(devs)
         say("DONE")
+
+    def post_link(self, d, url, text):
+        import http.client
+        body = json.dumps({"url": url, "text": text}).encode()
+        t = str(int(time.time()))
+        try:
+            conn = http.client.HTTPConnection(d["ip"], d.get("port", PHONE_PORT), timeout=6)
+            conn.request("POST", "/link", body, {
+                "Content-Type": "application/json", "X-Mg-From": self.me["id"], "X-Mg-Time": t,
+                "X-Mg-Sig": sign(d["key"], self.me["id"], t, "POST", "/link")})
+            r = conn.getresponse(); r.read(); conn.close()
+            return "ok" if r.status == 200 else "auth" if r.status == 403 else "fail"
+        except (OSError, http.client.HTTPException):
+            return "fail"
+
+    def ctl_link(self, ids, text, say, gone):
+        """Посилання/текст на телефон(и). Телефон слухає, лише коли відкрите вікно або фоновий прийом — чекаємо до 2 хв."""
+        text = text.strip()
+        if not text:
+            return say("ERROR", "empty")
+        url = find_url(text)
+        devs = load_devices()
+        if not ids:   # без ID: усі на зв'язку, а якщо таких нема — єдиний пристрій
+            ids = [i for i, d in devs.items() if is_online(d)] or (list(devs) if len(devs) == 1 else [])
+            if not ids:
+                return say("ERROR", "nodevice" if devs else "nodevices")
+        left = [i for i in ids if i in devs]
+        if not left:
+            return say("ERROR", "unknown")
+        tried, waiting, end = set(), False, time.time() + 120
+        while left:
+            for did in list(left):
+                d = load_devices().get(did)
+                if not d:
+                    left.remove(did); say("ERROR", "unknown", did); continue
+                # пряма спроба на останній IP (вікно могли відкрити, а «привіт» ще не дійшов), далі — лише коли на зв'язку
+                if d.get("ip") and (is_online(d) or did not in tried):
+                    tried.add(did)
+                    r = self.post_link(d, url, text)
+                    if r == "ok":
+                        self.touch(did, d["ip"], None); left.remove(did); say("DONE", did); continue
+                    if r == "auth":
+                        left.remove(did); say("ERROR", "auth", did); continue
+                    if is_online(d):   # телефон закрив вікно — чекаємо наступного «привіт»
+                        with self.cv:
+                            dd = load_devices()
+                            if did in dd:
+                                dd[did]["seen"] = 0; dd[did]["bg"] = False; save_devices(dd)
+            if not left:
+                break
+            if not waiting:
+                say("WAIT"); waiting = True
+            with self.cv:
+                self.cv.wait(1.0)
+            if gone():
+                return
+            if time.time() > end:
+                return say("ERROR", "timeout")
 
     def put_file(self, d, did, path, say, gone):
         import http.client
@@ -993,6 +1113,19 @@ def main():
         return ctl({"cmd": "pair"})
     if a[0] == "push" and len(a) >= 3:
         return ctl({"cmd": "push", "id": a[1], "files": [os.path.abspath(f) for f in a[2:]]})
+    if a[0] == "link":
+        devs = load_devices()
+        ids = [x for x in a[1:2] if x in devs]
+        rest = a[1 + len(ids):]
+        text = " ".join(rest)
+        if not text:
+            try:
+                text = subprocess.run(["wl-paste", "-n"], capture_output=True, text=True, timeout=5).stdout
+            except (OSError, subprocess.TimeoutExpired):
+                text = ""
+        if not text.strip():
+            print("нема що надсилати: дайте посилання або скопіюйте його", file=sys.stderr); return 1
+        return ctl({"cmd": "link", "ids": ids, "text": text})
     if a[0] == "devices":
         return devices_cmd()
     if a[0] == "forget" and len(a) == 2:
