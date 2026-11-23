@@ -3,6 +3,8 @@ package os.mg.share
 import android.content.Context
 import android.os.Build
 import org.json.JSONObject
+import java.io.File
+import java.security.MessageDigest
 import java.security.SecureRandom
 
 /** Свій пристрій (ПК), з яким один раз з'єднались через QR. */
@@ -17,19 +19,51 @@ data class Device(
     @Volatile var online = false
 }
 
-/** Ідентичність телефону й список своїх пристроїв (SharedPreferences, без мережі й фону). */
+/** Ідентичність телефону, профіль (ім'я + аватарка) і список своїх пристроїв. */
 class Store(ctx: Context) {
     private val sp = ctx.getSharedPreferences("mg", Context.MODE_PRIVATE)
 
     val myId: String = sp.getString("id", null) ?: hex(8).also { sp.edit().putString("id", it).apply() }
-    val myName: String get() = sp.getString("name", null) ?: (Build.MODEL ?: "Телефон")
+
+    /** Ім'я, яке бачать ПК. Порожнє → модель телефона. */
+    var myName: String
+        get() = sp.getString("name", null)?.takeIf { it.isNotBlank() } ?: (Build.MODEL ?: "Телефон")
+        set(v) { sp.edit().putString("name", v.trim().take(40)).commit() }
+
+    /** Аватарка профілю: квадратний PNG 256×256 у приватній теці застосунку. */
+    val avatarFile = File(ctx.filesDir, "avatar.png")
+
+    /** Короткий хеш аватарки ("" — немає): ПК порівнює його й просить файл лише коли змінився. */
+    var avatarSha: String
+        get() = sp.getString("avatar_sha", "") ?: ""
+        private set(v) { sp.edit().putString("avatar_sha", v).commit() }
+
+    fun setAvatar(png: ByteArray?) {
+        if (png == null) { avatarFile.delete(); avatarSha = ""; return }
+        avatarFile.writeBytes(png)
+        avatarSha = sha(png)
+    }
+
+    /** Ставити цю аватарку ще й як фото користувача на ПК (SDDM, ~/.face, налаштування mgOS). */
+    var pcAvatar: Boolean
+        get() = sp.getBoolean("pc_avatar", true)
+        set(v) { sp.edit().putBoolean("pc_avatar", v).commit() }
+
+    /** Фоновий прийом (плитка в шторці): телефон завжди чекає файли від ПК. */
+    var bgMode: Boolean
+        get() = sp.getBoolean("bg", false)
+        set(v) { sp.edit().putBoolean("bg", v).commit() }
 
     var tileOffered: Boolean
         get() = sp.getBoolean("tile_offered", false)
         set(v) { sp.edit().putBoolean("tile_offered", v).apply() }
 
+    var batteryAsked: Boolean
+        get() = sp.getBoolean("battery_asked", false)
+        set(v) { sp.edit().putBoolean("battery_asked", v).apply() }
+
     @Synchronized fun devices(): MutableList<Device> {
-        val o = JSONObject(sp.getString("devices", "{}") ?: "{}")
+        val o = stored()
         val out = mutableListOf<Device>()
         for (id in o.keys()) {
             val d = o.getJSONObject(id)
@@ -55,10 +89,8 @@ class Store(ctx: Context) {
     @Synchronized fun remove(id: String) { write(stored().apply { remove(id) }) }
 
     /**
-     * Лише оновити IP / порт / ім'я тих, хто ВЖЕ є у сховищі — нікого не додає й не видаляє.
-     * Раніше цикл присутності зберігав свій знімок списку цілком: якщо в цей час (≈1–5 с пошуку)
-     * з'єднувався новий ПК, знімок без нього перезаписував сховище — ПК зникав зі списку, а його
-     * файли телефон відкидав (403: невідомий пристрій).
+     * Лише оновити IP / порт / ім'я тих, хто ВЖЕ є у сховищі — нікого не додає й не видаляє
+     * (інакше паралельне з'єднання нового ПК губилось би: знімок без нього перезаписував сховище).
      */
     @Synchronized fun updateKnown(list: List<Device>) {
         val o = stored()
@@ -71,5 +103,8 @@ class Store(ctx: Context) {
             val b = ByteArray(n); SecureRandom().nextBytes(b)
             return b.joinToString("") { "%02x".format(it) }
         }
+
+        fun sha(b: ByteArray): String =
+            MessageDigest.getInstance("SHA-256").digest(b).joinToString("") { "%02x".format(it) }.take(16)
     }
 }

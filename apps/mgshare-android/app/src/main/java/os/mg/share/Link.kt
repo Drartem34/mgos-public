@@ -18,11 +18,14 @@ import javax.crypto.spec.SecretKeySpec
  * Протокол Mg Share (як у mgos-share на ПК):
  *  - пошук: UDP {"t":"hello","id":<мій id>} на :47811 (широкомовно) → ПК відповідає лише своїм {"t":"here",...}
  *  - запити підписані: X-Mg-From / X-Mg-Time / X-Mg-Sig = HMAC-SHA256(key, "from\ntime\nMETHOD\npath")
- *  - POST /hello {"port":47812} — «я відкритий, шли файли»; POST /bye — закрився; PUT /file?name= — файл
+ *  - POST /hello {"port","name","avatar","pc_avatar"} — «я відкритий» + профіль; ПК відповідає need_avatar, якщо
+ *    в нього інша аватарка → PUT /avatar?sha=&pc= (PNG). POST /bye — закрився; PUT /file?name= — файл
  */
 object Link {
     const val PC_PORT = 47811
     const val PHONE_PORT = 47812
+    /** Великі шматки: менше системних викликів і записів у FUSE (Завантаження) — помітно швидше на великих файлах. */
+    const val CHUNK = 1 shl 20
 
     fun sign(key: String, from: String, t: String, method: String, path: String): String {
         val mac = Mac.getInstance("HmacSHA256")
@@ -39,7 +42,8 @@ object Link {
         val t = now()
         c.requestMethod = method
         c.connectTimeout = timeout
-        c.readTimeout = 20000
+        c.readTimeout = 30000
+        c.useCaches = false
         c.setRequestProperty("X-Mg-From", st.myId)
         c.setRequestProperty("X-Mg-Time", t)
         c.setRequestProperty("X-Mg-Sig", sign(d.key, st.myId, t, method, path))
@@ -77,14 +81,37 @@ object Link {
         return found
     }
 
-    /** «Я відкритий» — після цього ПК може надсилати файли на PHONE_PORT. */
+    /**
+     * «Я відкритий» + мій профіль. Якщо ПК каже, що в нього стара аватарка, — одразу шлемо нову.
+     * Так аватарка доходить і до тих ПК, що були вимкнені в момент зміни.
+     */
     fun hello(st: Store, d: Device): Boolean = runCatching {
         val c = open(st, d, "POST", "/hello")
         c.doOutput = true
         c.setRequestProperty("Content-Type", "application/json")
-        c.outputStream.use { it.write(JSONObject().put("port", PHONE_PORT).toString().toByteArray()) }
+        val body = JSONObject().put("port", PHONE_PORT).put("name", st.myName)
+            .put("avatar", st.avatarSha).put("pc_avatar", st.pcAvatar).put("bg", st.bgMode)
+        c.outputStream.use { it.write(body.toString().toByteArray()) }
         val ok = c.responseCode == 200
-        if (ok) JSONObject(c.inputStream.bufferedReader().readText()).optString("name").takeIf { it.isNotEmpty() }?.let { d.name = it }
+        var needAvatar = false
+        if (ok) {
+            val j = JSONObject(c.inputStream.bufferedReader().readText())
+            j.optString("name").takeIf { it.isNotEmpty() }?.let { d.name = it }
+            needAvatar = j.optBoolean("need_avatar", false)
+        }
+        c.disconnect()
+        if (ok && needAvatar) pushAvatar(st, d)
+        ok
+    }.getOrDefault(false)
+
+    fun pushAvatar(st: Store, d: Device): Boolean = runCatching {
+        val png = if (st.avatarSha.isNotEmpty() && st.avatarFile.exists()) st.avatarFile.readBytes() else ByteArray(0)
+        val c = open(st, d, "PUT", "/avatar?sha=${st.avatarSha}&pc=${if (st.pcAvatar) 1 else 0}", 4000)
+        c.doOutput = true
+        c.setFixedLengthStreamingMode(png.size)
+        c.setRequestProperty("Content-Type", "image/png")
+        c.outputStream.use { it.write(png) }
+        val ok = c.responseCode == 200
         c.disconnect()
         ok
     }.getOrDefault(false)
@@ -93,25 +120,23 @@ object Link {
         runCatching { val c = open(st, d, "POST", "/bye", 1500); c.doOutput = true; c.outputStream.close(); c.responseCode; c.disconnect() }
     }
 
-    /** Надсилає файл на ПК. progress(0..100). */
-    fun upload(st: Store, d: Device, name: String, size: Long, input: InputStream, progress: (Int) -> Unit): Boolean {
+    /** Надсилає файл на ПК. progress(байти надіслано). */
+    fun upload(st: Store, d: Device, name: String, size: Long, input: InputStream, progress: (Long) -> Unit): Boolean {
         val path = "/file?name=" + URLEncoder.encode(name, "UTF-8").replace("+", "%20")
         val c = open(st, d, "PUT", path, 6000)
         c.doOutput = true
         c.setFixedLengthStreamingMode(size)
         c.setRequestProperty("Content-Type", "application/octet-stream")
         var sent = 0L
-        var last = -1
         c.outputStream.use { out ->
             input.use { inp ->
-                val buf = ByteArray(1 shl 16)
+                val buf = ByteArray(CHUNK)
                 while (true) {
                     val n = inp.read(buf)
                     if (n < 0) break
                     out.write(buf, 0, n)
                     sent += n
-                    val pct = if (size > 0) (sent * 100 / size).toInt() else 100
-                    if (pct != last) { last = pct; progress(pct) }
+                    progress(sent)
                 }
             }
         }

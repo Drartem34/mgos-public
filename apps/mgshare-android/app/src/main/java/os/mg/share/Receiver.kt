@@ -6,6 +6,7 @@ import android.net.Uri
 import android.provider.MediaStore
 import android.webkit.MimeTypeMap
 import java.io.BufferedInputStream
+import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
@@ -15,7 +16,7 @@ import java.net.URLDecoder
 import kotlin.concurrent.thread
 
 /**
- * Мінімальний HTTP-сервер на :47812 — працює ЛИШЕ поки вікно Mg Share відкрите (start у onStart, stop у onStop).
+ * Мінімальний HTTP-сервер на :47812 — працює, поки відкрите вікно Mg Share або увімкнено фоновий прийом (Hub).
  * Приймає тільки підписані PUT /file від своїх пристроїв і кладе файл у Завантаження/Mg Share.
  */
 class Receiver(
@@ -24,8 +25,8 @@ class Receiver(
     private val onEvent: (Event) -> Unit,
 ) {
     sealed class Event {
-        data class Start(val from: String, val name: String) : Event()
-        data class Progress(val name: String, val pct: Int) : Event()
+        data class Start(val from: String, val name: String, val size: Long) : Event()
+        data class Progress(val name: String, val got: Long, val size: Long) : Event()
         data class Done(val from: String, val name: String, val uri: Uri, val mime: String) : Event()
         data class Failed(val name: String) : Event()
     }
@@ -35,7 +36,8 @@ class Receiver(
     fun start() {
         if (server != null) return
         val ss = try {
-            ServerSocket().apply { reuseAddress = true; bind(InetSocketAddress(Link.PHONE_PORT)) }
+            // великий буфер прийому задаємо ДО bind — тоді TCP-вікно росте одразу, а не за кілька секунд
+            ServerSocket().apply { reuseAddress = true; receiveBufferSize = 4 shl 20; bind(InetSocketAddress(Link.PHONE_PORT)) }
         } catch (_: Exception) { return }
         server = ss
         thread(name = "mg-recv", isDaemon = true) {
@@ -71,7 +73,7 @@ class Receiver(
 
     private fun handle(s: Socket) {
         s.soTimeout = 20000
-        val inp = BufferedInputStream(s.getInputStream(), 1 shl 16)
+        val inp = BufferedInputStream(s.getInputStream(), 1 shl 18)
         val out = s.getOutputStream()
         val req = readLine(inp) ?: return
         val parts = req.split(" ")
@@ -107,22 +109,27 @@ class Receiver(
             put(MediaStore.Downloads.RELATIVE_PATH, "Download/Mg Share")
             put(MediaStore.Downloads.IS_PENDING, 1)
         }) ?: return respond(out, 500, """{"error":"disk"}""")
-        onEvent(Event.Start(dev.name, name))
+        onEvent(Event.Start(dev.name, name, size))
         var got = 0L
-        var last = -1
+        var lastAt = 0L
+        Hub.transferBegin()
         try {
-            cr.openOutputStream(uri)!!.use { o ->
-                val buf = ByteArray(1 shl 16)
-                while (got < size) {
-                    val n = inp.read(buf, 0, minOf(buf.size.toLong(), size - got).toInt())
-                    if (n < 0) break
-                    o.write(buf, 0, n)
-                    got += n
-                    val pct = if (size > 0) (got * 100 / size).toInt() else 100
-                    if (pct != last) { last = pct; onEvent(Event.Progress(name, pct)) }
+            // пишемо напряму у файловий дескриптор великими шматками: FUSE «Завантажень» любить великі записи
+            cr.openFileDescriptor(uri, "w")!!.use { pfd ->
+                FileOutputStream(pfd.fileDescriptor).use { o ->
+                    val buf = ByteArray(Link.CHUNK)
+                    while (got < size) {
+                        val n = inp.read(buf, 0, minOf(buf.size.toLong(), size - got).toInt())
+                        if (n < 0) break
+                        o.write(buf, 0, n)
+                        got += n
+                        val t = System.currentTimeMillis()
+                        if (t - lastAt > 120 || got == size) { lastAt = t; onEvent(Event.Progress(name, got, size)) }
+                    }
                 }
             }
-        } catch (_: Exception) { }
+        } catch (_: Exception) {
+        } finally { Hub.transferEnd() }
         if (got != size) {
             runCatching { cr.delete(uri, null, null) }
             onEvent(Event.Failed(name))

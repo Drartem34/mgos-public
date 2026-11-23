@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QHBoxLayout, QVBoxLayout, QG
                              QGraphicsOpacityEffect, QFileDialog, QDialog, QRubberBand,
                              QSlider, QScrollArea, QListView, QSizePolicy, QMenu,
                              QStyledItemDelegate, QStyle)
-from PyQt6.QtCore import (Qt, QEvent,QPropertyAnimation, QVariantAnimation, QEasingCurve, QRect, QRectF, QPoint, QPointF,
+from PyQt6.QtCore import (Qt, QEvent, QProcess,QPropertyAnimation, QVariantAnimation, QEasingCurve, QRect, QRectF, QPoint, QPointF,
                           QSize, QTimer, QAbstractListModel, QModelIndex, QRunnable, QThreadPool, pyqtSignal, QObject, QUrl)
 from PyQt6.QtGui import (QPainter, QColor, QBrush, QCursor, QIcon, QPixmap, QImage, QFont, QFontDatabase,
                          QPainterPath, QPen, QLinearGradient, QRadialGradient, QFontMetrics, QFontMetricsF, QPolygonF)
@@ -598,7 +598,7 @@ TP_DEFAULTS = {
     "tp_drag_lock": False, "tp_dwt": False, "tp_middle": False, "tp_natural": False, "tp_scroll": 80,
     "tp_swipe_invert": False, "tp_swipe_dist": 300, "tp_swipe_new": True, "tp_swipe_forever": True,
     # Три пальці вниз: minimize — вікно в док з анімацією, що йде за пальцями (SYSui/dock_genie.h) | runner | off
-    "tp_swipe_down": "minimize", "tp_min_dist": 300, "genie_squash": True, "genie_grow": True, "launch_splash": True, "genie_speed": 100, "genie_anim": True, "tp_swipe_up": "fullscreen", "tp_tap3": "runner", "dock_stash_cards": True,
+    "tp_swipe_down": "minimize", "tp_min_dist": 300, "genie_squash": True, "genie_grow": True, "launch_splash": True, "genie_speed": 100, "genie_anim": True, "tp_swipe_up": "fullscreen", "tp_tap3": "middle", "dock_stash_cards": True,
     "kb_delay": 250, "kb_rate": 35,
     # Миша (усі звичайні миші): значення = старий input-блок hyprland.conf (flat, 0.3)
     "ms_speed": 65, "ms_accel": "flat", "ms_natural": False, "ms_scroll": 100, "ms_left": False,
@@ -3566,9 +3566,94 @@ class ImageCropperDialog(QDialog):
 # ==========================================
 
 # (індекс сторінки, назва для --page, заголовок, гліф, колір іконки, група сайдбару)
+MGSHARE = str(Path.home() / ".local/bin/mgos-share")
+
+
+def mgshare_devices():
+    """[(id, ім'я, тип, онлайн, шлях аватарки)] зі служби Mg Share."""
+    try:
+        out = subprocess.run([MGSHARE, "devices"], capture_output=True, text=True, timeout=3).stdout
+    except Exception:
+        return []
+    avd = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "mgos" / "share" / "avatars"
+    res = []
+    for ln in out.splitlines():
+        f = ln.split("\t")
+        if len(f) >= 4 and f[0]:
+            av = avd / f"{f[0]}.png"
+            res.append((f[0], f[1], f[2], f[3] == "1", str(av) if av.exists() else ""))
+    return res
+
+
+def mgshare_downloads():
+    try:
+        d = subprocess.run(["xdg-user-dir", "DOWNLOAD"], capture_output=True, text=True, timeout=2).stdout.strip()
+    except Exception:
+        d = ""
+    return d if d and d != str(Path.home()) else str(Path.home() / "Downloads")
+
+
+def round_pixmap(path, size):
+    src = QPixmap(path)
+    if src.isNull():
+        return None
+    src = src.scaled(size * 2, size * 2, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+    pm = QPixmap(size * 2, size * 2); pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm); p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    path_ = QPainterPath(); path_.addEllipse(QRectF(0, 0, size * 2, size * 2)); p.setClipPath(path_)
+    p.drawPixmap(0, 0, src); p.end()
+    pm.setDevicePixelRatio(2)
+    return pm
+
+
+class MgSharePairDialog(QDialog):
+    """QR для з'єднання нового телефона: `mgos-share pair` → URL|QR| … PAIRED|id|name / EXPIRED."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Додати пристрій — Mg Share")
+        self.paired = False
+        lay = QVBoxLayout(self); lay.setContentsMargins(24, 20, 24, 18); lay.setSpacing(12)
+        t = QLabel("Відкрийте Mg Share на телефоні → «Додати пристрій» і наведіть камеру на код.\n"
+                   "Немає застосунку? Відскануйте код звичайною камерою — там буде посилання на .apk.")
+        t.setWordWrap(True); t.setProperty("role", "desc")
+        lay.addWidget(t)
+        self.qr = QLabel("Готую код…"); self.qr.setAlignment(Qt.AlignmentFlag.AlignCenter); self.qr.setMinimumSize(260, 260)
+        lay.addWidget(self.qr)
+        self.status = QLabel(""); self.status.setAlignment(Qt.AlignmentFlag.AlignCenter); self.status.setWordWrap(True)
+        lay.addWidget(self.status)
+        row = QHBoxLayout(); row.addStretch(); row.addWidget(LinkButton("Скасувати", self.reject)); lay.addLayout(row)
+        self.proc = QProcess(self)
+        self.proc.readyReadStandardOutput.connect(self._read)
+        self.proc.finished.connect(lambda *_: None if self.paired else self.status.setText(self.status.text() or "Службу не вдалося запустити"))
+        self.proc.start(MGSHARE, ["pair"])
+
+    def _read(self):
+        for ln in bytes(self.proc.readAllStandardOutput()).decode(errors="ignore").splitlines():
+            k, _, v = ln.partition("|")
+            if k == "QR":
+                pm = QPixmap(v)
+                if not pm.isNull():
+                    self.qr.setPixmap(pm.scaled(260, 260, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation))
+                self.status.setText("Чекаю на телефон… (код дійсний 5 хв)")
+            elif k == "PAIRED":
+                self.paired = True
+                self.status.setText(f"З'єднано: {v.partition('|')[2]}")
+                QTimer.singleShot(900, self.accept)
+            elif k == "EXPIRED":
+                self.status.setText("Код застарів — відкрийте «Додати» ще раз")
+            elif k == "ERROR":
+                self.status.setText({"nonet": "Немає мережі — під'єднайтесь до Wi-Fi"}.get(v, f"Помилка: {v}"))
+
+    def done(self, r):
+        if self.proc.state() != QProcess.ProcessState.NotRunning:
+            self.proc.terminate(); self.proc.waitForFinished(800)
+        super().done(r)
+
+
 PAGES = [
     ("wifi", "Wi-Fi", G["wifi"], "#0a84ff", 0),
     ("bluetooth", "Bluetooth", G["bt"], "#0a84ff", 0),
+    ("mgshare", "Mg Share", "\U000F011C", "#30d158", 0),
     ("appearance", "Вигляд", G["palette"], "#5e5ce6", 1),
     ("wallpapers", "Шпалери", G["image"], "#32ade6", 1),
     ("pixelwp", "Піксельні шпалери", "\U000F0D74", "#bf5af2", 1),
@@ -4061,7 +4146,7 @@ class MeguminSettings(QWidget):
                         power=self.create_power_page, system=self.create_system_page,
                         sounds=self.create_sounds_page, login=self.create_login_page, about=self.create_about_page, games=self.create_games_page, help=self.create_help_page, osd=self.create_osd_page,
                         developer=self.create_developer_page, profile=self.create_profile_page,
-                        dashboard=self.create_dashboard_page)
+                        dashboard=self.create_dashboard_page, mgshare=self.create_mgshare_page)
         for i, (pid, *_r) in enumerate(PAGES):
             self._building = i
             self.page_words[i] = [PAGES[i][1].lower()]
@@ -4315,6 +4400,52 @@ class MeguminSettings(QWidget):
             SettingRow("", "", "Пристрої", "Пошук і підключення (bluetuith)", on_click=lambda: self.launch_app("kitty -e bluetuith")),
             SettingRow("", "", "Менеджер Blueman", "Розширені налаштування та передача файлів", on_click=lambda: self.launch_app("blueman-manager")),
         ]))
+        return page
+
+    # --- Mg Share: свої телефони ---
+    def create_mgshare_page(self):
+        page, lay = self.page_base("mgshare")
+        self.hero(lay, "mgshare", "Обмін файлами з телефоном через Wi-Fi: список з'єднаних пристроїв, додати новий або забути старий.")
+        devs = mgshare_devices()
+        self._mgshare_sig = repr(devs)
+        self.section(lay, "Мої пристрої")
+        rows = []
+        for did, name, kind, online, av in devs:
+            ctl = QWidget(); cl = QHBoxLayout(ctl); cl.setContentsMargins(0, 0, 0, 0); cl.setSpacing(10)
+            if av and (pm := round_pixmap(av, 28)) is not None:
+                al = QLabel(); al.setPixmap(pm); cl.addWidget(al)
+            btn = LinkButton("Забути", lambda: None)
+            def forget(b=btn, i=did, n=name):
+                if b.text() != "Точно забути?":   # друге натискання підтверджує
+                    b.setText("Точно забути?"); b.setFixedWidth(QFontMetrics(b._f).horizontalAdvance(b.text()) + 26); b.update()
+                    return
+                subprocess.run([MGSHARE, "forget", i], timeout=3)
+                self.rebuild_page("mgshare")
+            btn.clicked.connect(lambda *_, f=forget: f())
+            cl.addWidget(btn)
+            what = "Ноутбук" if kind == "laptop" else "Телефон"
+            rows.append(SettingRow("", "", name, f"{what} · {'● на зв\'язку' if online else 'не видно (застосунок закритий або інша мережа)'}", ctl))
+        if not rows:
+            rows.append(SettingRow("", "", "Ще немає пристроїв", "Натисніть «Додати пристрій» і відскануйте код телефоном"))
+        lay.addWidget(self.create_card(rows))
+
+        def add():
+            if MgSharePairDialog(self).exec():
+                self.rebuild_page("mgshare")
+        lay.addWidget(self.create_card([
+            SettingRow("", "", "Додати пристрій", "QR-код для з'єднання з телефоном (застосунок Mg Share)", LinkButton("Додати…", add), on_click=add),
+            SettingRow("", "", "Отримані файли", f"Файли з телефона падають у {mgshare_downloads().replace(str(Path.home()), '~')}",
+                       LinkButton("Відкрити", lambda: subprocess.Popen(["xdg-open", mgshare_downloads()])),
+                       on_click=lambda: subprocess.Popen(["xdg-open", mgshare_downloads()])),
+        ]))
+        # статус «на зв'язку» оновлюється сам, поки сторінка відкрита
+        if not getattr(self, "_mgshare_timer", None):
+            self._mgshare_timer = QTimer(self); self._mgshare_timer.setInterval(5000)
+            def tick():
+                ids = [p[0] for p in PAGES]
+                if self.pages.currentIndex() == ids.index("mgshare") and repr(mgshare_devices()) != self._mgshare_sig:
+                    self.rebuild_page("mgshare")
+            self._mgshare_timer.timeout.connect(tick); self._mgshare_timer.start()
         return page
 
     # --- Вигляд ---
@@ -4704,12 +4835,23 @@ class MeguminSettings(QWidget):
 
     # --- Клавіатура ---
     def create_keyboard_page(self):
-        page, lay = self.page_base("keyboard")
+        page, outer = self.page_base("keyboard")
         try:
             lays = json.loads(subprocess.run(["hyprctl", "getoption", "input:kb_layout", "-j"], capture_output=True, text=True, timeout=1).stdout).get("str", "")
         except Exception:
             lays = ""
-        self.hero(lay, "keyboard", f"Розкладки: {lays.upper().replace(',', ' · ')}" if lays else "Повтор клавіш і розкладки.")
+        self.hero(outer, "keyboard", f"Розкладки: {lays.upper().replace(',', ' · ')}" if lays else "Повтор клавіш і розкладки.")
+        # вкладки: «Клавіатура» (схема, повтор, підсвітка) і «Бінди» (гарячі клавіші системи і програм)
+        self.kb_stack = QStackedWidget()
+        tabs = SegmentedSelector("kb_tab", [("kb", "Клавіатура"), ("binds", "Бінди")], "kb",
+                                 lambda k, v: self.kb_tab_switch(0 if v == "kb" else 1), seg_width=140)
+        th = QHBoxLayout(); th.addStretch(); th.addWidget(tabs); th.addStretch()
+        outer.addLayout(th)
+        kbw = QWidget(); lay = QVBoxLayout(kbw); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(10)
+        bw = QWidget(); blay = QVBoxLayout(bw); blay.setContentsMargins(0, 0, 0, 0); blay.setSpacing(10)
+        self.kb_stack.addWidget(kbw); self.kb_stack.addWidget(bw)
+        outer.addWidget(self.kb_stack)
+        bw.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Ignored)
         self.kbd_section(lay)
         lay.addWidget(self.create_card([
             SettingRow("", "", "Швидкість повтору", "Скільки символів за секунду, коли клавішу затиснуто",
@@ -4734,7 +4876,141 @@ class MeguminSettings(QWidget):
         ]))
         t = QLineEdit(); t.setPlaceholderText("Перевірте повтор клавіш тут…")
         lay.addWidget(t)
+        lay.addStretch()
+        self.binds_section(blay)
+        blay.addStretch()
         return page
+
+    def kb_tab_switch(self, idx):
+        # прихована вкладка не задає висоту (інакше «Клавіатура» мала б порожнечу на висоту довгого списку біндів)
+        for i in range(self.kb_stack.count()):
+            self.kb_stack.widget(i).setSizePolicy(QSizePolicy.Policy.Preferred,
+                                                  QSizePolicy.Policy.Preferred if i == idx else QSizePolicy.Policy.Ignored)
+        self.kb_stack.setCurrentIndex(idx)
+        self.kb_stack.adjustSize()
+
+    # --- Бінди (binds_page.py): системні гарячі клавіші й бінди програм ---
+    def binds_section(self, lay):
+        try:
+            import binds_page as bp
+        except Exception as e:
+            print("binds_page:", e); return
+        self.bp = bp
+        self.binds_data = bp.load()
+        sysb = bp.system_binds()
+        self.binds_status = QLabel(""); self.binds_status.setProperty("role", "desc"); self.binds_status.setWordWrap(True)
+
+        def status(msg):
+            self.binds_status.setText(msg)
+
+        def commit(msg=""):
+            bp.save(self.binds_data)
+            status(msg or "Збережено — Hyprland перечитав бінди")
+
+        def conflict(combo, mine):
+            if not combo: return ""
+            used = bp.effective(self.binds_data, sysb)
+            who = used.get(bp.norm(combo))
+            return who if who and who != mine else ""
+
+        # ── програми ──
+        self.section(lay, "Бінди програм")
+        hint = QLabel("Свої гарячі клавіші для програм і команд. Натисніть на клавішу праворуч і затисніть комбінацію — "
+                      "працюють і Fn-клавіші виробника. Backspace — прибрати, Esc — скасувати.")
+        hint.setWordWrap(True); hint.setProperty("role", "desc")
+        lay.addWidget(hint)
+        self.apps_holder = QVBoxLayout(); self.apps_holder.setContentsMargins(0, 0, 0, 0)
+        lay.addLayout(self.apps_holder)
+
+        def build_apps():
+            while self.apps_holder.count():
+                w = self.apps_holder.takeAt(0).widget()
+                if w: w.deleteLater()
+            rows = []
+            presets = {p["id"]: p for p in bp.PRESETS}
+            for a in self.binds_data["apps"]:
+                kc = bp.KeyCapture(a.get("keys", ""), T, ACCENT[0], FONT_UI)
+                def on_cap(combo, a=a, kc=kc):
+                    who = conflict(combo, a["name"])
+                    if who:
+                        status(f"{bp.pretty(combo)} уже зайнято: «{who}». Спершу змініть або вимкніть той бінд."); return
+                    a["keys"] = combo; kc.set_combo(combo)
+                    commit(f"«{a['name']}»: {bp.pretty(combo)}" if combo else f"«{a['name']}»: клавішу прибрано")
+                kc.captured.connect(on_cap)
+                def rm(a=a):
+                    self.binds_data["apps"].remove(a)
+                    if a.get("id") in presets:
+                        self.binds_data.setdefault("removed_presets", []).append(a["id"])
+                    commit(f"«{a['name']}» видалено"); build_apps()
+                box = QWidget(); bh = QHBoxLayout(box); bh.setContentsMargins(0, 0, 0, 0); bh.setSpacing(6)
+                bh.addWidget(kc); bh.addWidget(LinkButton("✕", rm))
+                desc = presets[a["id"]]["desc"] if a.get("id") in presets else a["cmd"]
+                rows.append(SettingRow("", "", a["name"], desc, box))
+            if rows:
+                self.apps_holder.addWidget(GroupCard(rows))
+        build_apps()
+
+        # додати свою
+        name = QLineEdit(); name.setPlaceholderText("Назва (напр. Telegram)")
+        cmd = QLineEdit(); cmd.setPlaceholderText("Команда (напр. telegram-desktop)")
+        def add():
+            n, c = name.text().strip(), cmd.text().strip()
+            if not n or not c:
+                status("Вкажіть назву і команду"); return
+            self.binds_data["apps"].append({"id": "", "name": n, "keys": "", "cmd": c})
+            name.clear(); cmd.clear()
+            commit(f"«{n}» додано — тепер призначте клавішу"); build_apps()
+        def restore():
+            self.binds_data.pop("removed_presets", None)
+            have = {a.get("id") for a in self.binds_data["apps"]}
+            for p in bp.PRESETS:
+                if p["id"] not in have:
+                    self.binds_data["apps"].append({"id": p["id"], "name": p["name"], "keys": "", "cmd": p["cmd"]})
+            commit("Готові бінди повернуто"); build_apps()
+        addw = QWidget(); ah = QHBoxLayout(addw); ah.setContentsMargins(0, 0, 0, 0); ah.setSpacing(8)
+        ah.addWidget(name, 2); ah.addWidget(cmd, 3); ah.addWidget(LinkButton("Додати", add))
+        lay.addWidget(addw)
+        rb = QHBoxLayout(); rb.addWidget(LinkButton("Повернути готові (OBS)", restore)); rb.addStretch()
+        lay.addLayout(rb)
+        lay.addWidget(self.binds_status)
+
+        # ── системні ──
+        groups = {}
+        for b in sysb: groups.setdefault(b["group"], []).append(b)
+        fixed = {}
+        for g, k, t in bp.FIXED: fixed.setdefault(g, []).append((k, t))
+        ov = self.binds_data["overrides"]
+        for g in bp.GROUP_ORDER:
+            if g not in groups and g not in fixed: continue
+            self.section(lay, "Системні · " + g)
+            rows = []
+            for b in groups.get(g, []):
+                cur = ov.get(b["keys"], b["keys"])
+                kc = bp.KeyCapture(cur, T, ACCENT[0], FONT_UI, overridden=b["keys"] in ov)
+                box = QWidget(); bh = QHBoxLayout(box); bh.setContentsMargins(0, 0, 0, 0); bh.setSpacing(6)
+                reset = LinkButton("↺", lambda: None); reset.setToolTip("Як було: " + bp.pretty(b["keys"]))
+                reset.setVisible(b["keys"] in ov)
+                def on_cap(combo, b=b, kc=kc, reset=reset):
+                    if bp.norm(combo) == bp.norm(b["keys"]):
+                        ov.pop(b["keys"], None)
+                    else:
+                        who = conflict(combo, b["title"])
+                        if who:
+                            status(f"{bp.pretty(combo)} уже зайнято: «{who}»"); return
+                        ov[b["keys"]] = combo
+                    kc.set_combo(ov.get(b["keys"], b["keys"]), b["keys"] in ov); reset.setVisible(b["keys"] in ov)
+                    commit(f"«{b['title']}»: " + (bp.pretty(combo) if combo else "вимкнено"))
+                def on_reset(b=b, kc=kc, reset=reset):
+                    ov.pop(b["keys"], None); kc.set_combo(b["keys"]); reset.setVisible(False)
+                    commit(f"«{b['title']}»: як було — {bp.pretty(b['keys'])}")
+                kc.captured.connect(on_cap)
+                reset.clicked.disconnect(); reset.clicked.connect(lambda *_, f=on_reset: f())
+                bh.addWidget(reset); bh.addWidget(kc)
+                rows.append(SettingRow("", "", b["title"], b["note"], box))
+            for k, t in fixed.get(g, []):
+                l = QLabel(k); l.setProperty("role", "value")
+                rows.append(SettingRow("", "", t, "", l))
+            lay.addWidget(self.create_card(rows))
 
     # --- Звичайна клавіатура: схема + розпізнавання (kbd_preview.py) ---
     def kbd_section(self, lay):
@@ -6096,6 +6372,7 @@ class MeguminSettings(QWidget):
 
         # Генеруємо кольори та рестартимо Waybar
         subprocess.run(f"wal -q -t -i '{wal_target}'", shell=True)
+        subprocess.run(["hyprctl", "eval", "mgos_apply_wal()"], capture_output=True)   # рамки вікон наживо
         subprocess.run("killall -SIGUSR2 waybar", shell=True)
         subprocess.run(f"{Path.home()}/.local/bin/mgos-wp-poster", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # постер для входу/SDDM
         subprocess.Popen(f"sudo -n {Path.home()}/.config/megumin-os/sync_sddm.sh", shell=True)
