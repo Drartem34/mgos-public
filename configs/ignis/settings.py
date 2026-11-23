@@ -2616,6 +2616,276 @@ class OsdPreview(QWidget):
         p.drawText(QRectF(0, scr.bottom() + 6, W, H - scr.bottom() - 6), Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, txt)
 
 
+class MgShareGuide(QWidget):
+    """Анімована інструкція Mg Share: ноутбук ліворуч, телефон праворуч, сцена — за вибраним кроком."""
+    MODES = {
+        "pair": "Спершу один раз: Налаштування → «Додати пристрій» → у застосунку Mg Share наведіть камеру на код",
+        "phone": "Телефон → ПК: на телефоні «Поділитися» → Mg Share → файл падає в «Отримані файли» на ПК",
+        "pc": "Файл → на телефон: перетягніть файл на ГОДИННИК угорі екрана, відпустіть, у блоці «Надіслати» натисніть свій телефон",
+        "link": "Посилання з телефона відкривається у браузері ПК (з ПК: mgos-share link)",
+    }
+    ORDER = ["pc", "phone", "link", "pair"]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.mode, self.t0 = "pc", time.monotonic()
+        self.on_mode = None
+        self.setFixedHeight(262)
+        self.timer = QTimer(self, interval=16)
+        self.timer.timeout.connect(self.update)
+
+    def showEvent(self, e): self.timer.start(); super().showEvent(e)
+    def hideEvent(self, e): self.timer.stop(); super().hideEvent(e)
+
+    def set_mode(self, m):
+        if m in self.MODES and m != self.mode:
+            self.mode, self.t0 = m, time.monotonic()
+            if self.on_mode: self.on_mode(m)
+
+    @staticmethod
+    def _ease(q):
+        q = min(1.0, max(0.0, q))
+        return q * q * (3 - 2 * q)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        t = time.monotonic() - self.t0
+        W = self.width()
+        a = accent()
+        green = QColor("#30d158")
+        dark = T is not LIGHT
+        ink = QColor(T["text"])
+        E = self._ease
+        # --- ноутбук ---
+        lw, lh = 330, 186
+        gap = max(40.0, min(110.0, W - lw - 84 - 40))
+        lx = (W - lw - gap - 84) / 2 + 6
+        scr = QRectF(lx, 18, lw, lh)
+        p.setPen(QPen(tint(ink, 60), 1.4)); p.setBrush(QColor(28, 28, 32) if dark else QColor(60, 60, 66))
+        p.drawRoundedRect(scr.adjusted(-6, -6, 6, 6), 10, 10)
+        g = QLinearGradient(scr.topLeft(), scr.bottomRight())
+        g.setColorAt(0, tint(a, 90)); g.setColorAt(1, QColor(20, 22, 30) if dark else QColor(200, 205, 220))
+        p.setPen(Qt.PenStyle.NoPen); p.setBrush(QBrush(g)); p.drawRoundedRect(scr, 4, 4)
+        base = QPolygonF([QPointF(scr.left() - 22, scr.bottom() + 8), QPointF(scr.right() + 22, scr.bottom() + 8),
+                          QPointF(scr.right() + 10, scr.bottom() + 16), QPointF(scr.left() - 10, scr.bottom() + 16)])
+        p.setBrush(tint(ink, 110)); p.drawPolygon(base)
+        # топбар ноутбука з «годинником»
+        bar = QRectF(scr.left(), scr.top(), lw, 16)
+        p.setBrush(QColor(0, 0, 0, 120)); p.drawRect(bar)
+        clock = QRectF(scr.center().x() - 22, scr.top() + 2, 44, 12)
+        p.setBrush(QColor(255, 255, 255, 40)); p.drawRoundedRect(clock, 6, 6)
+        f = QFont(FONT_UI); f.setPixelSize(9); f.setWeight(QFont.Weight.Bold); p.setFont(f); p.setPen(QColor(255, 255, 255))
+        p.drawText(clock, Qt.AlignmentFlag.AlignCenter, time.strftime("%H:%M"))
+        # --- телефон ---
+        pw_, ph_ = 84, 160
+        px = lx + lw + gap
+        phone = QRectF(px, 18 + (lh + 16 - ph_) / 2, pw_, ph_)
+        p.setPen(QPen(tint(ink, 70), 1.4)); p.setBrush(QColor(28, 28, 32) if dark else QColor(60, 60, 66))
+        p.drawRoundedRect(phone.adjusted(-4, -4, 4, 4), 14, 14)
+        ps = phone.adjusted(1, 1, -1, -1)
+        p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor(16, 17, 22) if dark else QColor(236, 238, 244))
+        p.drawRoundedRect(ps, 11, 11)
+        p.setBrush(QColor(0, 0, 0, 200)); p.drawRoundedRect(QRectF(ps.center().x() - 9, ps.top() + 4, 18, 5), 2.5, 2.5)
+
+        def file_icon(c, s=1.0, col=None, al=255):
+            col = QColor(col or a); col.setAlpha(al)
+            w, h = 16 * s, 20 * s
+            r = QRectF(c.x() - w / 2, c.y() - h / 2, w, h)
+            poly = QPolygonF([r.topLeft(), QPointF(r.right() - 5 * s, r.top()), QPointF(r.right(), r.top() + 5 * s),
+                              r.bottomRight(), r.bottomLeft()])
+            p.setPen(QPen(QColor(255, 255, 255, al), 1.2)); p.setBrush(col); p.drawPolygon(poly)
+
+        def fly(A, B, k):
+            ek = E(k)
+            return QPointF(A.x() + (B.x() - A.x()) * ek, A.y() + (B.y() - A.y()) * ek - 34 * math.sin(math.pi * ek))
+
+        def toast(r, text, al, col=None):
+            if al <= 0: return
+            p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(QColor(30, 32, 40), int(225 * al)))
+            p.drawRoundedRect(r, 6, 6)
+            p.setBrush(tint(col or green, int(255 * al))); p.drawEllipse(QPointF(r.left() + 9, r.center().y()), 4, 4)
+            f = QFont(FONT_UI); f.setPixelSize(9); p.setFont(f); p.setPen(QColor(255, 255, 255, int(235 * al)))
+            p.drawText(r.adjusted(17, 0, -3, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
+
+        def check(c, r, al):
+            if al <= 0: return
+            p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(green, int(255 * al))); p.drawEllipse(c, r, r)
+            p.setPen(QPen(QColor(255, 255, 255, int(255 * al)), 2.2, cap=Qt.PenCapStyle.RoundCap))
+            p.drawPolyline(QPolygonF([QPointF(c.x() - r * .45, c.y()), QPointF(c.x() - r * .1, c.y() + r * .38),
+                                      QPointF(c.x() + r * .5, c.y() - r * .35)]))
+
+        m = self.mode
+        if m == "pair":
+            k = (t % 4.0) / 4.0
+            # QR у вікні налаштувань
+            win = QRectF(scr.center().x() - 46, scr.top() + 20, 92, 102)
+            p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor(250, 250, 252)); p.drawRoundedRect(win, 6, 6)
+            q0 = QPointF(win.center().x() - 36, win.top() + 8); cell = 72 / 12
+            p.setBrush(QColor(20, 20, 24))
+            for i in range(12):
+                for j in range(12):
+                    fin = (i < 3 and j < 3) or (i < 3 and j > 8) or (i > 8 and j < 3)
+                    if fin or ((i * 7 + j * 13 + i * j) % 5 < 2):
+                        p.drawRect(QRectF(q0.x() + j * cell, q0.y() + i * cell, cell, cell))
+            f = QFont(FONT_UI); f.setPixelSize(8); p.setFont(f); p.setPen(QColor(60, 60, 70))
+            p.drawText(QRectF(win.left(), win.bottom() - 18, win.width(), 14), Qt.AlignmentFlag.AlignCenter, "Додати пристрій")
+            # камера телефона
+            vf = ps.adjusted(8, 22, -8, -30)
+            p.setPen(QPen(QColor(255, 255, 255, 200) if dark else tint(ink, 160), 2))
+            for cx_, cy_, dx, dy in ((vf.left(), vf.top(), 1, 1), (vf.right(), vf.top(), -1, 1),
+                                     (vf.left(), vf.bottom(), 1, -1), (vf.right(), vf.bottom(), -1, -1)):
+                p.drawLine(QPointF(cx_, cy_), QPointF(cx_ + 9 * dx, cy_)); p.drawLine(QPointF(cx_, cy_), QPointF(cx_, cy_ + 9 * dy))
+            if k < 0.62:
+                y = vf.top() + vf.height() * ((k / 0.62 * 2) % 1)
+                p.setPen(QPen(tint(a, 220), 2)); p.drawLine(QPointF(vf.left() + 3, y), QPointF(vf.right() - 3, y))
+                # промінь від телефона до коду
+                p.setPen(QPen(tint(a, 60), 1, Qt.PenStyle.DashLine))
+                p.drawLine(QPointF(ps.left(), ps.center().y()), QPointF(win.right(), win.center().y()))
+            else:
+                al = min(1.0, (k - 0.62) / 0.1)
+                check(vf.center(), 14, al)
+                toast(QRectF(scr.right() - 108, scr.top() + 16, 102, 18), "Телефон з'єднано", al)
+        elif m == "phone":
+            k = (t % 4.2) / 4.2
+            # галерея на телефоні
+            for i in range(6):
+                r = QRectF(ps.left() + 6 + (i % 3) * 20, ps.top() + 16 + (i // 3) * 20, 17, 17)
+                p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(QColor(["#0a84ff", "#ff9f0a", "#30d158", "#bf5af2", "#ff375f", "#64d2ff"][i]), 200))
+                p.drawRoundedRect(r, 3, 3)
+            sheet_k = E(min(1.0, k / 0.18)) if k < 0.4 else E(1 - (k - 0.4) / 0.08)
+            if sheet_k > 0:
+                sh = QRectF(ps.left(), ps.bottom() - 54 * sheet_k, ps.width(), 54)
+                p.setBrush(QColor(44, 46, 56) if dark else QColor(255, 255, 255)); p.setPen(QPen(tint(ink, 40), 1))
+                p.drawRoundedRect(sh, 9, 9)
+                f = QFont(FONT_UI); f.setPixelSize(8); p.setFont(f); p.setPen(QColor(T["text2"]))
+                p.drawText(QRectF(sh.left(), sh.top() + 4, sh.width(), 10), Qt.AlignmentFlag.AlignCenter, "Поділитися")
+                for i in range(3):
+                    c = QPointF(sh.left() + 14 + i * 21, sh.top() + 27)
+                    hot = i == 0
+                    pulse = 1 + (0.15 * math.sin(t * 9) if hot and 0.2 < k < 0.4 else 0)
+                    p.setPen(Qt.PenStyle.NoPen); p.setBrush(green if hot else tint(ink, 50)); p.drawEllipse(c, 7 * pulse, 7 * pulse)
+                p.setPen(QColor(T["text"])); f.setPixelSize(6); p.setFont(f)
+                p.drawText(QRectF(sh.left(), sh.top() + 36, 30, 10), Qt.AlignmentFlag.AlignCenter, "Mg Share")
+            A = QPointF(ps.center().x(), ps.bottom() - 30); B = QPointF(scr.right() - 40, scr.top() + 50)
+            if 0.42 < k < 0.72:
+                file_icon(fly(A, B, (k - 0.42) / 0.3), 1.1)
+            if k >= 0.72:
+                al = min(1.0, (k - 0.72) / 0.08)
+                toast(QRectF(scr.right() - 116, scr.top() + 16, 110, 18), "Отримано: фото.jpg", al)
+                # тека «Отримані»
+                fc = QPointF(scr.left() + 30, scr.bottom() - 28)
+                p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(QColor("#64d2ff"), int(230 * al)))
+                p.drawRoundedRect(QRectF(fc.x() - 14, fc.y() - 9, 28, 20), 3, 3)
+                f = QFont(FONT_UI); f.setPixelSize(8); p.setFont(f); p.setPen(QColor(255, 255, 255, int(220 * al)))
+                p.drawText(QRectF(fc.x() - 30, fc.y() + 12, 60, 10), Qt.AlignmentFlag.AlignCenter, "Отримані")
+        elif m == "pc":
+            k = (t % 7.0) / 7.0
+            def callout(pt, n, text, al=1.0, right=True):
+                if al <= 0: return
+                f = QFont(FONT_UI); f.setPixelSize(10); f.setWeight(QFont.Weight.Bold); p.setFont(f)
+                tw = QFontMetrics(f).horizontalAdvance(text)
+                r = QRectF(pt.x() if right else pt.x() - tw - 30, pt.y() - 10, tw + 30, 20)
+                p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor(0, 0, 0, int(190 * al))); p.drawRoundedRect(r, 10, 10)
+                p.setBrush(tint(a, int(255 * al))); p.drawEllipse(QPointF(r.left() + 10, r.center().y()), 7, 7)
+                p.setPen(QColor(255, 255, 255, int(255 * al)))
+                p.drawText(QRectF(r.left() + 3, r.top(), 14, 20), Qt.AlignmentFlag.AlignCenter, str(n))
+                p.drawText(r.adjusted(22, 0, -6, 0), Qt.AlignmentFlag.AlignVCenter, text)
+            def cursor(c):
+                cur = QPolygonF([QPointF(0, 0), QPointF(0, 14), QPointF(4, 10.5), QPointF(7, 16.5), QPointF(9.5, 15.5), QPointF(6.5, 9.5), QPointF(12, 9.5)])
+                cur.translate(c.x(), c.y())
+                p.setPen(QPen(QColor(0, 0, 0), 1)); p.setBrush(QColor(255, 255, 255)); p.drawPolygon(cur)
+            # вікно файлового менеджера з файлом
+            fm = QRectF(scr.left() + 12, bar.bottom() + 40, 110, 88)
+            p.setPen(QPen(QColor(255, 255, 255, 40), 1)); p.setBrush(QColor(36, 38, 46, 240)); p.drawRoundedRect(fm, 6, 6)
+            p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor(255, 255, 255, 18)); p.drawRoundedRect(QRectF(fm.left(), fm.top(), fm.width(), 12), 6, 6)
+            for i in range(3):
+                p.setBrush(QColor(255, 255, 255, 30)); p.drawRoundedRect(QRectF(fm.left() + 62, fm.top() + 22 + i * 18, 40, 8), 3, 3)
+            home = QPointF(fm.left() + 30, fm.top() + 44)
+            f = QFont(FONT_UI); f.setPixelSize(8); p.setFont(f); p.setPen(QColor(255, 255, 255, 200))
+            p.drawText(QRectF(home.x() - 26, home.y() + 16, 52, 12), Qt.AlignmentFlag.AlignCenter, "фото.jpg")
+            target = QPointF(clock.center().x(), clock.center().y() + 2)
+            drag = E((k - 0.08) / 0.27)
+            # пунктирна стрілка «куди нести» — видно, поки файл не кинули
+            if k < 0.38:
+                path = QPainterPath(QPointF(home.x() + 10, home.y() - 12))
+                path.quadTo(QPointF(home.x() + 10, target.y() + 6), QPointF(target.x() - 26, target.y() + 6))
+                p.setPen(QPen(tint(QColor("#ffd60a"), 230), 2, Qt.PenStyle.DashLine, Qt.PenCapStyle.RoundCap)); p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawPath(path)
+                tip = QPointF(target.x() - 24, target.y() + 6)
+                p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor("#ffd60a"))
+                p.drawPolygon(QPolygonF([tip, QPointF(tip.x() - 8, tip.y() - 5), QPointF(tip.x() - 8, tip.y() + 5)]))
+                # годинник пульсує — ціль
+                pr = 3 + 3 * (0.5 + 0.5 * math.sin(t * 6)) + (4 if k > 0.3 else 0)
+                p.setPen(QPen(QColor("#ffd60a"), 2)); p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawRoundedRect(clock.adjusted(-pr, -pr, pr, pr), 8 + pr, 8 + pr)
+            if k < 0.36:
+                c = QPointF(home.x() + (target.x() - home.x()) * drag, home.y() + (target.y() + 4 - home.y()) * drag)
+                file_icon(c, 1.4)
+                cursor(QPointF(c.x() + 4, c.y() + 4))
+            # блок «Надіслати» під годинником
+            pop_k = E((k - 0.36) / 0.08) if k < 0.9 else E(1 - (k - 0.9) / 0.06)
+            chip = None
+            if k > 0.36 and pop_k > 0:
+                pop = QRectF(clock.center().x() - 62, bar.bottom() + 4, 124, 66 * pop_k)
+                p.setPen(QPen(QColor(255, 255, 255, 60), 1)); p.setBrush(QColor(26, 28, 36, 245)); p.drawRoundedRect(pop, 10, 10)
+                if pop_k > 0.8:
+                    f = QFont(FONT_UI); f.setPixelSize(9); f.setWeight(QFont.Weight.Bold); p.setFont(f); p.setPen(QColor(255, 255, 255, 210))
+                    p.drawText(QRectF(pop.left(), pop.top() + 5, pop.width(), 11), Qt.AlignmentFlag.AlignCenter, "Надіслати фото.jpg")
+                    chip = QRectF(pop.left() + 10, pop.top() + 24, pop.width() - 20, 30)
+                    hot = 0.5 < k < 0.62
+                    p.setPen(QPen(QColor("#ffd60a"), 2) if hot else Qt.PenStyle.NoPen)
+                    p.setBrush(tint(a, 230 if hot else 110)); p.drawRoundedRect(chip, 15, 15)
+                    p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor("#ff9fc8")); p.drawEllipse(QPointF(chip.left() + 15, chip.center().y()), 10, 10)
+                    f = QFont(FONT_UI); f.setPixelSize(10); f.setWeight(QFont.Weight.DemiBold); p.setFont(f); p.setPen(QColor(255, 255, 255))
+                    p.drawText(chip.adjusted(31, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter, "Мій телефон")
+            if chip is not None and 0.44 < k < 0.64:
+                q = E((k - 0.44) / 0.08)
+                c0 = QPointF(target.x() + 4, target.y() + 6); c1 = QPointF(chip.center().x() + 10, chip.center().y() + 2)
+                cursor(QPointF(c0.x() + (c1.x() - c0.x()) * q, c0.y() + (c1.y() - c0.y()) * q))
+            if 0.62 < k < 0.8:
+                src = QPointF(clock.center().x(), bar.bottom() + 40)
+                file_icon(fly(src, QPointF(ps.center().x(), ps.center().y()), (k - 0.62) / 0.18), 1.4)
+            if k >= 0.8:
+                al = min(1.0, (k - 0.8) / 0.05)
+                toast(QRectF(ps.left() + 3, ps.top() + 14, ps.width() - 6, 18), "фото.jpg ✓", al)
+                check(QPointF(ps.center().x(), ps.center().y() + 10), 14, al)
+            # підказки-кроки
+            callout(QPointF(fm.left(), fm.bottom() + 16), 1, "візьміть файл", 1.0 if k < 0.36 else 0.35)
+            if k < 0.38:
+                callout(QPointF(clock.right() + 12, clock.center().y() + 20), 2, "несіть на годинник", 1.0 if k > 0.04 else 0.4)
+            if 0.42 < k < 0.8:
+                callout(QPointF(clock.center().x() - 62, bar.bottom() + 88), 3, "натисніть на телефон", 1.0 if k < 0.64 else 0.4)
+        elif m == "link":
+            k = (t % 4.2) / 4.2
+            ab = QRectF(ps.left() + 5, ps.top() + 14, ps.width() - 10, 11)
+            p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(ink, 40)); p.drawRoundedRect(ab, 5.5, 5.5)
+            f = QFont(FONT_UI); f.setPixelSize(7); p.setFont(f); p.setPen(QColor(T["text2"]))
+            p.drawText(ab, Qt.AlignmentFlag.AlignCenter, "youtu.be/…")
+            for i in range(4):
+                p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(ink, 28)); p.drawRoundedRect(QRectF(ps.left() + 6, ab.bottom() + 6 + i * 16, ps.width() - 12, 11), 3, 3)
+            A = QPointF(ab.center().x(), ab.center().y()); B = QPointF(scr.center().x(), scr.center().y())
+            if 0.18 < k < 0.5:
+                c = fly(A, B, (k - 0.18) / 0.32)
+                chip = QRectF(c.x() - 26, c.y() - 7, 52, 14)
+                p.setPen(Qt.PenStyle.NoPen); p.setBrush(a); p.drawRoundedRect(chip, 7, 7)
+                p.setPen(QColor(255, 255, 255)); p.drawText(chip, Qt.AlignmentFlag.AlignCenter, "посилання")
+            if k >= 0.5:
+                g_ = E((k - 0.5) / 0.15)
+                ww, wh = 40 + (lw - 30 - 40) * g_, 26 + (lh - 30 - 26) * g_
+                br = QRectF(scr.center().x() - ww / 2, scr.center().y() + 6 - wh / 2, ww, wh)
+                p.setPen(QPen(QColor(255, 255, 255, 60), 1)); p.setBrush(QColor(245, 245, 248)); p.drawRoundedRect(br, 5, 5)
+                p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor(220, 222, 228)); p.drawRoundedRect(QRectF(br.left(), br.top(), br.width(), 12), 5, 5)
+                if g_ > 0.9:
+                    p.setBrush(QColor(255, 255, 255)); p.drawRoundedRect(QRectF(br.left() + 20, br.top() + 2.5, br.width() - 40, 7), 3.5, 3.5)
+                    p.setBrush(QColor(255, 0, 51, 210)); p.drawRoundedRect(QRectF(br.center().x() - 34, br.top() + 22, 68, 42), 4, 4)
+                    p.setBrush(QColor(255, 255, 255))
+                    p.drawPolygon(QPolygonF([QPointF(br.center().x() - 6, br.top() + 36), QPointF(br.center().x() - 6, br.top() + 50),
+                                             QPointF(br.center().x() + 7, br.top() + 43)]))
+        f = QFont(FONT_UI); f.setPixelSize(11); p.setFont(f); p.setPen(QColor(T["text2"]))
+        p.drawText(QRectF(8, 18 + lh + 24, W - 16, 30), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self.MODES.get(m, ""))
+
+
 class SettingRow(QWidget):
     def __init__(self, icon_name, fallback_emoji, title, description="", control=None, is_last=False, on_click=None,
                  preview=None, preview_mode=None):
@@ -4406,6 +4676,16 @@ class MeguminSettings(QWidget):
     def create_mgshare_page(self):
         page, lay = self.page_base("mgshare")
         self.hero(lay, "mgshare", "Обмін файлами з телефоном через Wi-Fi: список з'єднаних пристроїв, додати новий або забути старий.")
+        # інструкція: анімація + кроки; наведення на рядки нижче теж перемикає сцену
+        G_ = MgShareGuide()
+        steps = SegmentedSelector("mgshare_step", [("pc", "ПК → телефон"), ("phone", "Телефон → ПК"),
+                                                   ("link", "Посилання"), ("pair", "Додати телефон")], "pc",
+                                  lambda k, v: G_.set_mode(v), seg_width=128)
+        G_.on_mode = lambda m: steps.select(m, save=False)
+        self.section(lay, "Як користуватись")
+        sh = QHBoxLayout(); sh.addStretch(); sh.addWidget(steps); sh.addStretch()
+        lay.addLayout(sh)
+        lay.addWidget(GroupCard([G_]))
         devs = mgshare_devices()
         self._mgshare_sig = repr(devs)
         self.section(lay, "Мої пристрої")
@@ -4433,10 +4713,11 @@ class MeguminSettings(QWidget):
             if MgSharePairDialog(self).exec():
                 self.rebuild_page("mgshare")
         lay.addWidget(self.create_card([
-            SettingRow("", "", "Додати пристрій", "QR-код для з'єднання з телефоном (застосунок Mg Share)", LinkButton("Додати…", add), on_click=add),
+            SettingRow("", "", "Додати пристрій", "QR-код для з'єднання з телефоном (застосунок Mg Share)", LinkButton("Додати…", add), on_click=add,
+                       preview=G_, preview_mode="pair"),
             SettingRow("", "", "Отримані файли", f"Файли з телефона падають у {mgshare_downloads().replace(str(Path.home()), '~')}",
                        LinkButton("Відкрити", lambda: subprocess.Popen(["xdg-open", mgshare_downloads()])),
-                       on_click=lambda: subprocess.Popen(["xdg-open", mgshare_downloads()])),
+                       on_click=lambda: subprocess.Popen(["xdg-open", mgshare_downloads()]), preview=G_, preview_mode="phone"),
         ]))
         # статус «на зв'язку» оновлюється сам, поки сторінка відкрита
         if not getattr(self, "_mgshare_timer", None):

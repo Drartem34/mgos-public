@@ -1062,6 +1062,16 @@ static void draw_bg(GtkDrawingArea*, cairo_t* cr, int w, int h, gpointer) {
     draw_bg_core(cr, w, h);
 }
 
+// Висота блоку дропу — за вмістом (статус/кнопки з'являються й зникають), без запасу «про всяк випадок»
+static int drop_measure_h() {
+    bool vis = gtk_widget_get_visible(g_drop_content);
+    if (!vis) gtk_widget_set_visible(g_drop_content, TRUE);
+    int mn = 0, nat = 0;
+    gtk_widget_measure(g_drop_content, GTK_ORIENTATION_VERTICAL, g_drop_W, &mn, &nat, nullptr, nullptr);
+    if (!vis) gtk_widget_set_visible(g_drop_content, FALSE);
+    return std::max(mn, nat);
+}
+
 static void layout_morph() {
     double dw = (g_W - g_from_w) * g_v, dh = (g_H - g_from_h) * g_v;
     if (g_v < 0) {
@@ -1082,6 +1092,10 @@ static gboolean on_tick(GtkWidget*, GdkFrameClock* fc, gpointer) {
     g_t = (now - g_t0) / 1e6;
     double k = std::clamp((now - g_anim_start) / 1000.0 / (g_open ? OPEN_MS : CLOSE_MS), 0.0, 1.0);
     g_v = g_open ? g_v_from + (1 - g_v_from) * ease_out_soft(k) : g_v_from * spring_close(k);
+    if (g_open && g_drop_mode && g_content_on) {   // вміст змінився (статус, кнопки, QR) — плавно підганяємо висоту
+        int want = drop_measure_h();
+        if (want != g_H) { int d = want - g_H; g_H += std::abs(d) <= 2 ? d : (int)std::lround(d * 0.3); }
+    }
     layout_morph();
 
     if (g_open && k >= 0.92 && !g_content_on) {   // вміст проявляється вже наприкінці розростання
@@ -1527,8 +1541,18 @@ static GtkWidget* dv_chip(const std::string& glyph, const std::string& name, boo
     GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     GtkWidget* g = nullptr;
     if (!avatar.empty() && g_file_test(avatar.c_str(), G_FILE_TEST_EXISTS)) {
-        GtkWidget* pic = gtk_picture_new_for_filename(avatar.c_str());
-        gtk_picture_set_content_fit(GTK_PICTURE(pic), GTK_CONTENT_FIT_COVER);
+        // GtkPicture бере натуральний розмір файлу (аватарка 512px роздувала чип) — тож
+        // заздалегідь ріжемо квадрат по центру й масштабуємо, а GtkImage малює рівно 30px
+        GtkWidget* pic = gtk_image_new();
+        if (GdkPixbuf* src = gdk_pixbuf_new_from_file(avatar.c_str(), nullptr)) {
+            int w = gdk_pixbuf_get_width(src), h = gdk_pixbuf_get_height(src), s = std::min(w, h);
+            GdkPixbuf* sq = gdk_pixbuf_new_subpixbuf(src, (w - s) / 2, (h - s) / 2, s, s);
+            GdkPixbuf* sm = gdk_pixbuf_scale_simple(sq, 96, 96, GDK_INTERP_BILINEAR);
+            GdkTexture* tex = gdk_texture_new_for_pixbuf(sm);
+            gtk_image_set_from_paintable(GTK_IMAGE(pic), GDK_PAINTABLE(tex));
+            g_object_unref(tex); g_object_unref(sm); g_object_unref(sq); g_object_unref(src);
+        }
+        gtk_image_set_pixel_size(GTK_IMAGE(pic), 30);
         gtk_widget_set_size_request(pic, 30, 30);
         gtk_widget_set_halign(pic, GTK_ALIGN_CENTER);
         gtk_widget_set_overflow(pic, GTK_OVERFLOW_HIDDEN);
@@ -2132,7 +2156,7 @@ static void show_pop(GtkWidget* bubble, GtkWidget* bar, bool drop = false) {
     g_W = drop ? g_drop_W : g_main_W;
     g_H = drop ? g_drop_H : g_main_H;
     if (drop && !g_qs_proc && !g_dv_proc) drop_reset();
-    if (drop) dv_rebuild();
+    if (drop) { dv_rebuild(); g_H = drop_measure_h(); }
     // той самий монітор, що й топбар
     if (GdkSurface* s = gtk_native_get_surface(GTK_NATIVE(bar)))
         if (GdkMonitor* mon = gdk_display_get_monitor_at_surface(gtk_widget_get_display(bar), s))
