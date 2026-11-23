@@ -1,0 +1,50 @@
+name: Mg Share для Windows
+
+on:
+  push:
+    paths:
+      - "apps/mgshare-windows/**"
+      - "home/.local/bin/mgos-share"
+      - ".github/workflows/mgshare-windows.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: apps/mgshare-windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Залежності
+        run: pip install -r requirements.txt
+      - name: Ядро служби (те саме, що в mgOS)
+        run: copy ..\..\home\.local\bin\mgos-share mgshare_core.py
+        shell: cmd
+      - name: Іконка
+        run: python make_icon.py
+      - name: Збірка MgShare.exe
+        run: pyinstaller --noconfirm --onefile --windowed --name MgShare --icon MgShare.ico --add-data "MgShare.ico;." mgshare_win.py
+      - name: Перевірка, що ядро імпортується
+        run: python -c "import mgshare_win, mgshare_core; print(mgshare_core.LINK_PORT)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MgShare-windows
+          path: apps/mgshare-windows/dist/MgShare.exe
+      - name: Реліз (постійне посилання на свіжий .exe)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: mgshare-windows
+          name: Mg Share для Windows
+          prerelease: true
+          body: |
+            Mg Share для Windows — обмін файлами й посиланнями з телефоном (застосунок Mg Share) через Wi-Fi.
+            Завантажте MgShare.exe і запустіть. Коли Windows спитає про брандмауер — дозвольте для «Приватних мереж».
+            Збірка з гілки ${{ github.ref_name }}, коміт ${{ github.sha }}.
+          files: apps/mgshare-windows/dist/MgShare.exe

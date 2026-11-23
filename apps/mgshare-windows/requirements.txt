@@ -1,0 +1,4 @@
+PyQt6==6.7.1
+qrcode==7.4.2
+pillow==10.4.0
+pyinstaller==6.10.0
