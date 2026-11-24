@@ -339,13 +339,7 @@ static void launch_app(GAppInfo* app) {
         std::string safe_cmd = final_cmd;
         
         // hyprctl dispatch exec will properly spawn it in the compositor environment, avoiding GTK env pollution
-        // mgos-launch: прозоре вікно-заглушка з іконкою і спінером, поки програма стартує (launch_splash.cpp)
-        const char* did = g_app_info_get_id(app);
-        gchar* ml = g_find_program_in_path("mgos-launch");
-        std::string hypr_cmd = (ml && did)
-            ? std::string("hyprctl dispatch exec -- ") + ml + " --desktop " + did + " >/dev/null 2>&1 &"
-            : "hyprctl dispatch exec -- " + safe_cmd + " >/dev/null 2>&1 &";
-        g_free(ml);
+        std::string hypr_cmd = "hyprctl dispatch exec -- " + safe_cmd + " >/dev/null 2>&1 &";
         system(hypr_cmd.c_str());
     }
 

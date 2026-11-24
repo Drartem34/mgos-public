@@ -148,9 +148,7 @@ void apply_wallpaper(const std::string& path) {
         // Якщо шпалери міняють саме зараз — стартуємо одразу на паузі.
         const char* rt = getenv("XDG_RUNTIME_DIR");
         if (rt && access((std::string(rt) + "/mgos-power/battery").c_str(), F_OK) == 0) mpv_opts += " pause";
-        // легка копія відео (mgos-wp-optimize: ≤ роздільності монітора, 30 к/с, HEVC на NVENC; поки робиться — оригінал).
-        // nice 5, не 19: на найнижчому пріоритеті під навантаженням mpv пропускав кадри — шпалери смикались
-        exec_cmd("nohup nice -n 5 mpvpaper -o '" + mpv_opts + "' '*' \"$(~/.local/bin/mgos-wp-optimize get '" + path + "' || echo '" + path + "')\" &");
+        exec_cmd("nohup nice -n 19 mpvpaper -o '" + mpv_opts + "' '*' '" + path + "' &");
     } else {
         exec_cmd("pgrep awww-daemon || (awww-daemon & sleep 0.5)");
         exec_cmd("awww img '" + path + "' --resize crop --transition-type fade --transition-angle 30 --transition-fps 60 --transition-duration 2");

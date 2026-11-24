@@ -13,6 +13,7 @@
 // У режимах runner/off libinput-пристрій закритий — док не прокидається від тачпада взагалі.
 
 #include <libinput.h>
+#include <set>
 #include <libudev.h>
 #include <fcntl.h>
 
@@ -429,19 +430,21 @@ static gboolean on_li(gint, GIOCondition cond, gpointer) {
     return G_SOURCE_CONTINUE;
 }
 
+static std::set<std::string> li_added;   // вузли, які вже слухаємо (Bluetooth-тачпад/Magic Trackpad може з'явитися пізніше)
+
 static void li_close() {
     if (li_watch) { g_source_remove(li_watch); li_watch = 0; }
-    if (li) { libinput_unref(li); li = nullptr; }
+    if (li) { libinput_unref(li); li = nullptr; li_added.clear(); }
 }
 
-static bool li_open() {
+static std::vector<std::string> li_scan_nodes() {
+    std::vector<std::string> nodes;
     udev* u = udev_new();
-    if (!u) return false;
+    if (!u) return nodes;
     udev_enumerate* en = udev_enumerate_new(u);
     udev_enumerate_add_match_subsystem(en, "input");
     udev_enumerate_add_match_property(en, "ID_INPUT_TOUCHPAD", "1");
     udev_enumerate_scan_devices(en);
-    std::vector<std::string> nodes;
     udev_list_entry* e;
     udev_list_entry_foreach(e, udev_enumerate_get_list_entry(en)) {
         udev_device* d = udev_device_new_from_syspath(u, udev_list_entry_get_name(e));
@@ -451,12 +454,27 @@ static bool li_open() {
     }
     udev_enumerate_unref(en);
     udev_unref(u);
+    return nodes;
+}
+
+
+// додає нові тачпади до вже відкритого контексту (хот-плаг); повертає, скільки додано
+static int li_add_new() {
+    int added = 0;
+    for (auto& n : li_scan_nodes()) {
+        if (li_added.count(n)) continue;
+        if (libinput_path_add_device(li, n.c_str())) { li_added.insert(n); added++; }
+    }
+    return added;
+}
+
+static bool li_open() {
+    auto nodes = li_scan_nodes();
     if (nodes.empty()) return false;
     li = libinput_path_create_context(&IFACE, nullptr);
     if (!li) return false;
-    int added = 0;
-    for (auto& n : nodes) if (libinput_path_add_device(li, n.c_str())) added++;
-    if (!added) { libinput_unref(li); li = nullptr; return false; }
+    li_added.clear();
+    if (!li_add_new()) { libinput_unref(li); li = nullptr; return false; }
     li_watch = g_unix_fd_add(libinput_get_fd(li), (GIOCondition)(G_IO_IN | G_IO_ERR | G_IO_HUP), on_li, nullptr);
     on_li(0, G_IO_IN, nullptr);   // з'їсти DEVICE_ADDED
     return true;
@@ -467,6 +485,7 @@ static gboolean sync_setting(gpointer) {
     const auto& S = sysui::settings();
     bool want = S.tp_swipe_down == "minimize" || fs_gesture() || S.dock_stash_cards;   // хоч один жест читаємо самі
     if (want && !li) li_open();   // тачпада ще нема — спробуємо через 2 с
+    else if (want && li && li_add_new()) on_li(0, G_IO_IN, nullptr);   // підключили ще один тачпад (Magic Trackpad)
     else if (!want && li) {
         li_close();
         if (st != IDLE) { if (hidden_real) { set_real_opacity(true); anim_back(win_addr); } finish(); }

@@ -48,10 +48,7 @@ case "$ext" in
         opts="$opts input-ipc-server=/tmp/mpv-socket loop-file=inf hwdec=auto-safe no-audio panscan=1.0 cache=no demuxer-max-bytes=512KiB demuxer-max-back-bytes=128KiB"
         # mgos-power у режимі батареї тримає відео на паузі — стартуємо одразу на паузі
         [ -e "${XDG_RUNTIME_DIR:-/run/user/$UID}/mgos-power/battery" ] && opts="$opts pause"
-        # легка копія (≤ роздільності монітора, 30 к/с, HEVC на NVENC) — mgos-wp-optimize; поки її немає — оригінал.
-        # Без nice 19: на найнижчому пріоритеті під навантаженням (Steam, браузер) mpv пропускав кадри — відео смикалось
-        play=$("$HOME/.local/bin/mgos-wp-optimize" get "$p" 2>/dev/null); [ -f "$play" ] || play=$p
-        nice -n 5 mpvpaper -o "$opts" '*' "$play" >/dev/null 2>&1 &
+        nice -n 19 mpvpaper -o "$opts" '*' "$p" >/dev/null 2>&1 &
         MPV=$!
         # чекаємо, поки mpv створить вихід і покаже перший кадр (до 15 с)
         for _ in $(seq 150); do

@@ -3407,33 +3407,6 @@ struct Waves {
         }
         return true;
     }
-    // Місто з ~/.config/megumin-os/settings.json ("location"), url-encoded (безпечно для shell і URL); "" — за IP
-    static std::string cl_url_enc(const std::string& v) {
-        std::string r; char b[4];
-        for (unsigned char ch : v) {
-            if (isalnum(ch) || ch == '-' || ch == '_' || ch == '.') r += (char)ch;
-            else if (ch == ' ') r += '+';
-            else { snprintf(b, sizeof b, "%%%02X", ch); r += b; }
-        }
-        return r;
-    }
-    static std::string cl_location(const std::string& home) {
-        std::ifstream f(home + "/.config/megumin-os/settings.json");
-        if (!f) return "";
-        std::stringstream ss; ss << f.rdbuf(); std::string s = ss.str();
-        size_t p = s.find("\"location\"");
-        if (p == std::string::npos) return "";
-        size_t a = s.find('"', s.find(':', p) + 1);
-        if (a == std::string::npos) return "";
-        std::string v; bool esc = false;
-        for (size_t i = a + 1; i < s.size(); i++) {
-            char c = s[i];
-            if (esc) { v += c; esc = false; } else if (c == '\\') esc = true; else if (c == '"') break; else v += c;
-        }
-        while (!v.empty() && isspace((unsigned char)v.back())) v.pop_back();
-        while (!v.empty() && isspace((unsigned char)v.front())) v.erase(v.begin());
-        return cl_url_enc(v);
-    }
     // Раз на хвилину — дешеве читання кешу; застарів (>30 хв) — разовий фоновий потік з curl.
     void clouds_weather_poll() {
         long long now = (long long)time(nullptr);
@@ -3443,27 +3416,16 @@ struct Waves {
         std::string home = hm ? hm : "/tmp";
         std::string mine = home + "/.cache/megumin-os/clouds_weather.txt";
         long long ts = 0; int code = 0; double la = cl_lat, lo = cl_lon;
-        const std::string loc = cl_location(home);   // місто з Налаштувань ("" — за IP)
-        {   std::ifstream f(mine); std::string floc;
-            if (f >> ts >> la >> lo >> code) {
-                cl_lat = la; cl_lon = lo; cl_wx = cl_code_wx(code);
-                if (!(f >> floc)) floc = "";
-                if (floc == "-") floc = "";
-                if (floc != loc) ts = 0;               // місто змінили — кеш не наш
-            } else ts = 0; }
+        { std::ifstream f(mine); if (f >> ts >> la >> lo >> code) { cl_lat = la; cl_lon = lo; cl_wx = cl_code_wx(code); } else ts = 0; }
         if (now - ts < 1800) return;
         {   // дашборд уже тягнув погоду (його кеш свіжий) — беремо звідти, без мережі
             std::ifstream f(home + "/.cache/mgos/dashboard_weather.json");
             if (f) {
                 std::stringstream ss; ss << f.rdbuf(); std::string s = ss.str();
                 double dts = cl_num_after(s, "ts");
-                size_t cp = s.find("\"city\"");
-                std::string dcity;
-                if (cp != std::string::npos) { size_t a = s.find('"', s.find(':', cp) + 1), b = a == std::string::npos ? a : s.find('"', a + 1);
-                                               if (b != std::string::npos) dcity = s.substr(a + 1, b - a - 1); }
-                if (!std::isnan(dts) && now - (long long)dts < 1800 && cl_url_enc(dcity) == loc && cl_parse_j1(s, code, la, lo)) {
+                if (!std::isnan(dts) && now - (long long)dts < 1800 && cl_parse_j1(s, code, la, lo)) {
                     cl_lat = la; cl_lon = lo; cl_wx = cl_code_wx(code);
-                    std::ofstream o(mine); o << (long long)dts << ' ' << la << ' ' << lo << ' ' << code << ' ' << (loc.empty() ? "-" : loc) << '\n';
+                    std::ofstream o(mine); o << (long long)dts << ' ' << la << ' ' << lo << ' ' << code << '\n';
                     return;
                 }
             }
@@ -3471,10 +3433,9 @@ struct Waves {
         if (t < 6) return;                         // постер/прев'ю — без мережі
         static std::atomic<bool> busy{false};
         if (busy.exchange(true)) return;
-        std::thread([mine, la, lo, loc]() {
+        std::thread([mine, la, lo]() {
             std::string out; char buf[4096];
-            std::string cmd = "curl -sf -m 15 -A curl 'https://wttr.in/" + loc + "?format=j1' 2>/dev/null";   // loc уже url-encoded
-            if (FILE* p = popen(cmd.c_str(), "r")) {
+            if (FILE* p = popen("curl -sf -m 15 -A curl 'https://wttr.in/?format=j1' 2>/dev/null", "r")) {
                 size_t n; while ((n = fread(buf, 1, sizeof buf, p)) > 0) out.append(buf, n);
                 pclose(p);
             }
@@ -3483,7 +3444,7 @@ struct Waves {
             std::string tmp = mine + ".tmp";
             {   // невдача — теж пишемо (зі старим кодом/дефолтом), щоб не смикати мережу щохвилини
                 std::ofstream f(tmp);
-                f << (long long)time(nullptr) - (ok ? 0 : 1500) << ' ' << a << ' ' << o << ' ' << (ok ? code : 116) << ' ' << (loc.empty() ? "-" : loc) << '\n';
+                f << (long long)time(nullptr) - (ok ? 0 : 1500) << ' ' << a << ' ' << o << ' ' << (ok ? code : 116) << '\n';
             }
             rename(tmp.c_str(), mine.c_str());
             busy = false;

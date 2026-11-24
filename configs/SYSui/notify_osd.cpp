@@ -16,9 +16,7 @@ GtkWidget* sys_icon_image = nullptr;
 GtkWidget* file_icon_pic = nullptr;
 GtkWidget* sender_label = nullptr;
 GtkWidget* body_label = nullptr;
-GtkWidget* badge_image = nullptr;
-GtkWidget* ntf_box = nullptr;      // плашка: класи lvl-error / lvl-warn для системних помилок і попереджень
-static int  ntf_timeout_ms = 3500;   // маленька іконка програми в куті (як у macOS)
+GtkWidget* badge_image = nullptr;   // маленька іконка програми в куті (як у macOS)
 
 guint hide_timer_id = 0;
 std::string current_icon_url = "";
@@ -40,7 +38,6 @@ struct NotifyData {
     std::string icon;       // аватарка/картинка (шлях, file://, http) або назва іконки
     std::string body;
     std::string app, desktop, site, site_icon;
-    std::string level;      // error | warn | "" — звичайне сповіщення
 };
 
 static NotifyData read_notify_data() {
@@ -56,7 +53,6 @@ static NotifyData read_notify_data() {
         else if (line.rfind("DESKTOP=", 0) == 0) d.desktop = line.substr(8);
         else if (line.rfind("SITE=", 0) == 0)    d.site   = line.substr(5);
         else if (line.rfind("SITEICON=", 0) == 0) d.site_icon = line.substr(9);
-        else if (line.rfind("LEVEL=", 0) == 0)   d.level  = line.substr(6);
     }
     return d;
 }
@@ -114,13 +110,6 @@ void update_notify_ui() {
     if (!sender_label || !body_label || !osd_window || !sys_icon_image || !file_icon_pic || !badge_image) return;
 
     NotifyData d = read_notify_data();
-    // Помилка / попередження: червона чи бурштинова плашка зі значком рівня в куті, висить довше
-    if (ntf_box) {
-        gtk_widget_remove_css_class(ntf_box, "lvl-error");
-        gtk_widget_remove_css_class(ntf_box, "lvl-warn");
-        if (d.level == "error" || d.level == "warn") gtk_widget_add_css_class(ntf_box, ("lvl-" + d.level).c_str());
-    }
-    ntf_timeout_ms = d.level == "error" ? 7000 : d.level == "warn" ? 5500 : 3500;
     gtk_label_set_text(GTK_LABEL(sender_label), d.sender.empty() ? (d.site.empty() ? "Сповіщення" : d.site.c_str()) : d.sender.c_str());
     gtk_label_set_text(GTK_LABEL(body_label), d.body.c_str());
 
@@ -151,11 +140,6 @@ void update_notify_ui() {
         if (app_ic) gtk_image_set_from_gicon(GTK_IMAGE(sys_icon_image), app_ic);
         else gtk_image_set_from_icon_name(GTK_IMAGE(sys_icon_image), d.icon.empty() ? "dialog-information" : d.icon.c_str());
         gtk_image_set_pixel_size(GTK_IMAGE(sys_icon_image), 46);
-    }
-    if (!d.level.empty() && pic.empty() && app_ic) {
-        // іконка програми велика, а в куті — знак помилки/попередження
-        gtk_image_set_from_icon_name(GTK_IMAGE(badge_image), d.level == "error" ? "dialog-error" : "dialog-warning");
-        gtk_widget_set_visible(badge_image, TRUE);
     }
     if (app_ic) g_object_unref(app_ic);
     current_icon_url = pic;
@@ -210,7 +194,7 @@ gboolean on_socket_message(GIOChannel *source, GIOCondition condition, gpointer 
                 gtk_window_present(GTK_WINDOW(osd_window));
 
                 if (hide_timer_id > 0) g_source_remove(hide_timer_id);
-                hide_timer_id = g_timeout_add(ntf_timeout_ms, hide_osd, nullptr);
+                hide_timer_id = g_timeout_add(3500, hide_osd, nullptr);
             }
         }
         close(client_fd);
@@ -258,19 +242,6 @@ static void activate(GtkApplication* app, gpointer) {
 
     GtkWidget* osd_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_widget_add_css_class(osd_box, "ntf-box");
-    ntf_box = osd_box;
-    {   // вище за live_css (акцентна рамка), щоб колір рівня перемагав
-        GtkCssProvider* lp = gtk_css_provider_new();
-        gtk_css_provider_load_from_string(lp,
-            ".ntf-box.lvl-error { background-color: rgba(58, 14, 18, 0.78); border: 1px solid rgba(255, 92, 98, 0.55);"
-            "  background-clip: padding-box; box-shadow: none; }"
-            ".ntf-box.lvl-error .sender-label { color: #ffb3b6; }"
-            ".ntf-box.lvl-warn { background-color: rgba(54, 38, 8, 0.78); border: 1px solid rgba(255, 184, 64, 0.55);"
-            "  background-clip: padding-box; box-shadow: none; }"
-            ".ntf-box.lvl-warn .sender-label { color: #ffd98f; }"
-            ".ntf-box.lvl-error .body-label, .ntf-box.lvl-warn .body-label { color: rgba(255,255,255,0.86); }");
-        gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(lp), GTK_STYLE_PROVIDER_PRIORITY_USER + 10);
-    }
     gtk_widget_set_size_request(osd_box, 260, 70);
     gtk_widget_set_halign(osd_box, GTK_ALIGN_CENTER);
 

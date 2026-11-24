@@ -115,71 +115,7 @@ inline const std::string& hypr_socket_path() {
     return path;
 }
 
-// Hyprland ≥ 0.57 (Lua-конфіг) не розуміє старих «dispatch workspace 2» / «keyword decoration:rounding 0».
-// Перекладаємо їх у виклики з ~/.config/hypr/mgos/legacy.lua (mgosD / mgosK) — той самий переклад, що й
-// в обгортці ~/.local/bin/hyprctl. «[[BATCH]]a;b» — кожну команду окремо. Нові «dispatch hl.dsp...» — без змін.
-inline std::string hypr_legacy_one(const std::string& cmd) {
-    size_t b = cmd.find_first_not_of(" \t");
-    if (b == std::string::npos) return cmd;
-    std::string c = cmd.substr(b);
-    auto starts = [&](const char* p) { return c.rfind(p, 0) == 0; };
-    if (starts("dispatch ")) {
-        std::string rest = c.substr(9);
-        rest.erase(0, rest.find_first_not_of(" \t"));
-        if (rest.rfind("hl.", 0) == 0 || rest.rfind("mgosD", 0) == 0) return c;
-        return "dispatch mgosD([==[" + rest + "]==])";
-    }
-    if (starts("keyword ")) {
-        std::string rest = c.substr(8);
-        rest.erase(0, rest.find_first_not_of(" \t"));
-        size_t sp = rest.find(' ');
-        std::string k = rest.substr(0, sp), v = sp == std::string::npos ? "" : rest.substr(sp + 1);
-        return "eval mgosK([==[" + k + "]==],[==[" + v + "]==])";
-    }
-    return c;
-}
-
-inline std::string hypr_legacy_translate(const std::string& req) {
-    static const std::string BATCH = "[[BATCH]]";
-    if (req.rfind(BATCH, 0) != 0) return hypr_legacy_one(req);
-    std::string out = BATCH, body = req.substr(BATCH.size()), part;
-    size_t pos = 0;
-    bool first = true;
-    while (pos <= body.size()) {
-        size_t semi = body.find(';', pos);
-        part = body.substr(pos, semi == std::string::npos ? std::string::npos : semi - pos);
-        if (part.find_first_not_of(" \t") != std::string::npos) {
-            if (!first) out += ";";
-            out += hypr_legacy_one(part);
-            first = false;
-        }
-        if (semi == std::string::npos) break;
-        pos = semi + 1;
-    }
-    return out;
-}
-
-inline std::string hypr_request_raw(const std::string& req);
-
-// Перекладаємо лише для Hyprland ≥ 0.57 (Lua-конфіг); старший hyprlang-Hyprland розуміє старі команди сам.
-// Версію питаємо один раз за життя процесу.
-inline bool hypr_is_lua() {
-    static int lua = -1;
-    if (lua < 0) {
-        std::string v = hypr_request_raw("version");
-        size_t p = v.find("Hyprland ");
-        int ma = 0, mi = 0;
-        if (p != std::string::npos && sscanf(v.c_str() + p + 9, "%d.%d", &ma, &mi) == 2) lua = (ma > 0 || mi >= 57) ? 1 : 0;
-        else return true;   // Hyprland не відповів — не кешуємо, вважаємо новим
-    }
-    return lua == 1;
-}
-
-inline std::string hypr_request(const std::string& req_in) {
-    return hypr_request_raw(hypr_is_lua() ? hypr_legacy_translate(req_in) : req_in);
-}
-
-inline std::string hypr_request_raw(const std::string& req) {
+inline std::string hypr_request(const std::string& req) {
     const std::string& path = hypr_socket_path();
     if (path.empty()) return "";
     int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -343,7 +279,6 @@ struct Settings {
     std::string panel_font = "SF Pro Display";
     // Піксельна анімація шапок (about, блок годинника): waves|virus|eq|rain|life
     std::string pixel_style = "waves";
-    std::string location;                 // місто для погоди/сонця (Налаштування → Система); "" — за IP
     // Економія: «запечений» блюр на весь екран — блюр лишається, відео-шпалера на паузі (кеш блюру не скидається)
     bool eco_fs_blur = true;
     bool hyprland_blur = true;            // загальний перемикач розмиття з «Налаштувань»
@@ -381,7 +316,7 @@ inline const Settings& settings() {
             gi("dock_files_count", n.dock_files_count, 1, 8); gi("dock_files_days", n.dock_files_days, 1, 30); gb("dock_reserve", n.dock_reserve); gb("dock_minimize_drag", n.dock_minimize_drag); gs("dock_stash_layout", n.dock_stash_layout); gb("dock_stash_zram", n.dock_stash_zram); gs("tp_swipe_down", n.tp_swipe_down); gi("tp_min_dist", n.tp_min_dist, 120, 800); gs("tp_swipe_up", n.tp_swipe_up); gb("dock_stash_cards", n.dock_stash_cards); gb("genie_squash", n.genie_squash); gb("genie_grow", n.genie_grow); gb("genie_anim", n.genie_anim); gi("genie_speed", n.genie_speed, 50, 200);
             gb("dock_recent", n.dock_recent); gi("dock_recent_count", n.dock_recent_count, 1, 15);
             gb("watchdog", n.watchdog); gb("sys_popups", n.sys_popups); gs("osd_position", n.osd_position); gs("notify_position", n.notify_position);
-            gb("topbar_power", n.topbar_power); gs("panel_font", n.panel_font); gs("pixel_style", n.pixel_style); gs("location", n.location);
+            gb("topbar_power", n.topbar_power); gs("panel_font", n.panel_font); gs("pixel_style", n.pixel_style);
             gb("eco_fs_blur", n.eco_fs_blur); gb("hyprland_blur", n.hyprland_blur); gb("eco_effects", n.eco_effects); gb("video_optimization", n.video_optimization);
             gb("wp_pause_covered", n.wp_pause_covered); gb("baked_blur", n.baked_blur);
         }
@@ -618,7 +553,6 @@ struct Under {
     double radius = 0, ox = 0, oy = 0, lw = 0, lh = 0;   // lw/lh — розмір шару на момент визначення позиції
     bool cx = false, bot = false;   // шар центрований по горизонталі / притиснутий до низу: при зміні розміру зсув рахуємо самі
     bool known = false, empty = true;   // empty — на моніторі немає вікон: тоді малюємо запечений блюр
-    bool below = false;   // шар ПІД вікнами (дашборд): запечений блюр завжди — xray тут неможливий
     guint pending = 0;
     std::function<void(std::vector<GtkWidget*>&)> plates;
 };
@@ -659,7 +593,7 @@ inline void under_schedule(Under* u, int ms) {
 inline void under_draw(GtkDrawingArea*, cairo_t* cr, int, int, gpointer d) {
     Under* u = (Under*)d;
     if (!enabled() || !u->known) return;
-    if (!u->empty && !u->below) return;   // поверх програм — живий блюр Hyprland (запечений дає xray)
+    if (!u->empty) return;   // поверх програм — живий блюр Hyprland (запечений дає xray)
     mon_name() = u->mon;
     std::vector<GtkWidget*> v;
     if (u->plates) u->plates(v); else v.push_back(u->child);
@@ -677,9 +611,9 @@ inline void under_draw(GtkDrawingArea*, cairo_t* cr, int, int, gpointer d) {
 }
 inline GtkWidget* underlay(GtkWidget* win, GtkWidget* child, const char* ns, double radius,
                            std::function<void(std::vector<GtkWidget*>&)> plates = nullptr,
-                           bool center_x = false, bool bottom = false, bool below_windows = false) {
+                           bool center_x = false, bool bottom = false) {
     Under* u = new Under;
-    u->cx = center_x; u->bot = bottom; u->below = below_windows;
+    u->cx = center_x; u->bot = bottom;
     u->win = win; u->child = child; u->ns = ns; u->radius = radius; u->plates = std::move(plates);
     GtkWidget* ov = gtk_overlay_new();
     u->area = gtk_drawing_area_new();
@@ -782,9 +716,7 @@ inline void apply_font_setting() {
         fp = gtk_css_provider_new();
         gtk_style_context_add_provider_for_display(d, GTK_STYLE_PROVIDER(fp), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 5);
     }
-    // «Symbols Nerd Font» може бути не встановлений — тоді значок (напр. пам'ять U+EFC5) брав чужий шрифт
-    // із PUA (URW/Nimbus) і малювався «⌈». JetBrainsMono Nerd Font стоїть завжди (його вимагає SYSui).
-    std::string css = "* { font-family: \"" + clean + "\", \"Symbols Nerd Font\", \"JetBrainsMono Nerd Font\", sans-serif; }";
+    std::string css = "* { font-family: \"" + clean + "\", \"Symbols Nerd Font\", sans-serif; }";
     gtk_css_provider_load_from_string(fp, css.c_str());
 }
 

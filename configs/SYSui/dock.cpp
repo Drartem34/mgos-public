@@ -492,17 +492,7 @@ static void get_monitor_size(int& width, int& height) {
     height = cached_height;
 }
 
-// Запуск через mgos-launch: прозоре вікно з іконкою і спінером, яке програма потім заповнює (launch_splash.cpp)
-static void launch_app(const std::string& exec_cmd, const std::string& cls = "", const std::string& icon = "") {
-    if (gchar* ml = g_find_program_in_path("mgos-launch")) {
-        std::vector<const char*> av = {ml, "--cmd", exec_cmd.c_str()};
-        if (!cls.empty())  { av.push_back("--class"); av.push_back(cls.c_str()); }
-        if (!icon.empty()) { av.push_back("--icon");  av.push_back(icon.c_str()); }
-        av.push_back(nullptr);
-        gboolean ok = g_spawn_async(nullptr, (gchar**)av.data(), nullptr, G_SPAWN_DEFAULT, nullptr, nullptr, nullptr, nullptr);
-        g_free(ml);
-        if (ok) return;
-    }
+static void launch_app(const std::string& exec_cmd) {
     std::string cmd = exec_cmd + " >/dev/null 2>&1 &";
     system(cmd.c_str());
 }
@@ -785,8 +775,7 @@ static void on_recent_click(GtkButton* btn, gpointer user_data) {
     if (cmd) {
         const char* id = (const char*)g_object_get_data(G_OBJECT(btn), "app-id");
         if (id) genie::grow_expect(id);
-        const char* ic = (const char*)g_object_get_data(G_OBJECT(btn), "icon-name");
-        launch_app(cmd, id ? id : "", ic ? ic : "");
+        launch_app(cmd);
     }
     // Іконка підстрибує, поки програма запускається (як у macOS)
     GtkWidget* vbox = gtk_button_get_child(btn);
@@ -1053,7 +1042,6 @@ static gboolean update_dock(gpointer user_data) {
 
                 g_object_set_data_full(G_OBJECT(btn), "exec-cmd", g_strdup(ra.exec_cmd.c_str()), g_free);
                 g_object_set_data_full(G_OBJECT(btn), "app-id", g_strdup(ra.id.c_str()), g_free);
-                g_object_set_data_full(G_OBJECT(btn), "icon-name", g_strdup(ra.icon_name.c_str()), g_free);
 
                 g_signal_connect(btn, "clicked", G_CALLBACK(on_recent_click), NULL);
 
@@ -1340,7 +1328,7 @@ button.card-btn:hover { background: rgba(255,255,255,0.28); }
 }
 
 .sys-text {
-    font-size: 14px;
+    font-size: 14px;        
     font-weight: 800;
     margin-right: 6px;
     transition: color 0.6s cubic-bezier(0.25, 0.1, 0.25, 1);
@@ -1921,13 +1909,7 @@ static void stash_open_tile(StashTile* t) {
     if (t->kind == "app") {
         GDesktopAppInfo* a = g_desktop_app_info_new(t->id.c_str());
         if (!a) a = g_desktop_app_info_new_from_filename(t->id.c_str());     // .desktop з «Робочого столу»
-        if (a) {
-            gchar* ml = g_find_program_in_path("mgos-launch");
-            const char* av[] = {ml, "--desktop", t->id.c_str(), nullptr};
-            if (!ml || !g_spawn_async(nullptr, (gchar**)av, nullptr, G_SPAWN_DEFAULT, nullptr, nullptr, nullptr, nullptr))
-                g_app_info_launch(G_APP_INFO(a), nullptr, nullptr, nullptr);
-            g_free(ml); g_object_unref(a);
-        }
+        if (a) { g_app_info_launch(G_APP_INFO(a), nullptr, nullptr, nullptr); g_object_unref(a); }
     } else {
         char* uri = g_filename_to_uri(t->id.c_str(), nullptr, nullptr);
         if (uri) { g_app_info_launch_default_for_uri(uri, nullptr, nullptr); g_free(uri); }
