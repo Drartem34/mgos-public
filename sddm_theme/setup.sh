@@ -140,9 +140,8 @@ install_theme() {
     [[ -d "$dst/Fonts" ]] && spin "Installing fonts..." sudo cp -r "$dst/Fonts"/* /usr/share/fonts/
 
     # Configure SDDM
-    sudo mkdir -p /etc/sddm.conf.d
     echo "[Theme]
-    Current=$THEME_NAME" | sudo tee /etc/sddm.conf.d/theme.conf >/dev/null
+    Current=$THEME_NAME" | sudo tee /etc/sddm.conf >/dev/null
 
     sudo mkdir -p /etc/sddm.conf.d
     echo "[General]

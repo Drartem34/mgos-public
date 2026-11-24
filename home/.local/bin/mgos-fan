@@ -28,21 +28,11 @@ PPD_DROPIN=/etc/systemd/system/power-profiles-daemon.service.d/mgos-fan.conf
 LEVELS=(low-power quiet balanced performance)
 HYST=3   # °C: вниз перемикаємось, лише коли охололо на 3° нижче порогу — без «смикання»
 
-fan_rpm() {   # ноутбук: acpi_fan; десктоп: CPU_FAN1 материнки
-    local h n
-    for h in /sys/class/hwmon/hwmon*; do [ "$(cat "$h/name" 2>/dev/null)" = acpi_fan ] && cat "$h/fan1_input" 2>/dev/null && return; done
-    for h in /sys/class/hwmon/hwmon*; do n=$(cat "$h/name" 2>/dev/null)
-        case "$n" in nct6687|nct6683|nct6775|nct6798|it87) cat "$h/fan1_input" 2>/dev/null && return ;; esac; done
-    echo 0
-}
-cpu_temp() {   # Intel — coretemp; AMD — k10temp/zenpower (Tctl)
-    local h n
-    for n in coretemp k10temp zenpower; do
-        for h in /sys/class/hwmon/hwmon*; do
-            [ "$(cat "$h/name" 2>/dev/null)" = "$n" ] && { echo $(( $(cat "$h/temp1_input") / 1000 )); return; }
-        done
-    done
-    echo 0
+fan_rpm() { for h in /sys/class/hwmon/hwmon*; do [ "$(cat "$h/name" 2>/dev/null)" = acpi_fan ] && cat "$h/fan1_input" 2>/dev/null && return; done; echo 0; }
+cpu_temp() {
+    for h in /sys/class/hwmon/hwmon*; do
+        [ "$(cat "$h/name" 2>/dev/null)" = coretemp ] && { echo $(( $(cat "$h/temp1_input") / 1000 )); return; }
+    done; echo 0
 }
 saved() { cat "$STATE" 2>/dev/null || echo auto; }
 ppd_ok() { [ ! -e "$PPD_DROPIN" ]; }   # PPD стоковий (без --block-driver) — інакше кіоск не охолоджується
@@ -54,7 +44,7 @@ ppd_map() {   # режим живлення → профіль прошивки
 write_pp() {
     grep -qw "$1" "${PP}_choices" 2>/dev/null || { echo "профіль $1 не підтримується" >&2; return 2; }
     [ "$(cat "$PP")" = "$1" ] && return 0
-    if [ -w "$PP" ]; then echo "$1" > "$PP"; else echo "немає прав: «Налаштування → Продуктивність → Кулери → Дозволити»" >&2; return 3; fi
+    if [ -w "$PP" ]; then echo "$1" > "$PP"; else echo "немає прав: «Налаштування → Батарея → Кулер → Дозволити»" >&2; return 3; fi
 }
 curve_pct() {   # $1 °C → відсоток на кривій (лінійно між точками, як малює «Налаштування»)
     local pts; pts=$(grep -E '^[0-9]' "$CURVE" 2>/dev/null); [ -n "$pts" ] || pts=$'40 10\n55 35\n70 60\n85 90'
@@ -116,7 +106,7 @@ case "${1:-status}" in
     install)
         [ "$(id -u)" = 0 ] || { echo "потрібен root: sudo $0 install" >&2; exit 1; }
         cat > "$RULE" <<'EOF'
-# mgOS: дозволити групі wheel перемикати профіль прошивки (кулер) — Налаштування → Продуктивність → Кулери
+# mgOS: дозволити групі wheel перемикати профіль прошивки (кулер) — Налаштування → Батарея → Кулер
 ACTION=="add|change", SUBSYSTEM=="platform-profile", RUN+="/bin/sh -c 'chgrp wheel /sys%p/profile /sys/firmware/acpi/platform_profile; chmod g+w /sys%p/profile /sys/firmware/acpi/platform_profile'"
 EOF
         udevadm control --reload

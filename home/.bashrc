@@ -19,5 +19,6 @@ export PATH="/home/doki/.local/bin:$PATH"
 # kimi-code
 export PATH="/home/doki/.kimi-code/bin:$PATH"
 
+
 # kioskOS — енергоощадна сесія Hyprland (з TTY: kiosk)
-alias kiosk="Hyprland -c ~/.config/hyprland/kiosk.conf"
+alias kiosk="/usr/local/bin/kiosk-session"

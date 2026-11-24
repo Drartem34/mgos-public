@@ -10,11 +10,10 @@
 """
 import json
 import os
-import gi
 import subprocess
 from gi.repository import Gio, GLib, Gtk, Gdk
 from ignis import widgets
-import socket
+from ignis.services.hyprland import HyprlandService
 
 CACHE_DIR = os.path.expanduser("~/.config/ignis/cache/switcher")
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -28,62 +27,18 @@ item_widgets = []
 current_index = 0
 _tex_cache = {}          # path -> (mtime, Gdk.Texture)
 _shot_timer = 0
+hypr = None
 STASH = "special:mgos-dock"   # сховані на док вікна — теж показуємо в Alt+Tab
 
 ICON_MAP = {"code": "visual-studio-code", "telegram": "telegram-desktop", "kitty": "kitty",
             "thunar": "system-file-manager", "nautilus": "org.gnome.Nautilus", "megumin-settings": "preferences-system"}
 
 
-_HYPR_DIR = os.path.join(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"), "hypr",
-                         os.environ.get("HYPRLAND_INSTANCE_SIGNATURE", ""))
-
-
 def _ipc(cmd):
-    """Запит у сокет Hyprland напряму (ignis HyprlandService падає на Hyprland 0.57).
-    0.57 — Lua-конфіг: старі dispatch перекладаємо через mgosD з ~/.config/hypr/mgos/legacy.lua."""
-    if cmd.startswith("dispatch ") and not cmd[9:].startswith(("hl.", "mgosD")):
-        cmd = "dispatch mgosD([==[" + cmd[9:] + "]==])"
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sk:
-            sk.settimeout(1.0)
-            sk.connect(os.path.join(_HYPR_DIR, ".socket.sock"))
-            sk.sendall(cmd.encode())
-            out = b""
-            while chunk := sk.recv(65536):
-                out += chunk
-        return out.decode(errors="replace")
+        return hypr.send_command(cmd)
     except Exception:
         return ""
-
-
-def _watch_events():
-    """Події Hyprland (socket2): на activewindowv2 — оновити мініатюру."""
-    try:
-        sk = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sk.connect(os.path.join(_HYPR_DIR, ".socket2.sock"))
-    except Exception:
-        return
-    try:
-        gi.require_version("GioUnix", "2.0")
-        from gi.repository import GioUnix
-        raw = GioUnix.InputStream.new(sk.fileno(), False)
-    except Exception:
-        raw = Gio.UnixInputStream.new(sk.fileno(), False)
-    stream = Gio.DataInputStream.new(raw)
-    _watch_events.sock = sk   # тримаємо посилання, щоб сокет не закрився
-
-    def on_line(st, res):
-        try:
-            line, _ = st.read_line_finish_utf8(res)
-        except Exception:
-            line = None
-        if line is None:
-            return
-        if line.startswith("activewindowv2>>"):
-            on_active_changed()
-        st.read_line_async(GLib.PRIORITY_LOW, None, on_line)
-
-    stream.read_line_async(GLib.PRIORITY_LOW, None, on_line)
 
 
 def get_windows():
@@ -272,7 +227,8 @@ CSS = """
 
 
 def setup(app_instance):
-    global switcher_window, items_box
+    global switcher_window, items_box, hypr
+    hypr = HyprlandService.get_default()
 
     prov = Gtk.CssProvider()
     prov.load_from_string(CSS)
@@ -290,11 +246,12 @@ def setup(app_instance):
         css_classes=["sw-bg"],
         child=items_box,
     )
+    app_instance.add_window(window=switcher_window, window_name="switcher")
 
     for name, cb in [("next", step_next), ("prev", step_prev), ("release", on_release)]:
         act = Gio.SimpleAction.new(f"switcher-{name}", None)
         act.connect("activate", cb)
         app_instance.add_action(act)
 
-    _watch_events()
+    hypr.connect("notify::active-window", on_active_changed)
     on_active_changed()

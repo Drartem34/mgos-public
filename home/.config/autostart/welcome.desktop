@@ -1,5 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=welcome
-# mgOS: автозапуск EndeavourOS вимкнено (привітання mgOS запускає інсталятор при першому вході)
-Hidden=true

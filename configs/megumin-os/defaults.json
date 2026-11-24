@@ -85,5 +85,7 @@
     "wp_pixel_color": "",
     "wp_pixel_fps": 10,
     "wp_pixel_style": "virus",
-    "wp_pixel_theme": "auto"
+    "wp_pixel_theme": "auto",
+    "ui_scale:eDP-1": "1",
+    "tp_speed": 76
 }

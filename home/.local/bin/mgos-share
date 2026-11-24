@@ -10,6 +10,8 @@
 #   mgos-share daemon          служба: приймає файли й «привіт» від своїх пристроїв (порт 47811 tcp+udp)
 #   mgos-share pair            QR для з'єднання з новим пристроєм → PAIRED|<id>|<name>
 #   mgos-share push ID FILE... надіслати на свій пристрій → WAIT|  SENDING|<name>  GOT|<name>  DONE|  ERROR|<код>
+#   mgos-share link [ID] [URL|ТЕКСТ]  посилання/текст на телефон (без ID — на єдиний/усі на зв'язку;
+#                              без тексту — з буфера обміну) → WAIT|  DONE|<id>  ERROR|<код>
 #   mgos-share devices         список своїх пристроїв: id<TAB>name<TAB>kind<TAB>online(0/1)
 #   mgos-share forget ID       забути пристрій
 #   mgos-share open            відкрити блок «Надіслати» в топбарі (іконки пристроїв)
@@ -321,6 +323,9 @@ def serve(paths):
 import hashlib, hmac, json, select
 
 ONLINE_S = 45
+ONLINE_BG_S = 15 * 60    # телефон із фоновим прийомом: спить, але TCP-з'єднання його будить
+CHUNK = 1 << 20          # великі шматки — швидше на великих файлах (менше системних викликів)
+AVATAR_MAX = 2 << 20
 
 
 def conf_dir():
@@ -371,13 +376,69 @@ def save_devices(devs):
 
 
 def is_online(d):
-    return time.time() - d.get("seen", 0) < ONLINE_S
+    return time.time() - d.get("seen", 0) < (ONLINE_BG_S if d.get("bg") else ONLINE_S)
+
+
+def avatar_dir():
+    d = os.path.join(conf_dir(), "avatars")
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    return d
+
+
+def avatar_path(did):
+    return os.path.join(avatar_dir(), f"{did}.png")
+
+
+def set_user_avatar(src):
+    """Аватарка з телефона → фото користувача цього ПК: ~/.face(.icon), профіль mgOS, SDDM (як «Змінити фото» в налаштуваннях)."""
+    home = os.path.expanduser("~")
+    try:
+        for dst in (os.path.join(home, ".face.icon"), os.path.join(home, ".face"),
+                    os.path.join(home, ".config", "megumin-os", "avatar.png")):
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            if os.path.islink(dst):
+                os.unlink(dst)
+            shutil.copyfile(src, dst)
+    except OSError:
+        return
+    try:   # кругла копія для теми SDDM
+        from PIL import Image, ImageDraw
+        im = Image.open(src).convert("RGBA").resize((256, 256), Image.LANCZOS)
+        mask = Image.new("L", (256, 256), 0)
+        ImageDraw.Draw(mask).ellipse((2, 2, 253, 253), fill=255)
+        out = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
+        out.paste(im, (0, 0), mask)
+        ImageDraw.Draw(out).ellipse((3, 3, 252, 252), outline=(255, 255, 255, 170), width=3)
+        cache = os.path.join(home, ".cache", "megumin-os")
+        os.makedirs(cache, exist_ok=True)
+        out.save(os.path.join(cache, "avatar_round.png"))
+        theme = "/usr/share/sddm/themes/sddm-astronaut-theme/Assets"
+        if os.access(theme, os.W_OK):
+            out.save(os.path.join(theme, "avatar.png"))
+    except Exception:
+        pass
+    try:   # AccountsService (GNOME/GDM, деякі вікна входу) — тихо, якщо немає
+        subprocess.Popen(["busctl", "--system", "call", "org.freedesktop.Accounts", f"/org/freedesktop/Accounts/User{os.getuid()}",
+                          "org.freedesktop.Accounts.User", "SetIconFile", "s", os.path.join(home, ".face")],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
+    sync = os.path.join(home, ".config", "megumin-os", "sync_sddm.sh")
+    if os.path.exists(sync):
+        subprocess.Popen(["sudo", "-n", sync], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def write_tsv(devs=None):
     """Стан для топбару: id, ім'я, тип, час останнього «привіт» (топбар сам вирішує, чи онлайн)."""
     devs = load_devices() if devs is None else devs
-    lines = [f"{i}\t{d.get('name', '?')}\t{d.get('kind', 'phone')}\t{int(d.get('seen', 0))}" for i, d in devs.items()]
+    def row(i, d):
+        # «онлайн» для топбару = свіжий seen; телефону з фоновим прийомом подовжуємо (він спить, але прийме)
+        seen = int(d.get("seen", 0))
+        if d.get("bg") and is_online(d):
+            seen = int(time.time())
+        av = avatar_path(i) if d.get("avatar") and os.path.exists(avatar_path(i)) else ""
+        return f"{i}\t{d.get('name', '?')}\t{d.get('kind', 'phone')}\t{seen}\t{av}"
+    lines = [row(i, d) for i, d in devs.items()]
     f = os.path.join(cache_dir(), "share-devices.tsv")
     with open(f + ".tmp", "w") as fh:
         fh.write("\n".join(lines) + ("\n" if lines else ""))
@@ -407,10 +468,56 @@ def downloads_dir():
     return d
 
 
-def notify_received(dev_name, path):
+URL_RE = None
+
+
+def find_url(s):
+    """Перше http(s)-посилання в тексті (браузери телефона шлють «Заголовок\\nhttps://…»)."""
+    global URL_RE
+    import re
+    URL_RE = URL_RE or re.compile(r"https?://[^\s<>\"']+", re.I)
+    m = URL_RE.search(s or "")
+    return m.group(0).rstrip(".,);!?") if m else ""
+
+
+def copy_text(t):
+    try:
+        subprocess.run(["wl-copy", "--", t], timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def notify_link(dev_name, url, text, icon="mail-attachment"):
+    """Посилання з телефона: сповіщення «Відкрити» (тап) / «Копіювати». Просто текст — одразу в буфер обміну."""
+    def run():
+        if not url:
+            copy_text(text)
+            try:
+                subprocess.run(["notify-send", "-a", "Mg Share", "-i", icon, f"Текст від {dev_name} — скопійовано",
+                                html.escape(text[:300])], timeout=10)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            return
+        title = text.replace(url, "").strip() if text else ""
+        body = f"{html.escape(title[:200])}\n{html.escape(url)}" if title else html.escape(url)
+        try:
+            r = subprocess.run(["notify-send", "-a", "Mg Share", "-i", icon, "-A", "default=Відкрити",
+                                "-A", "copy=Копіювати", f"Посилання від {dev_name}", body],
+                               capture_output=True, text=True, timeout=600).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            return
+        if r == "default":
+            subprocess.Popen(["xdg-open", url], start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif r == "copy":
+            copy_text(url)
+    threading.Thread(target=run, daemon=True).start()
+
+
+def notify_received(dev_name, path, icon="folder-download"):
     def run():
         try:
-            r = subprocess.run(["notify-send", "-a", "Mg Share", "-i", "folder-download", "-A", "open=Відкрити",
+            r = subprocess.run(["notify-send", "-a", "Mg Share", "-i", icon, "-A", "open=Відкрити",
                                 "-A", "folder=Показати в теці", f"Від {dev_name}", os.path.basename(path)],
                                capture_output=True, text=True, timeout=600).stdout.strip()
         except (OSError, subprocess.TimeoutExpired):
@@ -526,10 +633,23 @@ class Link:
                     if u.path == "/hello":
                         j = self.body_json()
                         link.touch(a[0], self.client_address[0], int(j.get("port", PHONE_PORT)))
-                        return self.reply(200, {"id": link.me["id"], "name": link.me["name"]})
+                        need = link.profile(a[0], j)
+                        return self.reply(200, {"id": link.me["id"], "name": link.me["name"], "need_avatar": need})
                     if u.path == "/bye":
                         link.touch(a[0], self.client_address[0], None, gone=True)
                         return self.reply(200, {})
+                    if u.path == "/link":
+                        j = self.body_json()
+                        raw = str(j.get("url", "")).strip()
+                        url = raw if raw and find_url(raw) == raw else ""   # лише http(s): xdg-open не отримає file:// тощо
+                        text = str(j.get("text", ""))[:20000]
+                        if not url and not text.strip():
+                            return self.reply(400, {"error": "empty"})
+                        link.touch(a[0], self.client_address[0], None)
+                        av = avatar_path(a[0])
+                        notify_link(a[1].get("name", "телефону"), url, text,
+                                    av if a[1].get("avatar") and os.path.exists(av) else "mail-attachment")
+                        return self.reply(200, {"ok": True})
                     self.reply(404, {"error": "nf"})
                 except (ValueError, KeyError):
                     self.reply(400, {"error": "bad"})
@@ -539,6 +659,14 @@ class Link:
                 a = self.auth()
                 if not a:
                     return self.reply(403, {"error": "auth"})
+                if u.path == "/avatar":
+                    q = urllib.parse.parse_qs(u.query)
+                    n = int(self.headers.get("Content-Length") or 0)
+                    if n > AVATAR_MAX:
+                        return self.reply(413, {"error": "big"})
+                    b = self.rfile.read(n) if n else b""
+                    ok = link.save_avatar(a[0], q.get("sha", [""])[0], q.get("pc", ["0"])[0] == "1", b)
+                    return self.reply(200 if ok else 400, {"ok": ok})
                 if u.path != "/file":
                     return self.reply(404, {"error": "nf"})
                 q = urllib.parse.parse_qs(u.query)
@@ -550,9 +678,13 @@ class Link:
                 part = dst + ".mgpart"
                 got = 0
                 try:
-                    with open(part, "wb") as fh:
+                    self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 << 20)
+                except OSError:
+                    pass
+                try:
+                    with open(part, "wb", buffering=0) as fh:
                         while got < n:
-                            chunk = self.rfile.read(min(1 << 16, n - got))
+                            chunk = self.rfile.read(min(CHUNK, n - got))
                             if not chunk:
                                 break
                             fh.write(chunk); got += len(chunk)
@@ -565,10 +697,64 @@ class Link:
                     except OSError: pass
                     return self.reply(500, {"error": "disk"})
                 link.touch(a[0], self.client_address[0], None)
-                notify_received(a[1].get("name", "телефону"), dst)
+                av = avatar_path(a[0])
+                notify_received(a[1].get("name", "телефону"), dst, av if a[1].get("avatar") and os.path.exists(av) else "folder-download")
                 self.reply(200, {"saved": os.path.basename(dst)})
 
         return H
+
+    def profile(self, did, j):
+        """Ім'я / аватарка / фоновий режим з «привіт» телефона. → True, якщо треба надіслати нову аватарку."""
+        with self.cv:
+            devs = load_devices()
+            d = devs.get(did)
+            if not d:
+                return False
+            nm = str(j.get("name", "")).strip()[:60]
+            if nm:
+                d["name"] = nm
+            d["bg"] = bool(j.get("bg", False))
+            sha = str(j.get("avatar", ""))[:64]
+            pc = bool(j.get("pc_avatar", False))
+            need = False
+            if sha != d.get("avatar", ""):
+                if sha:
+                    need = True
+                else:   # прибрали аватарку на телефоні
+                    d.pop("avatar", None)
+                    try: os.unlink(avatar_path(did))
+                    except OSError: pass
+            elif sha and pc and not d.get("pc_avatar") and os.path.exists(avatar_path(did)):
+                set_user_avatar(avatar_path(did))   # увімкнули «фото на ПК» без зміни самої аватарки
+            d["pc_avatar"] = pc
+            save_devices(devs)
+            return need
+
+    def save_avatar(self, did, sha, pc, b):
+        if b and hashlib.sha256(b).hexdigest()[:16] != sha:
+            return False
+        if b and not b.startswith(b"\x89PNG"):
+            return False
+        with self.cv:
+            devs = load_devices()
+            d = devs.get(did)
+            if not d:
+                return False
+            p = avatar_path(did)
+            if b:
+                with open(p + ".tmp", "wb") as fh:
+                    fh.write(b)
+                os.replace(p + ".tmp", p)
+                d["avatar"] = sha
+            else:
+                d.pop("avatar", None)
+                try: os.unlink(p)
+                except OSError: pass
+            d["pc_avatar"] = pc
+            save_devices(devs)
+        if b and pc:
+            set_user_avatar(p)
+        return True
 
     def touch(self, did, ip, port, gone=False):
         with self.cv:
@@ -580,6 +766,8 @@ class Link:
             if port:
                 d["port"] = port
             d["seen"] = 0 if gone else time.time()
+            if gone:
+                d["bg"] = False
             save_devices(devs)
             self.cv.notify_all()
 
@@ -618,6 +806,8 @@ class Link:
             j = json.loads(f.readline() or b"{}")
             if j.get("cmd") == "pair":
                 self.ctl_pair(say, gone)
+            elif j.get("cmd") == "link":
+                self.ctl_link(j.get("ids") or [], str(j.get("text", "")), say, gone)
             elif j.get("cmd") == "push":
                 self.ctl_push(j.get("id", ""), j.get("files", []), say, gone)
             elif j.get("cmd") == "ping":
@@ -713,8 +903,67 @@ class Link:
                     devs = load_devices()
                     if did in devs:
                         devs[did]["seen"] = 0
+                        devs[did]["bg"] = False
                         save_devices(devs)
         say("DONE")
+
+    def post_link(self, d, url, text):
+        import http.client
+        body = json.dumps({"url": url, "text": text}).encode()
+        t = str(int(time.time()))
+        try:
+            conn = http.client.HTTPConnection(d["ip"], d.get("port", PHONE_PORT), timeout=6)
+            conn.request("POST", "/link", body, {
+                "Content-Type": "application/json", "X-Mg-From": self.me["id"], "X-Mg-Time": t,
+                "X-Mg-Sig": sign(d["key"], self.me["id"], t, "POST", "/link")})
+            r = conn.getresponse(); r.read(); conn.close()
+            return "ok" if r.status == 200 else "auth" if r.status == 403 else "fail"
+        except (OSError, http.client.HTTPException):
+            return "fail"
+
+    def ctl_link(self, ids, text, say, gone):
+        """Посилання/текст на телефон(и). Телефон слухає, лише коли відкрите вікно або фоновий прийом — чекаємо до 2 хв."""
+        text = text.strip()
+        if not text:
+            return say("ERROR", "empty")
+        url = find_url(text)
+        devs = load_devices()
+        if not ids:   # без ID: усі на зв'язку, а якщо таких нема — єдиний пристрій
+            ids = [i for i, d in devs.items() if is_online(d)] or (list(devs) if len(devs) == 1 else [])
+            if not ids:
+                return say("ERROR", "nodevice" if devs else "nodevices")
+        left = [i for i in ids if i in devs]
+        if not left:
+            return say("ERROR", "unknown")
+        tried, waiting, end = set(), False, time.time() + 120
+        while left:
+            for did in list(left):
+                d = load_devices().get(did)
+                if not d:
+                    left.remove(did); say("ERROR", "unknown", did); continue
+                # пряма спроба на останній IP (вікно могли відкрити, а «привіт» ще не дійшов), далі — лише коли на зв'язку
+                if d.get("ip") and (is_online(d) or did not in tried):
+                    tried.add(did)
+                    r = self.post_link(d, url, text)
+                    if r == "ok":
+                        self.touch(did, d["ip"], None); left.remove(did); say("DONE", did); continue
+                    if r == "auth":
+                        left.remove(did); say("ERROR", "auth", did); continue
+                    if is_online(d):   # телефон закрив вікно — чекаємо наступного «привіт»
+                        with self.cv:
+                            dd = load_devices()
+                            if did in dd:
+                                dd[did]["seen"] = 0; dd[did]["bg"] = False; save_devices(dd)
+            if not left:
+                break
+            if not waiting:
+                say("WAIT"); waiting = True
+            with self.cv:
+                self.cv.wait(1.0)
+            if gone():
+                return
+            if time.time() > end:
+                return say("ERROR", "timeout")
 
     def put_file(self, d, did, path, say, gone):
         import http.client
@@ -724,6 +973,12 @@ class Link:
         t = str(int(time.time()))
         try:
             conn = http.client.HTTPConnection(d["ip"], d.get("port", PHONE_PORT), timeout=15)
+            conn.connect()
+            try:
+                conn.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 << 20)
+                conn.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
             conn.putrequest("PUT", q)
             conn.putheader("Content-Length", str(size))
             conn.putheader("X-Mg-From", self.me["id"])
@@ -733,8 +988,8 @@ class Link:
             say("SENDING", name)
             sent, last = 0, -1
             with open(path, "rb") as fh:
-                while chunk := fh.read(1 << 16):
-                    conn.send(chunk)
+                while chunk := fh.read(CHUNK):
+                    conn.sock.sendall(chunk)
                     sent += len(chunk)
                     pct = sent * 100 // max(size, 1)
                     if pct != last:
@@ -771,6 +1026,16 @@ def daemon():
     http_srv.daemon_threads = True
     threading.Thread(target=http_srv.serve_forever, daemon=True).start()
     threading.Thread(target=link.udp_loop, daemon=True).start()
+
+    def tsv_tick():   # телефони з фоновим прийомом рідко кажуть «привіт» — тримаємо їх «онлайн» у топбарі
+        while True:
+            time.sleep(30)
+            try:
+                if any(d.get("bg") for d in load_devices().values()):
+                    write_tsv()
+            except OSError:
+                pass
+    threading.Thread(target=tsv_tick, daemon=True).start()
     try:
         link.ctl_loop(srv)
     except KeyboardInterrupt:
@@ -848,6 +1113,19 @@ def main():
         return ctl({"cmd": "pair"})
     if a[0] == "push" and len(a) >= 3:
         return ctl({"cmd": "push", "id": a[1], "files": [os.path.abspath(f) for f in a[2:]]})
+    if a[0] == "link":
+        devs = load_devices()
+        ids = [x for x in a[1:2] if x in devs]
+        rest = a[1 + len(ids):]
+        text = " ".join(rest)
+        if not text:
+            try:
+                text = subprocess.run(["wl-paste", "-n"], capture_output=True, text=True, timeout=5).stdout
+            except (OSError, subprocess.TimeoutExpired):
+                text = ""
+        if not text.strip():
+            print("нема що надсилати: дайте посилання або скопіюйте його", file=sys.stderr); return 1
+        return ctl({"cmd": "link", "ids": ids, "text": text})
     if a[0] == "devices":
         return devices_cmd()
     if a[0] == "forget" and len(a) == 2:

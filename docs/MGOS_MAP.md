@@ -12,6 +12,7 @@
 | Налаштування користувача | `~/.config/megumin-os/settings.json` (+ `defaults.json`) | у C++ — `sysui::settings_set/get` (`sysui_common.h`) |
 | Поточні шпалери | `~/.cache/ignis/last_wallpaper.txt` | файл/тека або `pixel:<style>` |
 | Файли шпалер | `~/Pictures/wallpapers` | тека з `day.*`/`night.*` = динамічні; у репо — `wallpapers/` |
+| Дашборд робочого столу 1 | `~/.config/SYSui/dashboard.cpp` | конфіг `~/.config/megumin-os/dashboard.json`, сторінка — `ignis/dashboard_settings.py`; `pkill -USR1 -x dashboard` — перечитати; прев'ю-вікно `dashboard --window` |
 | Привітання (перший вхід) | `~/.config/SYSui/welcome.cpp` | має свій список піксельних стилів `OPTS[]` |
 
 ## Шпалери

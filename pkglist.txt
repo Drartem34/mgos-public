@@ -92,6 +92,8 @@ gst-plugins-bad
 gst-plugins-ugly
 gum
 gvfs
+gvfs-gphoto2
+gvfs-mtp
 haveged
 hdparm
 hwdetect

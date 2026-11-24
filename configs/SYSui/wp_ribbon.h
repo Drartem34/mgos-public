@@ -22,7 +22,6 @@ struct Item {
     int color = -1;            // індекс кружечка палітри (-1 — ще невідомо)
     int dom = -1;              // упакований домінантний колір (див. classify), не залежить від палітри
     cairo_surface_t* surf = nullptr;
-    GdkTexture* tex = nullptr;   // та сама картинка на GPU (шар карток) — створюється при першому показі
     bool requested = false, failed = false;
 };
 struct Loader {
@@ -111,15 +110,6 @@ static int classify(int dom) {
 }
 
 static GtkWidget *win = nullptr, *area = nullptr;
-// Два шари: area — скло, пілюля, події миші (між кадрами прокрутки не змінюється — GTK бере готову растеризацію);
-// cards_area — лише смуга каруселі. Раніше одна область на весь екран 4K перерастеризовувалась щокадру (~30 к/с).
-static GtkWidget* cards_area = nullptr;
-static int layer = 0;              // 0 — малюємо area, 1 — cards_area
-static double cards_y = 0;   // зсув шару карток відносно area (зараз 0 — шар на весь екран)
-static bool settled_now = false;
-struct CarGeo { double cx = 0, cy = 0, Hc = 0, gap = 16, tx = 0, ty = 0, tw = 0, th = 0, px = 0, py = 0, pw = 0, ph = 0, pr = 0; };
-static CarGeo cg;
-static void qd() { if (area) gtk_widget_queue_draw(area); if (cards_area) gtk_widget_queue_draw(cards_area); }
 static std::vector<Item> items;
 static std::vector<int> view, vpos;
 static std::shared_ptr<Loader> loader;
@@ -330,7 +320,7 @@ static bool near(int idx) {
 }
 static void update_window() {
     if (!loader) return;
-    for (auto& it : items) if (it.surf && !near(&it - &items[0])) { cairo_surface_destroy(it.surf); it.surf = nullptr; g_clear_object(&it.tex); }
+    for (auto& it : items) if (it.surf && !near(&it - &items[0])) { cairo_surface_destroy(it.surf); it.surf = nullptr; }
     std::vector<int> want;
     int c = (int)lround(pos);
     for (int d = 0; d <= WIN; d++) for (int sg : {1, -1}) {
@@ -360,7 +350,7 @@ static void refilter() {
     target = std::clamp(target, 0.0, std::max(0.0, (double)view.size() - 1));
     last_center = -1;
     update_window();
-    qd();
+    if (area) gtk_widget_queue_draw(area);
 }
 
 // ---------- анімація ----------
@@ -371,20 +361,12 @@ static void spring(double& x, double& v, double to, double k, double c, double d
 static gboolean on_tick(GtkWidget*, GdkFrameClock* fc, gpointer) {
     gint64 t = gdk_frame_clock_get_frame_time(fc);
     double dt = last_t ? std::min(0.05, (t - last_t) / 1e6) : 1 / 60.0;
-    static const bool prof = getenv("MGOS_RIBBON_PROFILE") != nullptr;
-    if (prof && last_t) {   // інтервали кадрів: що бачить людина (растеризація cairo-вузла йде вже після draw)
-        static int n = 0, slow = 0; static double sum = 0, mx = 0; double ms = (t - last_t) / 1000.0;
-        sum += ms; mx = std::max(mx, ms); slow += ms > 25; 
-        if (++n == 60) { fprintf(stderr, "ribbon frames: avg %.1f ms (%.0f fps), max %.1f ms, >25ms: %d/60\n", sum / 60, 60000 / sum, mx, slow); n = slow = 0; sum = mx = 0; }
-    }
     last_t = t;
     bool anim = sysui::settings().animations;
     if (!anim) { p = p_target; pv = 0; pos = target; posv = 0; }
     else {
         if (p_target > 0.5) spring(p, pv, p_target, 170, 19, dt);     // розгортання з легким перебігом
-        // згортання — та сама затухаюча пружина, що в розширеного годинника (clock_popover.h spring_close:
-        // a=6, b=7 за 540 мс → k≈291, c≈22): схлопується, трохи «пролітає» бульбашку і осідає
-        else spring(p, pv, p_target, 291, 22.2, dt);
+        else spring(p, pv, p_target, 300, 2 * std::sqrt(300.0), dt);   // згортання без перебігу
         spring(pos, posv, target, 230, 2 * std::sqrt(230.0) * 0.92, dt);
     }
     if ((int)lround(pos) != last_center) { last_center = (int)lround(pos); update_window(); }
@@ -392,7 +374,7 @@ static gboolean on_tick(GtkWidget*, GdkFrameClock* fc, gpointer) {
     bool ss = std::fabs(pos - target) < 0.002 && std::fabs(posv) < 0.02;
     if (sp) { p = p_target; pv = 0; }
     if (ss) { pos = target; posv = 0; }
-    if (settled_now && sp && p_target == 1 && cards_area) gtk_widget_queue_draw(cards_area); else qd();
+    gtk_widget_queue_draw(area);
     if (p_target == 0 && sp) { tick_id = 0; last_t = 0; finish_close(); return G_SOURCE_REMOVE; }
     if (sp && ss) { tick_id = 0; last_t = 0; return G_SOURCE_REMOVE; }
     return G_SOURCE_CONTINUE;
@@ -414,13 +396,6 @@ static R target_rect(double W, double H) {
 }
 static R panel_rect(double W, double H) {
     R T = target_rect(W, H);
-    if (p < 0) {   // перебіг пружини за бульбашку: стискаємо саму бульбашку навколо її центру (як годинник, до −30%)
-        // стрічка в ~45 разів ширша за бульбашку: нахил «як при розгортанні» впирав би перебіг у −30% одразу,
-        // і бульбашка «зависала» стиснутою. Фіксований коефіцієнт — плавне «пружне» стискання до ~−18% і назад
-        double s = std::max(-0.3, p * 2.6);
-        double w = std::max(8.0, bw * (1 + s)), h = std::max(8.0, bh * (1 + s));
-        return {bx + (bw - w) / 2, by + (bh - h) / 2, w, h, h / 2};
-    }
     double q = p, qh = p - 0.10 * std::sin(M_PI * clamp01(p));   // висота трохи відстає — «стікає» вниз
     return {bx + (T.x - bx) * q, by + (T.y - by) * q,
             bw + (T.w - bw) * q, bh + (T.h - bh) * qh, bh / 2 + (T.r - bh / 2) * clamp01(p)};
@@ -533,161 +508,8 @@ static void card_path(cairo_t* cr, double xc, double cy, double w, double h) {
     cairo_restore(cr);
 }
 
-static void draw_impl(cairo_t* cr, int W, int H);
-// MGOS_RIBBON_PROFILE=1 — середній час кадру в stderr раз на 60 кадрів (діагностика лагів прокрутки)
-// ---------- шар карток на GPU (GtkSnapshot) ----------
-// Картки — текстури GPU: скошена форма = трансформація GSK + заокруглена обрізка, масштаб — на відеокарті.
-// Прокрутка лише міняє координати, CPU пікселів не растеризує (cairo-шар давав ~30 к/с на 4K).
-static void snap_tr(GtkSnapshot* sn, double x, double y) { graphene_point_t pt = GRAPHENE_POINT_INIT((float)x, (float)y); gtk_snapshot_translate(sn, &pt); }
-static GdkTexture* surf_tex(cairo_surface_t* s) {
-    cairo_surface_flush(s);
-    int w = cairo_image_surface_get_width(s), h = cairo_image_surface_get_height(s), st = cairo_image_surface_get_stride(s);
-    GBytes* b = g_bytes_new(cairo_image_surface_get_data(s), (gsize)st * h);
-    GdkTexture* t = gdk_memory_texture_new(w, h, GDK_MEMORY_B8G8R8X8, b, st);
-    g_bytes_unref(b);
-    return t;
-}
-static void snap_text(GtkSnapshot* sn, GtkWidget* wd, const std::string& str, double x, double y, double size, bool bold,
-                      int align, double maxw, const GdkRGBA& col, double* out_w = nullptr) {
-    PangoLayout* l = gtk_widget_create_pango_layout(wd, str.c_str());
-    PangoFontDescription* fd = pango_font_description_copy(pango_context_get_font_description(pango_layout_get_context(l)));
-    pango_font_description_set_absolute_size(fd, size * PANGO_SCALE);
-    pango_font_description_set_weight(fd, bold ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_MEDIUM);
-    pango_layout_set_font_description(l, fd); pango_font_description_free(fd);
-    if (maxw > 0) { pango_layout_set_width(l, (int)(maxw * PANGO_SCALE)); pango_layout_set_ellipsize(l, PANGO_ELLIPSIZE_END); }
-    int tw, th; pango_layout_get_pixel_size(l, &tw, &th);
-    if (out_w) *out_w = tw;
-    gtk_snapshot_save(sn);
-    snap_tr(sn, (float)(align == 1 ? x - tw / 2.0 : x), (float)(y - th / 2.0));
-    gtk_snapshot_append_layout(sn, l, &col);
-    gtk_snapshot_restore(sn);
-    g_object_unref(l);
-}
-static void cards_snapshot(GtkWidget* wd, GtkSnapshot* sn) {
-    if (!settled_now || !opened || view.empty() || cg.Hc <= 0) return;
-    static const bool prof = getenv("MGOS_RIBBON_PROFILE") != nullptr;
-    gint64 t0 = prof ? g_get_monotonic_time() : 0;
-    gtk_snapshot_save(sn);
-    snap_tr(sn, 0, (float)-cards_y);   // координати вікна, як у area
-    {   // картки не виходять за скло панелі
-        GskRoundedRect pr; graphene_rect_t pb = GRAPHENE_RECT_INIT((float)cg.px, (float)cg.py, (float)cg.pw, (float)cg.ph);
-        gsk_rounded_rect_init_from_rect(&pr, &pb, (float)cg.pr);
-        gtk_snapshot_push_rounded_clip(sn, &pr);
-    }
-    const double Hc = cg.Hc, gap = cg.gap, cx = cg.cx, cy = cg.cy;
-    static double F[241]; static double fHc = -1;
-    if (fHc != Hc) {
-        F[0] = 0; fHc = Hc;
-        for (int i = 1; i <= 240; i++) { double t = (i - 0.5) * 0.05; F[i] = F[i - 1] + 0.05 * (Hc * sfac(t) * wfac(t) + gap); }
-    }
-    auto Fa = [&](double a) { double fi = std::min(a, 11.99) / 0.05; int i = (int)fi; return F[i] + (F[i + 1] - F[i]) * (fi - i); };
-    step_px = Fa(1);
-    int c = (int)lround(pos);
-    std::vector<std::pair<double, int>> order;
-    for (int vi = std::max(0, c - WIN - 1); vi <= std::min((int)view.size() - 1, c + WIN + 1); vi++) order.push_back({std::fabs(vi - pos), vi});
-    std::sort(order.begin(), order.end(), [](auto& A, auto& B) { return A.first > B.first; });
-    geos.clear();
-    // 2D-скіс (категорія 2D, а не довільна матриця) — під загальною matrix GSK не вміє заокруглену обрізку (рожеві картки)
-    const float sdeg = (float)(std::atan(SKEW) * 180 / M_PI);
-    GskTransform* sk = gsk_transform_skew(nullptr, -sdeg, 0);
-    GskTransform* unsk = gsk_transform_skew(nullptr, sdeg, 0);
-    auto rgba = [](double r, double g, double b, double a) { GdkRGBA c{(float)r, (float)g, (float)b, (float)a}; return c; };
-    for (auto& [a, vi] : order) {
-        double d = vi - pos, h = Hc * sfac(a), w = Hc * sfac(a) * wfac(a);
-        double xc = cx + (d < 0 ? -1 : 1) * Fa(a);
-        if (xc + w / 2 + SKEW * h < cg.tx || xc - w / 2 - SKEW * h > cg.tx + cg.tw) continue;
-        Item& it = items[view[vi]];
-        bool hov = hover_card == vi;
-        if (hov) { w *= 1.025; h *= 1.025; }
-        geos.push_back({vi, xc, cy, w, h});
-        double bwid = w + SKEW * h;
-        GskRoundedRect rr;
-        graphene_rect_t box = GRAPHENE_RECT_INIT((float)(-w / 2), (float)(-h / 2), (float)w, (float)h);
-        gsk_rounded_rect_init_from_rect(&rr, &box, (float)std::min(22.0, h * 0.07));
-        graphene_rect_t full = GRAPHENE_RECT_INIT((float)(-bwid / 2 - 2), (float)(-h / 2 - 2), (float)(bwid + 4), (float)(h + 4));
-        gtk_snapshot_save(sn);
-        snap_tr(sn, (float)xc, (float)cy);
-        gtk_snapshot_transform(sn, sk);            // трапеція: скошена форма картки
-        gtk_snapshot_push_rounded_clip(sn, &rr);
-        gtk_snapshot_save(sn);
-        gtk_snapshot_transform(sn, unsk);          // картинка — без скосу, скошена лише форма
-        if (it.surf) {
-            if (!it.tex) it.tex = surf_tex(it.surf);
-            double sw = gdk_texture_get_width(it.tex), sh = gdk_texture_get_height(it.tex), sc = std::max(bwid / sw, h / sh);
-            graphene_rect_t ir = GRAPHENE_RECT_INIT((float)(-sw * sc / 2), (float)(-sh * sc / 2), (float)(sw * sc), (float)(sh * sc));
-            gtk_snapshot_append_scaled_texture(sn, it.tex, GSK_SCALING_FILTER_LINEAR, &ir);
-        } else {
-            GdkRGBA pc = rgba(acc_r * 0.3 + (light ? 0.6 : 0.1), acc_g * 0.3 + (light ? 0.6 : 0.1), acc_b * 0.3 + (light ? 0.6 : 0.1), 1);
-            gtk_snapshot_append_color(sn, &pc, &full);
-            GdkRGBA tc = light ? rgba(0.11, 0.11, 0.12, 0.55) : rgba(0.96, 0.96, 0.97, 0.55);
-            snap_text(sn, wd, it.failed ? it.name : "…", 0, 0, 13, false, 1, w * 0.7, tc);
-        }
-        double dim = std::min(a, 3.0) / 3.0 * 0.38;
-        if (dim > 0) { GdkRGBA dc = light ? rgba(1, 1, 1, dim * 0.8) : rgba(0, 0, 0, dim); gtk_snapshot_append_color(sn, &dc, &full); }
-        if (hov) { GdkRGBA hc = rgba(1, 1, 1, 0.06); gtk_snapshot_append_color(sn, &hc, &full); }
-        double la = clamp01(1 - a * 1.6);
-        if (la > 0) {   // підпис центральної
-            graphene_rect_t gr = GRAPHENE_RECT_INIT((float)(-bwid / 2 - 2), (float)(h * 0.1), (float)(bwid + 4), (float)(h * 0.4 + 2));
-            GskColorStop st[2] = {{0, rgba(0, 0, 0, 0)}, {1, rgba(0, 0, 0, 0.6 * la)}};
-            graphene_point_t g0 = GRAPHENE_POINT_INIT(0, (float)(h * 0.1)), g1 = GRAPHENE_POINT_INIT(0, (float)(h / 2));
-            gtk_snapshot_append_linear_gradient(sn, &gr, &g0, &g1, st, 2);
-            const char* tag = it.kind == K_VID ? "Відео" : it.kind == K_DYN ? "Динамічні" : it.kind == K_PIX ? "Піксельні" : "";
-            double tx = -bwid / 2 + 26, ty = h / 2 - 26, nw = 0;
-            snap_text(sn, wd, it.name, tx, ty, 15, true, 0, w * 0.62, rgba(1, 1, 1, 0.95 * la), &nw);
-            if (*tag) {
-                double tw2 = 0;
-                snap_text(sn, wd, tag, 0, -10000, 11, true, 0, -1, rgba(0, 0, 0, 0), &tw2);   // лише ширина (поза кадром)
-                tw2 += 16;
-                GskRoundedRect tagr; graphene_rect_t tb = GRAPHENE_RECT_INIT((float)(tx + nw + 10), (float)(ty - 10), (float)tw2, 20);
-                gsk_rounded_rect_init_from_rect(&tagr, &tb, 10);
-                gtk_snapshot_push_rounded_clip(sn, &tagr);
-                GdkRGBA tg = rgba(1, 1, 1, 0.22 * la); gtk_snapshot_append_color(sn, &tg, &tb);
-                gtk_snapshot_pop(sn);
-                snap_text(sn, wd, tag, tx + nw + 18, ty, 11, true, 0, -1, rgba(1, 1, 1, 0.95 * la));
-            }
-        }
-        gtk_snapshot_restore(sn);
-        gtk_snapshot_pop(sn);                       // обрізка
-        // рамка (у скошеному просторі)
-        float bwd; GdkRGBA bc;
-        if (it.path == current) { bwd = 3; bc = rgba(acc_r, acc_g, acc_b, 1); }
-        else if (hov) { bwd = 1.6f; bc = light ? rgba(0.11, 0.11, 0.12, 0.55) : rgba(0.96, 0.96, 0.97, 0.55); }
-        else { bwd = 1; bc = light ? rgba(0, 0, 0, 0.10) : rgba(1, 1, 1, 0.12); }
-        float bw4[4] = {bwd, bwd, bwd, bwd}; GdkRGBA bc4[4] = {bc, bc, bc, bc};
-        gtk_snapshot_append_border(sn, &rr, bw4, bc4);
-        gtk_snapshot_restore(sn);
-    }
-    gsk_transform_unref(sk); gsk_transform_unref(unsk);
-    // лічильник
-    char cnt[32]; snprintf(cnt, sizeof cnt, "%d / %zu", std::clamp(c, 0, (int)view.size() - 1) + 1, view.size());
-    snap_text(sn, wd, cnt, cg.tx + cg.tw - 28 - 60, cg.ty + cg.th - 13, 11, false, 0, -1,
-              light ? rgba(0.11, 0.11, 0.12, 0.45) : rgba(0.96, 0.96, 0.97, 0.45));
-    gtk_snapshot_pop(sn);
-    gtk_snapshot_restore(sn);
-    if (prof) { static gint64 sum = 0; static int n = 0; sum += g_get_monotonic_time() - t0;
-        if (++n == 60) { fprintf(stderr, "cards snapshot: avg %.2f ms\n", sum / 60.0 / 1000); sum = 0; n = 0; } }
-}
-typedef struct { GtkWidget parent; } RibbonCards;
-typedef struct { GtkWidgetClass parent_class; } RibbonCardsClass;
-G_DEFINE_TYPE(RibbonCards, ribbon_cards, GTK_TYPE_WIDGET)
-static void ribbon_cards_class_init(RibbonCardsClass* k) { GTK_WIDGET_CLASS(k)->snapshot = cards_snapshot; }
-static void ribbon_cards_init(RibbonCards*) {}
-
 static void draw(GtkDrawingArea*, cairo_t* cr, int W, int H, gpointer) {
-    static const bool prof = getenv("MGOS_RIBBON_PROFILE") != nullptr;
-    gint64 t0 = prof ? g_get_monotonic_time() : 0;
-    layer = 0;
-    draw_impl(cr, W, H);
-    if (prof) {
-        static gint64 sum = 0, mx = 0; static int n = 0;
-        gint64 d = g_get_monotonic_time() - t0; sum += d; mx = std::max(mx, d);
-        if (++n == 60) { double sx = 1, sy = 1; cairo_surface_get_device_scale(cairo_get_target(cr), &sx, &sy);
-            fprintf(stderr, "ribbon draw: avg %.2f ms, max %.2f ms (%dx%d @%.2f)\n", sum / 60.0 / 1000, mx / 1000.0, W, H, sx);
-            sum = mx = 0; n = 0; }
-    }
-}
-static void draw_impl(cairo_t* cr, int W, int H) {
-    if (layer == 0) { hits.clear(); tip_i = -1; }
+    hits.clear(); geos.clear(); tip_i = -1;
     if (!opened) return;
     {   // палітра wal/акцент змінились, поки панель відкрита — перечитати (не частіше ніж раз на секунду)
         static gint64 last_chk = 0; gint64 now = g_get_monotonic_time();
@@ -695,93 +517,47 @@ static void draw_impl(cairo_t* cr, int W, int H) {
     }
     R P = panel_rect(W, H), T = target_rect(W, H);
     double pc = clamp01(p);
-    double ta = clamp01(1 - p * 3);
-    double ca = clamp01((p - 0.4) / 0.45);
-    double slide = (1 - ca) * -14;
-    double pw = 0, ph = 42, px = 0, py = 0;
-    if (ca > 0) { pw = pill_w(cr, false, 0, 0, ca); px = T.x + (T.w - pw) / 2; py = T.y + 16 + slide; }
-    // Панель розгорнута й стоїть: скло, тінь і пілюля фільтрів між кадрами прокрутки не змінюються — малюємо
-    // їх раз у кеш (фізичні пікселі) і далі лише копіюємо. Раніше ~8 повноекранних проходів cairo на кадр
-    // давали ~25 к/с прокрутки на 4K.
-    bool settled = p_target == 1 && std::fabs(p - 1) < 0.002 && ta <= 0;
-    if (layer == 0) {
-        bool was = settled_now; settled_now = settled && cards_area;
-        if (was != settled_now && cards_area) gtk_widget_queue_draw(cards_area);
-    }
-    double sc = 1;
-    if (GtkNative* nat = area ? gtk_widget_get_native(area) : nullptr)
-        if (GdkSurface* su = gtk_native_get_surface(nat)) sc = gdk_surface_get_scale(su);
-    char keyb[512];
-    snprintf(keyb, sizeof keyb, "%d %d %.3f %d %s %d %d %d %d %d %zu %s %p %ld", W, H, sc, light, accent_hex.c_str(), hover_btn,
-             f_recent, f_kind, f_color, search_on, pal.size(), query.c_str(), (void*)sysui::bb::cache().s, (long)sysui::bb::cache().mtime);
-    static cairo_surface_t* chrome = nullptr; static std::string chrome_key; static std::vector<Hit> chrome_hits;
-    static int chrome_tip = -1; static double chrome_tx = 0, chrome_ty = 0;
-    auto draw_chrome = [&](cairo_t* c) {
-        // м'яка тінь
-        for (int i = 1; i <= 4; i++) { cairo_set_source_rgba(c, 0, 0, 0, 0.045 * pc); rrect(c, P.x - i * 3, P.y - i * 2 + 6, P.w + i * 6, P.h + i * 5, P.r + i * 3); cairo_fill(c); }
-        // скло: запечений блюр + тонування
-        cairo_save(c); cairo_translate(c, P.x, P.y);
-        bool baked = sysui::bb::paint(c, P.x, P.y, P.w, P.h, P.r);
-        cairo_restore(c);
-        rrect(c, P.x, P.y, P.w, P.h, P.r);
-        if (light) cairo_set_source_rgba(c, 0.97, 0.97, 0.98, baked ? 0.55 : 0.93);
-        else cairo_set_source_rgba(c, 0.08, 0.08, 0.10, baked ? 0.48 : 0.90);
-        cairo_fill_preserve(c);
-        cairo_pattern_t* gl = cairo_pattern_create_linear(0, P.y, 0, P.y + P.h);
-        cairo_pattern_add_color_stop_rgba(gl, 0, acc_r, acc_g, acc_b, 0.13 * pc);
-        cairo_pattern_add_color_stop_rgba(gl, 0.6, acc_r, acc_g, acc_b, 0);
-        cairo_set_source(c, gl); cairo_fill_preserve(c); cairo_pattern_destroy(gl);
-        if (light) cairo_set_source_rgba(c, 0, 0, 0, 0.10); else cairo_set_source_rgba(c, 1, 1, 1, 0.13);
-        cairo_set_line_width(c, 1); cairo_stroke(c);
-        cairo_save(c);
-        rrect(c, P.x, P.y, P.w, P.h, P.r); cairo_clip(c);
-        if (ta > 0) {   // годинник бульбашки тане в перші миті
-            time_t now = time(nullptr); char buf[16]; strftime(buf, sizeof buf, "%H:%M", localtime(&now));
-            fg(c, ta); text(c, buf, P.x + P.w / 2, P.y + std::min(P.h, bh) / 2, bh * 0.42, true, 1);
-        }
-        if (ca > 0) {   // пілюля фільтрів
-            rrect(c, px, py, pw, ph, ph / 2);
-            if (light) cairo_set_source_rgba(c, 1, 1, 1, 0.55 * ca); else cairo_set_source_rgba(c, 0, 0, 0, 0.30 * ca);
-            cairo_fill_preserve(c);
-            if (light) cairo_set_source_rgba(c, 0, 0, 0, 0.06 * ca); else cairo_set_source_rgba(c, 1, 1, 1, 0.08 * ca);
-            cairo_stroke(c);
-            pill_w(c, true, px, py + ph / 2, ca);
-        }
-        cairo_restore(c);
-    };
-    if (layer == 1) {}
-    else if (settled) {
-        if (!chrome || chrome_key != keyb) {
-            if (chrome) cairo_surface_destroy(chrome);
-            chrome = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, (int)std::ceil(W * sc), (int)std::ceil(H * sc));
-            cairo_surface_set_device_scale(chrome, sc, sc);
-            cairo_t* c2 = cairo_create(chrome);
-            hits.clear(); tip_i = -1;
-            draw_chrome(c2);
-            cairo_destroy(c2);
-            chrome_key = keyb; chrome_hits = hits; chrome_tip = tip_i; chrome_tx = tip_x; chrome_ty = tip_y;
-        } else {
-            hits = chrome_hits; tip_i = chrome_tip; tip_x = chrome_tx; tip_y = chrome_ty;
-        }
-        cairo_set_source_surface(cr, chrome, 0, 0);
-        cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_FAST);
-        cairo_paint(cr);
-    } else {
-        if (chrome) { cairo_surface_destroy(chrome); chrome = nullptr; chrome_key.clear(); }   // анімація — пам'ять кешу не тримаємо
-        draw_chrome(cr);
-    }
+    // м'яка тінь
+    for (int i = 1; i <= 4; i++) { cairo_set_source_rgba(cr, 0, 0, 0, 0.045 * pc); rrect(cr, P.x - i * 3, P.y - i * 2 + 6, P.w + i * 6, P.h + i * 5, P.r + i * 3); cairo_fill(cr); }
+    // скло: запечений блюр + тонування
+    cairo_save(cr); cairo_translate(cr, P.x, P.y);
+    bool baked = sysui::bb::paint(cr, P.x, P.y, P.w, P.h, P.r);
+    cairo_restore(cr);
+    rrect(cr, P.x, P.y, P.w, P.h, P.r);
+    if (light) cairo_set_source_rgba(cr, 0.97, 0.97, 0.98, baked ? 0.55 : 0.93);
+    else cairo_set_source_rgba(cr, 0.08, 0.08, 0.10, baked ? 0.48 : 0.90);
+    cairo_fill_preserve(cr);
+    cairo_pattern_t* gl = cairo_pattern_create_linear(0, P.y, 0, P.y + P.h);
+    cairo_pattern_add_color_stop_rgba(gl, 0, acc_r, acc_g, acc_b, 0.13 * pc);
+    cairo_pattern_add_color_stop_rgba(gl, 0.6, acc_r, acc_g, acc_b, 0);
+    cairo_set_source(cr, gl); cairo_fill_preserve(cr); cairo_pattern_destroy(gl);
+    if (light) cairo_set_source_rgba(cr, 0, 0, 0, 0.10); else cairo_set_source_rgba(cr, 1, 1, 1, 0.13);
+    cairo_set_line_width(cr, 1); cairo_stroke(cr);
+
     cairo_save(cr);
     rrect(cr, P.x, P.y, P.w, P.h, P.r); cairo_clip(cr);
+    // годинник бульбашки тане в перші миті
+    double ta = clamp01(1 - p * 3);
+    if (ta > 0) {
+        time_t now = time(nullptr); char buf[16]; strftime(buf, sizeof buf, "%H:%M", localtime(&now));
+        fg(cr, ta); text(cr, buf, P.x + P.w / 2, P.y + std::min(P.h, bh) / 2, bh * 0.42, true, 1);
+    }
+    double ca = clamp01((p - 0.4) / 0.45);
     if (ca > 0) {
+        double slide = (1 - ca) * -14;
+        // пілюля фільтрів
+        double pw = pill_w(cr, false, 0, 0, ca), ph = 42, px = T.x + (T.w - pw) / 2, py = T.y + 16 + slide;
+        rrect(cr, px, py, pw, ph, ph / 2);
+        if (light) cairo_set_source_rgba(cr, 1, 1, 1, 0.55 * ca); else cairo_set_source_rgba(cr, 0, 0, 0, 0.30 * ca);
+        cairo_fill_preserve(cr);
+        if (light) cairo_set_source_rgba(cr, 0, 0, 0, 0.06 * ca); else cairo_set_source_rgba(cr, 1, 1, 1, 0.08 * ca);
+        cairo_stroke(cr);
+        pill_w(cr, true, px, py + ph / 2, ca);
 
         // карусель
-        bool here = settled_now ? layer == 1 : layer == 0;
-        if (here) geos.clear();
         double top = py + ph + 22, bot = T.y + T.h - 24, Hc = std::max(80.0, bot - top), cy = (top + bot) / 2 - slide * 0.5;
         double cx = T.x + T.w / 2, gap = 16;
-        if (layer == 0) cg = {cx, cy, Hc, gap, T.x, T.y, T.w, T.h, P.x, P.y, P.w, P.h, P.r};
-        if (!here) {}
-        else if (view.empty()) {
+        if (view.empty()) {
             fg(cr, 0.55 * ca);
             text(cr, f_color >= 0 ? std::string("Немає шпалер у кольорі: ") + (f_color < (int)pal.size() ? pal[f_color].name : "") + " (кольори ще визначаються…)" : "Нічого не знайдено", cx, cy, 15, false, 1);
         } else {
@@ -796,8 +572,6 @@ static void draw_impl(cairo_t* cr, int W, int H) {
             for (int vi = std::max(0, c - WIN - 1); vi <= std::min((int)view.size() - 1, c + WIN + 1); vi++) order.push_back({std::fabs(vi - pos), vi});
             std::sort(order.begin(), order.end(), [](auto& A, auto& B) { return A.first > B.first; });
             double zoom = 0.86 + 0.14 * ca;
-            static const bool nocards = getenv("MGOS_RIBBON_NOCARDS") != nullptr;
-            if (nocards) order.clear();
             for (auto& [a, vi] : order) {
                 double d = vi - pos, h = Hc * sfac(a) * zoom, w = Hc * sfac(a) * wfac(a) * zoom;
                 double xc = cx + (d < 0 ? -1 : 1) * Fa(a) * zoom;
@@ -806,33 +580,10 @@ static void draw_impl(cairo_t* cr, int W, int H) {
                 bool hov = hover_card == vi;
                 if (hov) { w *= 1.025; h *= 1.025; }
                 geos.push_back({vi, xc, cy, w, h});
-                double bwid = w + SKEW * h, bx0 = xc - bwid / 2, by0 = cy - h / 2;
-                double dim = std::min(a, 3.0) / 3.0 * 0.38;
-                double la = clamp01(1 - a * 1.6) * ca;
-                // Швидкий шлях (панель розгорнута): картинка заливається прямо у форму картки, без маски
-                // обрізки; у русі — найшвидший фільтр (різниці не видно), щойно стрічка стала — якісний.
-                // Раніше кожна картка = cairo_clip(скошена форма) + масштаб BILINEAR + ще прохід затемнення:
-                // ~30 к/с прокрутки на 4K.
-                if (it.surf && ca >= 0.999 && la <= 0) {
-                    double sw = cairo_image_surface_get_width(it.surf), sh = cairo_image_surface_get_height(it.surf);
-                    double sc = std::max(bwid / sw, h / sh);
-                    cairo_pattern_t* pat = cairo_pattern_create_for_surface(it.surf);
-                    cairo_matrix_t m; cairo_matrix_init_scale(&m, 1 / sc, 1 / sc);
-                    cairo_matrix_translate(&m, -(xc - sw * sc / 2), -(cy - sh * sc / 2));
-                    cairo_pattern_set_matrix(pat, &m);
-                    bool moving = std::fabs(posv) > 0.01 || std::fabs(pos - target) > 0.002;
-                    cairo_pattern_set_filter(pat, moving ? CAIRO_FILTER_FAST : CAIRO_FILTER_BILINEAR);
-                    card_path(cr, xc, cy, w, h);
-                    cairo_set_source(cr, pat); cairo_fill_preserve(cr); cairo_pattern_destroy(pat);
-                    double ov = 0;   // затемнення далеких і підсвітка наведеної — одна заливка
-                    if (hov) { cairo_set_source_rgba(cr, 1, 1, 1, 0.06); ov = 1; }
-                    else if (dim > 0) { if (light) cairo_set_source_rgba(cr, 1, 1, 1, dim * 0.8); else cairo_set_source_rgba(cr, 0, 0, 0, dim); ov = 1; }
-                    if (ov) cairo_fill_preserve(cr);
-                    cairo_new_path(cr);
-                } else {
                 cairo_save(cr);
                 card_path(cr, xc, cy, w, h);
                 cairo_clip(cr);
+                double bwid = w + SKEW * h, bx0 = xc - bwid / 2, by0 = cy - h / 2;
                 if (it.surf) {
                     double sw = cairo_image_surface_get_width(it.surf), sh = cairo_image_surface_get_height(it.surf);
                     double sc = std::max(bwid / sw, h / sh);
@@ -849,9 +600,11 @@ static void draw_impl(cairo_t* cr, int W, int H) {
                     fg(cr, 0.55 * ca); text(cr, it.failed ? it.name : "…", xc, cy, 13, false, 1, w * 0.7);
                 }
                 // глибина: далекі картки притемнені
+                double dim = std::min(a, 3.0) / 3.0 * 0.38;
                 if (dim > 0) { if (light) cairo_set_source_rgba(cr, 1, 1, 1, dim * 0.8 * ca); else cairo_set_source_rgba(cr, 0, 0, 0, dim * ca); cairo_paint(cr); }
                 if (hov) { cairo_set_source_rgba(cr, 1, 1, 1, 0.06 * ca); cairo_paint(cr); }
                 // підпис центральної
+                double la = clamp01(1 - a * 1.6) * ca;
                 if (la > 0) {
                     cairo_pattern_t* g = cairo_pattern_create_linear(0, by0 + h * 0.6, 0, by0 + h);
                     cairo_pattern_add_color_stop_rgba(g, 0, 0, 0, 0, 0);
@@ -868,7 +621,6 @@ static void draw_impl(cairo_t* cr, int W, int H) {
                     }
                 }
                 cairo_restore(cr);
-                }
                 // рамка
                 card_path(cr, xc, cy, w, h);
                 if (it.path == current) { cairo_set_source_rgba(cr, acc_r, acc_g, acc_b, ca); cairo_set_line_width(cr, 3); }
@@ -884,7 +636,7 @@ static void draw_impl(cairo_t* cr, int W, int H) {
     }
     cairo_restore(cr);
     // підказка над кружечком палітри: назва за відтінком + hex кольору wal
-    if (layer == 0 && tip_i >= 0 && tip_i < (int)pal.size() && hover_btn == 10 + tip_i && pc > 0.9) {
+    if (tip_i >= 0 && tip_i < (int)pal.size() && hover_btn == 10 + tip_i && pc > 0.9) {
         std::string t = pal[tip_i].name + "  " + pal[tip_i].hex;
         double tw = text(cr, t, 0, 0, 11, true, 0, -1, false) + 18, th = 22, tx = tip_x - tw / 2, ty = tip_y;
         if (light) cairo_set_source_rgba(cr, 1, 1, 1, 0.92); else cairo_set_source_rgba(cr, 0.10, 0.10, 0.12, 0.92);
@@ -902,7 +654,7 @@ static void finish_close() {
     opened = false;
     if (loader) { { std::lock_guard<std::mutex> lk(loader->m); loader->stop = true; loader->q.clear(); } loader->cv.notify_all(); loader.reset(); }
     save_colors();
-    for (auto& it : items) { if (it.surf) cairo_surface_destroy(it.surf); g_clear_object(&it.tex); }
+    for (auto& it : items) if (it.surf) cairo_surface_destroy(it.surf);
     items.clear(); items.shrink_to_fit(); view.clear(); vpos.clear(); geos.clear(); hits.clear();
     if (snap_id) { g_source_remove(snap_id); snap_id = 0; }
     sysui::bb::release();
@@ -946,13 +698,8 @@ static void open_ribbon(double x, double y, double w, double h, const std::strin
     loader->cv.notify_one();
     opened = true; p = 0; pv = 0; p_target = 1; posv = 0;
     gtk_widget_set_visible(win, TRUE);
-    // MGOS_RIBBON_BENCH=1 — автопрокрутка на 40 карток (вимірювання разом з MGOS_RIBBON_PROFILE)
-    if (getenv("MGOS_RIBBON_BENCH")) {
-        static int left; left = 40;
-        g_timeout_add(180, [](gpointer) -> gboolean { if (!opened || --left < 0) return G_SOURCE_REMOVE; go(target + 1); return G_SOURCE_CONTINUE; }, nullptr);
-    }
     gtk_window_present(GTK_WINDOW(win));
-    qd();
+    gtk_widget_queue_draw(area);
     kick();
 }
 static gboolean on_result(gpointer d) {
@@ -966,10 +713,10 @@ static gboolean on_result(gpointer d) {
         }
         if (r->want) {
             it.requested = false;
-            if (r->s && near(r->idx)) { if (it.surf) cairo_surface_destroy(it.surf); g_clear_object(&it.tex); it.surf = r->s; r->s = nullptr; }
+            if (r->s && near(r->idx)) { if (it.surf) cairo_surface_destroy(it.surf); it.surf = r->s; r->s = nullptr; }
             else if (!r->s) it.failed = true;
         }
-        qd();
+        gtk_widget_queue_draw(area);
     }
     if (r->s) cairo_surface_destroy(r->s);
     delete r;
@@ -985,7 +732,7 @@ static void apply_item(int idx) {
     recent.insert(recent.begin(), it.path);
     if (recent.size() > 40) recent.resize(40);
     save_recent();
-    qd();
+    gtk_widget_queue_draw(area);
     g_timeout_add(160, [](gpointer) -> gboolean { close_ribbon(); return G_SOURCE_REMOVE; }, nullptr);
 }
 
@@ -1004,9 +751,9 @@ static int btn_at(double x, double y) {
 static void on_motion(GtkEventControllerMotion*, double x, double y, gpointer) {
     mx = x; my = y;
     int hc = card_at(x, y), hb = hc < 0 ? btn_at(x, y) : -1;
-    if (hc != hover_card || hb != hover_btn) { hover_card = hc; hover_btn = hb; qd(); }
+    if (hc != hover_card || hb != hover_btn) { hover_card = hc; hover_btn = hb; gtk_widget_queue_draw(area); }
 }
-static void on_leave(GtkEventControllerMotion*, gpointer) { hover_card = hover_btn = -1; qd(); }
+static void on_leave(GtkEventControllerMotion*, gpointer) { hover_card = hover_btn = -1; if (area) gtk_widget_queue_draw(area); }
 static void press_btn(int id) {
     if (id == 1) f_recent = !f_recent;
     else if (id == 2) { f_kind = -1; f_recent = false; f_color = -1; query.clear(); }
@@ -1098,14 +845,7 @@ static void init(GtkApplication* app) {
     area = gtk_drawing_area_new();
     gtk_widget_set_hexpand(area, TRUE); gtk_widget_set_vexpand(area, TRUE);
     gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(area), draw, nullptr, nullptr);
-    GtkWidget* ov = gtk_overlay_new();
-    gtk_overlay_set_child(GTK_OVERLAY(ov), area);
-    cards_area = GTK_WIDGET(g_object_new(ribbon_cards_get_type(), nullptr));
-    gtk_widget_set_valign(cards_area, GTK_ALIGN_FILL);   // на весь екран: GPU-шар не растеризує порожнечу
-    gtk_widget_set_halign(cards_area, GTK_ALIGN_FILL);
-    gtk_widget_set_can_target(cards_area, FALSE);   // події — area (координати ті самі)
-    gtk_overlay_add_overlay(GTK_OVERLAY(ov), cards_area);
-    gtk_window_set_child(GTK_WINDOW(win), ov);
+    gtk_window_set_child(GTK_WINDOW(win), area);
     GtkEventController* mo = gtk_event_controller_motion_new();
     g_signal_connect(mo, "motion", G_CALLBACK(on_motion), nullptr);
     g_signal_connect(mo, "leave", G_CALLBACK(on_leave), nullptr);

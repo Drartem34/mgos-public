@@ -1,3 +1,3 @@
 function kiosk --description "kioskOS — енергоощадна сесія Hyprland"
-    Hyprland -c ~/.config/hyprland/kiosk.conf $argv
+    /usr/local/bin/kiosk-session $argv
 end

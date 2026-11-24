@@ -170,11 +170,6 @@ fi
 install -d /etc/sddm.conf.d
 if [ "$THEME" = pixel ] && [ -f "$PIXEL/Main.qml" ]; then CUR=mgos-pixel; else CUR=sddm-astronaut-theme; fi
 printf '[Theme]\nCurrent=%s\n' "$CUR" > /etc/sddm.conf.d/theme.conf
-# /etc/sddm.conf читається ПІСЛЯ sddm.conf.d і перекриває його. Старий sddm_theme/setup.sh писав туди
-# Current=sddm-astronaut-theme — через це нова тема ніколи не з'являлась. Вибір теми — лише в theme.conf.
-if [ -f /etc/sddm.conf ] && grep -qE '^[[:space:]]*Current[[:space:]]*=' /etc/sddm.conf; then
-    sed -i -E '/^[[:space:]]*Current[[:space:]]*=/d' /etc/sddm.conf
-fi
 echo "Тема входу: $CUR"
 
 # ---------- перехід plymouth → SDDM ----------

@@ -1,8 +1,0 @@
-#!/bin/bash
-# mgOS: замість привітання EndeavourOS — привітання mgOS (SYSui welcome).
-# Пакет «welcome» лишається (від нього нічого не залежить), але його команда й пункт меню ведуть сюди.
-# «--once» (як у EOS-автозапуску) — показати лише, якщо привітання ще не пройдено.
-W="$HOME/.config/SYSui/welcome"
-[ -x "$W" ] || exec /usr/bin/eos-welcome "$@"   # SYSui не встановлено — оригінал
-for a in "$@"; do [ "$a" = --once ] && exec "$W" --once; done
-exec "$W"

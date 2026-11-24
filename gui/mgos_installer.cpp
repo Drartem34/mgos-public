@@ -1367,13 +1367,10 @@ static void start_with_options() {
         S = {"preflight", "snapshot"};
         if (on("R_PKGS")) for (auto x : {"yay", "repos", "core", "stable", "aur", "utils", "drivers"}) S.push_back(x);
         S.push_back("dedupe");   // завжди: швидко, а дублі заважають і без перевстановлення пакетів
-        // gpu — одразу після конфігів: знімок hyprland.conf зроблено на Intel-ноутбуці, на NVIDIA змінні треба увімкнути назад
-        if (on("R_CFG")) { S.push_back("configs"); S.push_back("home"); S.push_back("build"); S.push_back("gpu"); S.push_back("hw"); }
+        if (on("R_CFG")) { S.push_back("configs"); S.push_back("home"); S.push_back("build"); S.push_back("cleanup"); S.push_back("hw"); }
         if (on("R_THEME")) { S.push_back("theme"); S.push_back("look"); }
         if (on("R_SYS")) { S.push_back("scripts"); S.push_back("services"); if (!on("R_THEME")) S.push_back("look"); }
         if (on("R_BOOT")) S.push_back("boot");
-        // cleanup — після scripts: інакше вимикав /usr/local/bin/cleanup-cache.sh, який scripts ставить пізніше
-        if (on("R_CFG")) S.push_back("cleanup");
         S.push_back("verify");
     } else if (R.mode == Mode::Kiosk) {
         R.opt["OPT_UPDATE"] = on("OPT_UPDATE") ? "1" : "0";

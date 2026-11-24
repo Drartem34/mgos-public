@@ -5,32 +5,26 @@
   "only_empty": false,
   "widgets": [
     {
-      "type": "perf",
-      "col": 0,
-      "enabled": true
-    },
-    {
-      "type": "music",
-      "col": 0,
-      "enabled": true
-    },
-    {
-      "type": "calendar",
-      "col": 0,
-      "enabled": true
-    },
-    {
       "type": "clock",
       "seconds": false,
-      "date": true,
-      "col": 1,
-      "enabled": true
+      "date": true
     },
     {
-      "type": "games",
-      "count": 4,
-      "col": 1,
-      "enabled": true
+      "type": "system",
+      "cpu": true,
+      "ram": true,
+      "disk": true,
+      "battery": true,
+      "temp": false,
+      "disk_path": "/"
+    },
+    {
+      "type": "weather",
+      "city": "",
+      "interval_min": 30
+    },
+    {
+      "type": "music"
     },
     {
       "type": "actions",
@@ -41,53 +35,18 @@
         "settings",
         "screenshot",
         "lock"
-      ],
-      "col": 1,
-      "enabled": true
+      ]
     },
     {
-      "type": "weather",
-      "city": "",
-      "interval_min": 30,
-      "col": 2,
-      "enabled": true
-    },
-    {
-      "type": "alerts",
-      "region": "",
-      "col": 2,
-      "enabled": true
-    },
-    {
-      "type": "rates",
-      "col": 2,
-      "enabled": true
-    },
-    {
-      "type": "network",
-      "col": 2,
-      "enabled": true
-    },
-    {
-      "type": "updates",
-      "col": 2,
-      "enabled": true
-    },
-    {
-      "type": "system",
-      "cpu": true,
-      "ram": true,
-      "disk": true,
-      "battery": true,
-      "temp": false,
-      "disk_path": "/",
-      "enabled": false
+      "type": "network"
     },
     {
       "type": "notes",
       "height": 130,
       "enabled": false
+    },
+    {
+      "type": "calendar"
     }
-  ],
-  "card_bg": true
+  ]
 }

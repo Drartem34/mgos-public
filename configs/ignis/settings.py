@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QHBoxLayout, QVBoxLayout, QG
                              QGraphicsOpacityEffect, QFileDialog, QDialog, QRubberBand,
                              QSlider, QScrollArea, QListView, QSizePolicy, QMenu,
                              QStyledItemDelegate, QStyle)
-from PyQt6.QtCore import (Qt, QEvent,QPropertyAnimation, QVariantAnimation, QEasingCurve, QRect, QRectF, QPoint, QPointF,
+from PyQt6.QtCore import (Qt, QEvent, QProcess,QPropertyAnimation, QVariantAnimation, QEasingCurve, QRect, QRectF, QPoint, QPointF,
                           QSize, QTimer, QAbstractListModel, QModelIndex, QRunnable, QThreadPool, pyqtSignal, QObject, QUrl)
 from PyQt6.QtGui import (QPainter, QColor, QBrush, QCursor, QIcon, QPixmap, QImage, QFont, QFontDatabase,
                          QPainterPath, QPen, QLinearGradient, QRadialGradient, QFontMetrics, QFontMetricsF, QPolygonF)
@@ -598,7 +598,7 @@ TP_DEFAULTS = {
     "tp_drag_lock": False, "tp_dwt": False, "tp_middle": False, "tp_natural": False, "tp_scroll": 80,
     "tp_swipe_invert": False, "tp_swipe_dist": 300, "tp_swipe_new": True, "tp_swipe_forever": True,
     # Три пальці вниз: minimize — вікно в док з анімацією, що йде за пальцями (SYSui/dock_genie.h) | runner | off
-    "tp_swipe_down": "minimize", "tp_min_dist": 300, "genie_squash": True, "genie_grow": True, "launch_splash": True, "genie_speed": 100, "genie_anim": True, "tp_swipe_up": "fullscreen", "tp_tap3": "runner", "dock_stash_cards": True,
+    "tp_swipe_down": "minimize", "tp_min_dist": 300, "genie_squash": True, "genie_grow": True, "genie_speed": 100, "genie_anim": True, "tp_swipe_up": "fullscreen", "tp_tap3": "runner", "dock_stash_cards": True,
     "kb_delay": 250, "kb_rate": 35,
     # Миша (усі звичайні миші): значення = старий input-блок hyprland.conf (flat, 0.3)
     "ms_speed": 65, "ms_accel": "flat", "ms_natural": False, "ms_scroll": 100, "ms_left": False,
@@ -691,62 +691,19 @@ def hypr_monitors():
 MGOS_FAN = str(Path.home() / ".local/bin/mgos-fan")
 
 
-_GPU_T = {"t": None, "ts": 0.0, "busy": False}
-
-
-def _gpu_temp():
-    """Температура NVIDIA (пропрієтарний драйвер не дає hwmon) — nvidia-smi у фоновому потоці, кеш 10 с, UI не чекає."""
-    import threading
-    now = time.time()
-    if not _GPU_T["busy"] and now - _GPU_T["ts"] > 10 and shutil.which("nvidia-smi"):
-        _GPU_T["busy"] = True
-        def run():
-            try:
-                out = subprocess.run(["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"],
-                                     capture_output=True, text=True, timeout=4).stdout.split()
-                _GPU_T["t"] = int(float(out[0])) if out else None
-            except Exception:
-                _GPU_T["t"] = None
-            _GPU_T["ts"] = time.time(); _GPU_T["busy"] = False
-        threading.Thread(target=run, daemon=True).start()
-    return _GPU_T["t"]
-
-
 def fan_status():
-    """rpm/temp/profile/mode/writable/split + датчики — напряму з sysfs, БЕЗ блокуючих процесів (раз на 2 с з UI-потоку).
-    Ноутбук Samsung: кулер — лише профілі прошивки (platform_profile). Десктоп (MSI nct6687): CPU — k10temp/coretemp,
-    кулери — через hwmon материнки. Логіка режимів — у ~/.local/bin/mgos-fan."""
+    """rpm/temp/profile/mode/writable/split — напряму з sysfs, БЕЗ процесів (викликається раз на 2 с з UI-потоку).
+    Кулер Samsung — лише профілі прошивки, без PWM; логіка режимів — у ~/.local/bin/mgos-fan."""
     def rd(path, default=""):
         try: return Path(path).read_text().strip()
         except Exception: return default
-    def c(path):
-        v = rd(path)
-        return int(v) // 1000 if v.lstrip("-").isdigit() else None
-    st = {"rpm": "0", "temp": "0", "sensors": []}
-    cpu = None
-    for h in sorted(Path("/sys/class/hwmon").glob("hwmon*")):
+    st = {"rpm": "0", "temp": "0"}
+    for h in Path("/sys/class/hwmon").glob("hwmon*"):
         name = rd(h / "name")
         if name == "acpi_fan": st["rpm"] = rd(h / "fan1_input", "0")
-        elif name == "coretemp": cpu = c(h / "temp1_input")
-        elif name in ("k10temp", "zenpower") and cpu is None: cpu = c(h / "temp1_input")   # Tctl
-        elif name in ("nct6687", "nct6683", "nct6775", "nct6798", "it87"):
-            if st["rpm"] == "0": st["rpm"] = rd(h / "fan1_input", "0")                      # CPU_FAN1
-            st["pwm_writable"] = "1" if os.access(h / "pwm1", os.W_OK) else "0"
-            try: st["fan_chip"] = os.path.basename(os.readlink(h / "device" / "driver"))   # драйвер, а не назва чипа
-            except OSError: st["fan_chip"] = name
-            board = [t for f in h.glob("temp*_input")                       # без датчика CPU (AMD TSI / PECI)
-                     if not any(x in rd(str(f).replace("_input", "_label")).upper() for x in ("TSI", "PECI", "CPU"))
-                     for t in [c(f)] if t is not None and 0 < t < 110]
-            if board: st["sensors"].append(("Материнка", max(board)))
-        elif name == "nvme":
-            t = c(h / "temp1_input")
-            if t: st["sensors"].append(("NVMe", t))
-    if cpu is not None: st["temp"] = str(cpu)
-    g = _gpu_temp()
-    if g: st["sensors"].insert(0, ("GPU", g))
+        elif name == "coretemp": st["temp"] = str(int(rd(h / "temp1_input", "0") or 0) // 1000)
     pp = "/sys/firmware/acpi/platform_profile"
     st["profile"] = rd(pp)
-    st["laptop"] = "1" if os.path.exists(pp) else "0"
     st["mode"] = rd(Path.home() / ".config/mgos/fan.conf", "auto") or "auto"
     st["writable"] = "1" if os.access(pp, os.W_OK) else "0"
     st["split"] = "0" if Path("/etc/systemd/system/power-profiles-daemon.service.d/mgos-fan.conf").exists() else "1"   # 1 = PPD стоковий (старий блок прибрано — інакше гріється кіоск)
@@ -777,30 +734,24 @@ def save_fan_curve(pts):
 
 
 class FanCurveWidget(QWidget):
-    """Крива кулера «температура CPU → оберти». Точки тягаються; клік по порожньому — нова точка,
-    подвійний клік або ПКМ по точці — прибрати. Ноутбук Samsung: смуги = 4 профілі прошивки;
-    десктоп: вісь у відсотках PWM. Жива точка — поточна температура CPU і реальні оберти."""
+    """Сітка «температура × оберти»: крива з точками, які можна тягати. Смуги = профілі прошивки Samsung
+    (кулер Galaxy Book керується лише ними). Жива точка — поточна температура CPU і реальні оберти."""
     T_MIN, T_MAX = 30, 100
-    MIN_GAP = 3          # мінімум °C між сусідніми точками
-    MAX_PTS = 8
 
-    def __init__(self, on_change, laptop=False, parent=None):
+    def __init__(self, on_change, parent=None):
         super().__init__(parent)
         self.on_change = on_change
-        self.laptop = laptop
         self.pts = load_fan_curve()
         self.drag = -1
         self.hover = -1
         self.live = None   # (°C, rpm)
-        self.setMinimumHeight(240)
+        self.setMinimumHeight(230)
         self.setMouseTracking(True)
-        self.save_timer = QTimer(self, singleShot=True, interval=400)
+        self.save_timer = QTimer(self, singleShot=True, interval=350)
         self.save_timer.timeout.connect(lambda: (save_fan_curve(self.pts), self.on_change()))
 
-    # ---- геометрія ----
     def plot(self):
-        left = 64 if self.laptop else 46
-        return QRectF(left, 14, self.width() - left - 14, self.height() - 14 - 34)
+        return QRectF(64, 12, self.width() - 64 - 14, self.height() - 12 - 30)
 
     def to_px(self, t, v):
         r = self.plot()
@@ -823,57 +774,35 @@ class FanCurveWidget(QWidget):
     def set_live(self, temp, rpm):
         self.live = (temp, rpm); self.update()
 
-    def set_points(self, pts):
-        self.pts = sorted(pts); self.drag = self.hover = -1; self.update(); self.save_timer.start()
-
     def reset(self):
-        self.set_points(list(FAN_CURVE_DEFAULT))
+        self.pts = list(FAN_CURVE_DEFAULT); self.update(); self.save_timer.start()
 
     def _nearest(self, pos):
-        best, bd = -1, 16.0
+        best, bd = -1, 14.0
         for i, (t, v) in enumerate(self.pts):
             d = (self.to_px(t, v) - QPointF(pos)).manhattanLength()
             if d < bd: best, bd = i, d
         return best
 
-    def _clamp(self, i, t, v):
-        lo = self.pts[i - 1][0] + self.MIN_GAP if i > 0 else self.T_MIN
-        hi = self.pts[i + 1][0] - self.MIN_GAP if i < len(self.pts) - 1 else self.T_MAX
-        return int(round(max(lo, min(hi, t)))), int(round(max(0, min(100, v))))
-
-    # ---- миша ----
     def mousePressEvent(self, e):
-        pos = e.position()
-        i = self._nearest(pos)
-        if e.button() == Qt.MouseButton.RightButton:
-            if i >= 0 and len(self.pts) > 2:
-                self.pts.pop(i); self.hover = -1; self.save_timer.start()
-        elif e.button() == Qt.MouseButton.LeftButton:
-            if i >= 0:
-                self.drag = i
-                self.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
-            elif self.plot().adjusted(-6, -6, 6, 6).contains(pos) and len(self.pts) < self.MAX_PTS:
-                t, v = self.from_px(pos)
-                t = int(round(max(self.T_MIN, min(self.T_MAX, t))))
-                # не ближче MIN_GAP до сусідів (раніше можна було поставити дві точки на одну температуру)
-                if all(abs(t - q[0]) >= self.MIN_GAP for q in self.pts):
-                    self.pts.append((t, int(round(max(0, min(100, v))))))
-                    self.pts.sort()
-                    self.drag = [q[0] for q in self.pts].index(t)
-                    self.save_timer.start()
+        self.drag = self._nearest(e.position())
+        if self.drag < 0 and self.plot().contains(e.position()) and e.button() == Qt.MouseButton.LeftButton:
+            t, v = self.from_px(e.position())          # клік по порожньому місцю — нова точка
+            if len(self.pts) < 8:
+                self.pts.append((int(round(t)), int(round(max(0, min(100, v))))))
+                self.pts.sort(); self.drag = self.pts.index(min(self.pts, key=lambda q: abs(q[0] - t)))
+                self.save_timer.start()
+        elif self.drag >= 0 and e.button() == Qt.MouseButton.RightButton and len(self.pts) > 2:
+            self.pts.pop(self.drag); self.drag = -1; self.save_timer.start()   # ПКМ — прибрати точку
         self.update()
         e.accept()   # не віддаємо вікну: інакше воно почне рухатися (startSystemMove)
-
-    def mouseDoubleClickEvent(self, e):
-        i = self._nearest(e.position())
-        if i >= 0 and len(self.pts) > 2:
-            self.pts.pop(i); self.drag = self.hover = -1; self.save_timer.start(); self.update()
-        e.accept()
 
     def mouseMoveEvent(self, e):
         if self.drag >= 0:
             t, v = self.from_px(e.position())
-            self.pts[self.drag] = self._clamp(self.drag, t, v)
+            lo = self.pts[self.drag - 1][0] + 2 if self.drag > 0 else self.T_MIN
+            hi = self.pts[self.drag + 1][0] - 2 if self.drag < len(self.pts) - 1 else self.T_MAX
+            self.pts[self.drag] = (int(round(max(lo, min(hi, t)))), int(round(max(0, min(100, v)))))
             self.save_timer.start()
         else:
             h = self._nearest(e.position())
@@ -883,27 +812,10 @@ class FanCurveWidget(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, e):
-        if self.drag >= 0:
-            self.hover = self.drag
-            self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
         self.drag = -1; self.update()
 
     def leaveEvent(self, e):
         self.hover = -1; self.update()
-
-    # ---- малювання ----
-    def _bubble(self, p, anchor, text, color, above=True):
-        f = QFont(FONT_UI); f.setPixelSize(11); f.setWeight(QFont.Weight.DemiBold); p.setFont(f)
-        fm = QFontMetricsF(f)
-        w, h = fm.horizontalAdvance(text) + 16, 22
-        x = max(2, min(self.width() - w - 2, anchor.x() - w / 2))
-        y = anchor.y() - h - 10 if above else anchor.y() + 10
-        if y < 2: y = anchor.y() + 10
-        if y + h > self.height() - 2: y = anchor.y() - h - 10
-        rr = QRectF(x, y, w, h)
-        p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(T["knob_shadow"], 70)); p.drawRoundedRect(rr.translated(0, 1.5), 8, 8)
-        p.setBrush(QColor(color)); p.drawRoundedRect(rr, 8, 8)
-        p.setPen(QColor("white")); p.drawText(rr, Qt.AlignmentFlag.AlignCenter, text)
 
     def paintEvent(self, e):
         p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -911,354 +823,64 @@ class FanCurveWidget(QWidget):
         acc = QColor(ACCENT[0])
         txt2 = QColor(T["text2"])
         f = QFont(FONT_UI); f.setPixelSize(10); p.setFont(f)
-        # фон області графіка
-        p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(T["text"], 6)); p.drawRoundedRect(r, 8, 8)
-        if self.laptop:   # смуги профілів прошивки Samsung
-            for i, (lo, hi, name) in enumerate(FAN_BANDS):
-                top, bot = self.to_px(0, hi).y(), self.to_px(0, lo).y()
-                p.setPen(txt2)
-                p.drawText(QRectF(0, top, r.left() - 8, bot - top), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, name)
-        else:
+        # смуги профілів
+        for i, (lo, hi, name) in enumerate(FAN_BANDS):
+            top, bot = self.to_px(0, hi).y(), self.to_px(0, lo).y()
+            c = QColor(acc); c.setAlpha(10 + i * 9)
+            p.fillRect(QRectF(r.left(), top, r.width(), bot - top), c)
             p.setPen(txt2)
-            for v in (0, 25, 50, 75, 100):
-                y = self.to_px(0, v).y()
-                p.drawText(QRectF(0, y - 7, r.left() - 8, 14), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, f"{v}%")
-        grid = tint(T["text"], 22)
-        p.setPen(QPen(grid, 1))
+            p.drawText(QRectF(0, top, r.left() - 8, bot - top), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, name)
+        # сітка
+        grid = QColor(T["text2"]); grid.setAlpha(40)
+        p.setPen(QPen(grid, 1, Qt.PenStyle.DotLine))
+        for t in range(self.T_MIN, self.T_MAX + 1, 10):
+            x = self.to_px(t, 0).x(); p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()))
         for v in (25, 50, 75):
-            y = self.to_px(0, v).y(); p.drawLine(QPointF(r.left() + 1, y), QPointF(r.right() - 1, y))
-        for t in range(self.T_MIN + 10, self.T_MAX, 10):
-            x = self.to_px(t, 0).x(); p.drawLine(QPointF(x, r.top() + 1), QPointF(x, r.bottom() - 1))
+            y = self.to_px(0, v).y(); p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y))
+        p.setPen(QPen(grid, 1)); p.setBrush(Qt.BrushStyle.NoBrush); p.drawRoundedRect(r, 6, 6)
         p.setPen(txt2)
         for t in range(self.T_MIN, self.T_MAX + 1, 10):
             x = self.to_px(t, 0).x()
-            p.drawText(QRectF(x - 20, r.bottom() + 5, 40, 14), Qt.AlignmentFlag.AlignCenter, f"{t}°")
-        p.drawText(QRectF(r.left(), r.bottom() + 19, r.width(), 14), Qt.AlignmentFlag.AlignCenter, "Температура CPU")
-        # крива + заливка
+            p.drawText(QRectF(x - 20, r.bottom() + 4, 40, 14), Qt.AlignmentFlag.AlignCenter, f"{t}°")
+        p.drawText(QRectF(r.left(), r.bottom() + 16, r.width(), 14), Qt.AlignmentFlag.AlignCenter, "Температура CPU")
+        # крива + заливка під нею
         path = QPainterPath(self.to_px(self.T_MIN, self.pts[0][1]))
         for t, v in self.pts: path.lineTo(self.to_px(t, v))
         path.lineTo(self.to_px(self.T_MAX, self.pts[-1][1]))
         fill = QPainterPath(path); fill.lineTo(r.bottomRight()); fill.lineTo(r.bottomLeft()); fill.closeSubpath()
         g = QLinearGradient(r.topLeft(), r.bottomLeft())
-        g.setColorAt(0, tint(acc, 95)); g.setColorAt(1, tint(acc, 8))
-        p.save(); clip = QPainterPath(); clip.addRoundedRect(r, 8, 8); p.setClipPath(clip)
-        p.fillPath(fill, QBrush(g)); p.restore()
-        pen = QPen(acc, 2.6); pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin); pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        c1 = QColor(acc); c1.setAlpha(70); c2 = QColor(acc); c2.setAlpha(0)
+        g.setColorAt(0, c1); g.setColorAt(1, c2)
+        p.fillPath(fill, QBrush(g))
+        pen = QPen(acc, 2.4); pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin); pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush); p.drawPath(path)
-        # жива температура
-        if self.live:
-            t, rpm = self.live
-            if t:
-                tt = max(self.T_MIN, min(self.T_MAX, t))
-                c = self.to_px(tt, self.value_at(tt))
-                lc = QColor("#ff9f0a")
-                p.setPen(QPen(tint(lc, 160), 1, Qt.PenStyle.DashLine)); p.drawLine(QPointF(c.x(), r.top() + 2), QPointF(c.x(), r.bottom() - 2))
-                p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(lc, 60)); p.drawEllipse(c, 10, 10)
-                p.setPen(QPen(QColor("white"), 2)); p.setBrush(lc); p.drawEllipse(c, 5, 5)
-                if self.hover < 0 and self.drag < 0:
-                    self._bubble(p, QPointF(c.x(), r.top() + 26), f"зараз {t}°C · " + (f"{rpm} об/хв" if rpm else "кулер стоїть"), "#ff9f0a")
         # точки
         for i, (t, v) in enumerate(self.pts):
-            c = self.to_px(t, v); act = i in (self.drag, self.hover)
-            rad = 7.5 if act else 6
-            p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(T["knob_shadow"], 80)); p.drawEllipse(c + QPointF(0, 1), rad, rad)
-            p.setPen(QPen(QColor("white"), 2.2)); p.setBrush(acc); p.drawEllipse(c, rad, rad)
-        a = self.drag if self.drag >= 0 else self.hover
-        if 0 <= a < len(self.pts):
-            t, v = self.pts[a]
-            band = f" · {next(n for lo, hi, n in FAN_BANDS if v < hi or hi == 100)}" if self.laptop else ""
-            self._bubble(p, self.to_px(t, v), f"{t}°C → {v}%{band}", ACCENT[0])
-
-
-# ---------- Історія датчиків (пише ~/.local/bin/mgos-sensors) ----------
-SENSORS_LOG = Path.home() / ".cache" / "mgos" / "sensors.csv"
-SC = {k: i for i, k in enumerate(["ts", "cpu", "gpu", "board", "nvme", "gpufan"] + [f"fan{i}" for i in range(1, 9)])}
-
-
-class SensorHistory:
-    """Читає sensors.csv інкрементально (лише нові рядки), тримає останні 8 днів у пам'яті."""
-    def __init__(self):
-        self.rows, self.off, self.ino = [], 0, None
-
-    def load(self):
-        try: st = SENSORS_LOG.stat()
-        except OSError: return self.rows
-        if st.st_ino != self.ino or st.st_size < self.off:   # файл обрізали/замінили — читаємо заново
-            self.rows, self.off, self.ino = [], 0, st.st_ino
-        if st.st_size == self.off: return self.rows
-        try:
-            with open(SENSORS_LOG, "rb") as f:
-                f.seek(self.off); chunk = f.read()
-        except OSError: return self.rows
-        end = chunk.rfind(b"\n")
-        if end < 0: return self.rows
-        self.off += end + 1
-        n = len(SC)
-        for line in chunk[:end].decode(errors="replace").splitlines():
-            if not line or line[0] == "#": continue
-            parts = line.split()
-            try: row = [int(x) if x != "-" else None for x in parts[:n]]
-            except ValueError: continue
-            if len(row) < 2 or row[0] is None: continue
-            row += [None] * (n - len(row))
-            self.rows.append(row)
-        cut = time.time() - 8 * 86400
-        if self.rows and self.rows[0][0] < cut:
-            self.rows = [r for r in self.rows if r[0] >= cut]
-        return self.rows
-
-    def series(self, key, t0, t1, buckets=240):
-        """Усереднення по кошиках: [(ts, value)]; порожні кошики пропускаються (у графіку — розрив)."""
-        ci = SC[key]
-        step = max(1.0, (t1 - t0) / buckets)
-        acc = {}
-        for r in self.rows:
-            ts = r[0]
-            if ts < t0 or ts > t1: continue
-            v = r[ci]
-            if v is None: continue
-            b = int((ts - t0) / step)
-            s = acc.get(b)
-            if s: s[0] += v; s[1] += 1
-            else: acc[b] = [v, 1]
-        return [(t0 + (b + 0.5) * step, s[0] / s[1]) for b, s in sorted(acc.items())], step
-
-
-SENSOR_HIST = SensorHistory()
-HIST_COLORS = {"cpu": "#0a84ff", "gpu": "#30d158", "board": "#bf5af2", "nvme": "#ff9f0a",
-               "fan1": "#64d2ff", "fan2": "#5e5ce6", "fan3": "#ff375f", "fan4": "#ffd60a",
-               "fan5": "#ac8e68", "fan6": "#66d4cf", "fan7": "#ff9f0a", "fan8": "#bf5af2"}
-HIST_NAMES = {"cpu": "CPU", "gpu": "GPU", "board": "Материнка", "nvme": "NVMe", "fan1": "CPU-кулер"}
-DAYS_UA = ["пн", "вт", "ср", "чт", "пт", "сб", "нд"]
-
-
-def temp_color(t):
-    return "#30d158" if t < 60 else "#ff9f0a" if t < 80 else "#ff453a"
-
-
-def smooth_path(pts):
-    """Плавна лінія через точки (середини відрізків + quadTo), як у графіках macOS."""
-    path = QPainterPath(pts[0])
-    if len(pts) == 2: path.lineTo(pts[1]); return path
-    for i in range(1, len(pts) - 1):
-        mid = (pts[i] + pts[i + 1]) / 2
-        path.quadTo(pts[i], mid)
-    path.lineTo(pts[-1])
-    return path
-
-
-class HistoryChart(QWidget):
-    """Графік історії в стилі macOS (Монітор активності / Акції): легенда-перемикачі з поточними значеннями,
-    плавні лінії, градієнт під першою серією, при наведенні — вертикальна лінія і бульбашка зі значеннями."""
-    def __init__(self, title, unit, nice_step, height=210, parent=None):
-        super().__init__(parent)
-        self.title, self.unit, self.nice_step = title, unit, nice_step
-        self.series = []          # [dict(key, label, color, pts, now)]
-        self.off = set()          # вимкнені в легенді ключі
-        self.t0 = self.t1 = 0
-        self.gap = 60
-        self.hover_x = None
-        self.legend_rects = []
-        self.setMinimumHeight(height)
-        self.setMouseTracking(True)
-
-    def set_data(self, series, t0, t1, gap):
-        self.series, self.t0, self.t1, self.gap = series, t0, t1, gap
-        self.update()
-
-    def plot(self):
-        return QRectF(44, 50, self.width() - 44 - 10, self.height() - 50 - 24)
-
-    def visible(self):
-        return [s for s in self.series if s["key"] not in self.off and s["pts"]]
-
-    def mousePressEvent(self, e):
-        for rect, key in self.legend_rects:
-            if rect.contains(e.position()):
-                if key in self.off: self.off.discard(key)
-                elif len([s for s in self.series if s["key"] not in self.off]) > 1: self.off.add(key)
-                self.update(); break
-        e.accept()
-
-    def mouseMoveEvent(self, e):
-        r = self.plot()
-        self.hover_x = e.position().x() if r.left() <= e.position().x() <= r.right() and e.position().y() >= r.top() - 4 else None
-        over = any(rect.contains(e.position()) for rect, _ in self.legend_rects)
-        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor if over else Qt.CursorShape.ArrowCursor))
-        self.update()
-
-    def leaveEvent(self, e):
-        self.hover_x = None; self.update()
-
-    def _range(self, vis):
-        vals = [v for s in vis for _, v in s["pts"]]
-        if not vals: return 0, self.nice_step * 4
-        lo, hi = min(vals), max(vals)
-        step = self.nice_step
-        while (hi - lo) / step > 5: step *= 2
-        lo = max(0, (int(lo // step) - (1 if lo % step < step * 0.2 else 0)) * step)
-        hi = (int(hi // step) + 1) * step
-        if hi - lo < step * 2: hi = lo + step * 2
-        return lo, hi
-
-    def _fmt_time(self, ts, span):
-        lt = time.localtime(ts)
-        if span <= 26 * 3600: return time.strftime("%H:%M", lt)
-        return f"{DAYS_UA[lt.tm_wday]} {lt.tm_mday:02d}.{lt.tm_mon:02d}"
-
-    def paintEvent(self, e):
-        p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        r = self.plot()
-        txt, txt2 = QColor(T["text"]), QColor(T["text2"])
-        # заголовок
-        f = QFont(FONT_UI); f.setPixelSize(12); f.setWeight(QFont.Weight.DemiBold); p.setFont(f); p.setPen(txt)
-        p.drawText(QRectF(4, 2, 200, 16), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.title)
-        # легенда (праворуч від заголовка, перенос — ні: обрізаємо назви)
-        f = QFont(FONT_UI); f.setPixelSize(11); f.setWeight(QFont.Weight.Medium); p.setFont(f)
-        fm = QFontMetricsF(f)
-        self.legend_rects = []
-        x = 4; y = 20
-        for s in self.series:
-            on = s["key"] not in self.off and s["pts"]
-            now = s.get("now")
-            label = s["label"] + (f"  {now:.0f}{'' if self.unit == '°C' else ' '}{self.unit}" if now is not None else "")
-            w = fm.horizontalAdvance(label) + 24
-            if x + w > self.width() - 4: break
-            rect = QRectF(x, y, w, 18)
-            p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(QColor(s["color"]), 46 if on else 0)); p.drawRoundedRect(rect, 9, 9)
-            if not on:
-                p.setPen(QPen(tint(T["text"], 40), 1)); p.setBrush(Qt.BrushStyle.NoBrush); p.drawRoundedRect(rect.adjusted(.5, .5, -.5, -.5), 9, 9)
-            p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor(s["color"]) if on else tint(T["text"], 70))
-            p.drawEllipse(QPointF(x + 10, y + 9), 3.5, 3.5)
-            p.setPen(txt if on else txt2)
-            p.drawText(QRectF(x + 18, y, w - 20, 18), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
-            self.legend_rects.append((rect, s["key"]))
-            x += w + 6
-        # область графіка
-        p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(T["text"], 6)); p.drawRoundedRect(r, 8, 8)
-        vis = self.visible()
-        f = QFont(FONT_UI); f.setPixelSize(10); p.setFont(f)
-        if not vis or self.t1 <= self.t0:
-            p.setPen(txt2)
-            p.drawText(r, Qt.AlignmentFlag.AlignCenter, "Ще збираю дані — графік з'явиться за хвилину")
-            return
-        lo, hi = self._range(vis)
-        span = self.t1 - self.t0
-        X = lambda ts: r.left() + (ts - self.t0) / span * r.width()
-        Y = lambda v: r.bottom() - (v - lo) / (hi - lo) * r.height()
-        step = self.nice_step
-        while (hi - lo) / step > 5: step *= 2
-        grid = tint(T["text"], 20)
-        v = lo
-        while v <= hi + 0.1:
-            y = Y(v)
-            if lo < v < hi:
-                p.setPen(QPen(grid, 1)); p.drawLine(QPointF(r.left() + 1, y), QPointF(r.right() - 1, y))
-            p.setPen(txt2)
-            lbl = f"{v / 1000:.1f}k" if v >= 1000 else f"{v:.0f}"
-            p.drawText(QRectF(0, y - 7, r.left() - 6, 14), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, lbl + ("°" if self.unit == "°C" else ""))
-            v += step
-        p.setPen(txt2)
-        for i in range(5):
-            ts = self.t0 + span * (i + 0.5) / 5
-            p.drawText(QRectF(X(ts) - 40, r.bottom() + 5, 80, 14), Qt.AlignmentFlag.AlignCenter, self._fmt_time(ts, span))
-        # серії
-        p.save(); clip = QPainterPath(); clip.addRoundedRect(r, 8, 8); p.setClipPath(clip)
-        for si, s in enumerate(vis):
-            segs, cur, prev = [], [], None
-            for ts, val in s["pts"]:
-                if prev is not None and ts - prev > self.gap * 2.5:
-                    segs.append(cur); cur = []
-                cur.append(QPointF(X(ts), Y(val))); prev = ts
-            segs.append(cur)
-            col = QColor(s["color"])
-            for seg in segs:
-                if not seg: continue
-                if len(seg) == 1: seg = [seg[0] - QPointF(1.5, 0), seg[0] + QPointF(1.5, 0)]
-                path = smooth_path(seg)
-                if si == 0:
-                    fill = QPainterPath(path); fill.lineTo(QPointF(seg[-1].x(), r.bottom())); fill.lineTo(QPointF(seg[0].x(), r.bottom())); fill.closeSubpath()
-                    g = QLinearGradient(r.topLeft(), r.bottomLeft()); g.setColorAt(0, tint(col, 80)); g.setColorAt(1, tint(col, 4))
-                    p.fillPath(fill, QBrush(g))
-                pen = QPen(col, 2.2 if si == 0 else 1.8); pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin); pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-                p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush); p.drawPath(path)
-        p.restore()
-        # наведення
-        if self.hover_x is not None:
-            ts = self.t0 + (self.hover_x - r.left()) / r.width() * span
-            rows = []
-            for s in vis:
-                best = min(s["pts"], key=lambda q: abs(q[0] - ts))
-                if abs(best[0] - ts) <= self.gap * 1.5: rows.append((s, best))
-            p.setPen(QPen(tint(T["text"], 90), 1)); p.drawLine(QPointF(self.hover_x, r.top()), QPointF(self.hover_x, r.bottom()))
-            for s, (bts, bv) in rows:
-                c = QPointF(X(bts), Y(bv))
-                p.setPen(QPen(QColor("white"), 2)); p.setBrush(QColor(s["color"])); p.drawEllipse(c, 4.5, 4.5)
-            if rows:
-                f = QFont(FONT_UI); f.setPixelSize(11); p.setFont(f); fm = QFontMetricsF(f)
-                head = time.strftime("%H:%M" if span <= 26 * 3600 else "%d.%m %H:%M", time.localtime(ts))
-                lines = [(None, head)] + [(s["color"], f"{s['label']}  {bv:.0f} {self.unit}") for s, (bts, bv) in rows]
-                w = max(fm.horizontalAdvance(t) for _, t in lines) + 30
-                h = 10 + 17 * len(lines)
-                bx = self.hover_x + 12 if self.hover_x + 12 + w < self.width() - 2 else self.hover_x - 12 - w
-                box = QRectF(bx, r.top() + 6, w, h)
-                p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(T["knob_shadow"], 90)); p.drawRoundedRect(box.translated(0, 2), 9, 9)
-                p.setBrush(T["card"]); p.setPen(QPen(T["card_border"], 1)); p.drawRoundedRect(box, 9, 9)
-                for i, (col, t) in enumerate(lines):
-                    yy = box.top() + 5 + 17 * i
-                    if col:
-                        p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor(col)); p.drawEllipse(QPointF(box.left() + 12, yy + 8.5), 3.5, 3.5)
-                        p.setPen(txt)
-                    else:
-                        p.setPen(txt2)
-                    p.drawText(QRectF(box.left() + 22 if col else box.left() + 10, yy, w - 26, 17), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, t)
-
-
-class StatTile(QWidget):
-    """Плитка-віджет macOS: назва, велике значення кольором стану, підпис і спарклайн останньої години."""
-    def __init__(self, title, min_span=10, parent=None):
-        super().__init__(parent)
-        self.title, self.min_span = title, min_span   # min_span — щоб коливання на 1–2° не виглядали стрибками
-        self.value, self.sub, self.color, self.spark = "—", "", "#8e8e93", []
-        self.setMinimumSize(130, 104)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
-    def set(self, value, sub, color, spark):
-        self.value, self.sub, self.color, self.spark = value, sub, color, spark
-        self.update()
-
-    def paintEvent(self, e):
-        p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rr = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        p.setPen(QPen(T["card_border"], 1)); p.setBrush(T["card"]); p.drawRoundedRect(rr, 14, 14)
-        col = QColor(self.color)
-        # спарклайн унизу
-        if len(self.spark) >= 2:
-            vals = [v for _, v in self.spark]
-            lo, hi = min(vals), max(vals)
-            if hi - lo < self.min_span: mid = (hi + lo) / 2; lo, hi = mid - self.min_span / 2, mid + self.min_span / 2
-            t0, t1 = self.spark[0][0], self.spark[-1][0]
-            sr = QRectF(10, self.height() - 34, self.width() - 20, 26)
-            pts = [QPointF(sr.left() + (t - t0) / max(1, t1 - t0) * sr.width(), sr.bottom() - (v - lo) / (hi - lo) * sr.height()) for t, v in self.spark]
-            path = smooth_path(pts)
-            fill = QPainterPath(path); fill.lineTo(QPointF(pts[-1].x(), sr.bottom() + 6)); fill.lineTo(QPointF(pts[0].x(), sr.bottom() + 6)); fill.closeSubpath()
-            g = QLinearGradient(sr.topLeft(), sr.bottomLeft()); g.setColorAt(0, tint(col, 70)); g.setColorAt(1, tint(col, 0))
-            p.fillPath(fill, QBrush(g))
-            p.setPen(QPen(col, 1.6)); p.setBrush(Qt.BrushStyle.NoBrush); p.drawPath(path)
-        f = QFont(FONT_UI); f.setPixelSize(11); f.setWeight(QFont.Weight.DemiBold); p.setFont(f)
-        p.setPen(QColor(T["text2"])); p.drawText(QRectF(14, 10, self.width() - 28, 16), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.title.upper())
-        f = QFont(FONT_UI); f.setPixelSize(24); f.setWeight(QFont.Weight.Bold); p.setFont(f)
-        p.setPen(col if self.value != "—" else QColor(T["text2"]))
-        p.drawText(QRectF(14, 27, self.width() - 28, 30), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.value)
-        if self.sub:
-            f = QFont(FONT_UI); f.setPixelSize(10); p.setFont(f); p.setPen(QColor(T["text2"]))
-            p.drawText(QRectF(14, 55, self.width() - 28, 14), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.sub)
+            c = self.to_px(t, v); rad = 7 if i in (self.drag, self.hover) else 5.5
+            p.setPen(QPen(QColor("white"), 2)); p.setBrush(acc); p.drawEllipse(c, rad, rad)
+            if i in (self.drag, self.hover):
+                p.setPen(QColor(T["text"]))
+                lbl = f"{t}°C · {v}% · {next(n for lo, hi, n in FAN_BANDS if v < hi or hi == 100)}"
+                p.drawText(QRectF(c.x() - 80, c.y() - 26, 160, 14), Qt.AlignmentFlag.AlignCenter, lbl)
+        # жива точка
+        if self.live:
+            t, rpm = self.live
+            tt = max(self.T_MIN, min(self.T_MAX, t))
+            c = self.to_px(tt, self.value_at(tt))
+            lc = QColor("#ff9f0a")
+            p.setPen(QPen(lc, 1, Qt.PenStyle.DashLine)); p.drawLine(QPointF(c.x(), r.top()), QPointF(c.x(), r.bottom()))
+            p.setPen(QPen(QColor("white"), 2)); p.setBrush(lc); p.drawEllipse(c, 5, 5)
+            p.setPen(lc)
+            lbl = f"зараз {t}°C · " + (f"{rpm} об/хв" if rpm else "кулер стоїть")
+            x = c.x() + 8 if c.x() < r.center().x() else c.x() - 168
+            p.drawText(QRectF(x, r.top() + 4, 160, 14),
+                       (Qt.AlignmentFlag.AlignLeft if c.x() < r.center().x() else Qt.AlignmentFlag.AlignRight) | Qt.AlignmentFlag.AlignVCenter, lbl)
 
 # MFG Unlocker (github.com/dashdogy/MFG-Unlocker): конфіг спільний з ~/.local/bin/mfg-unlocker-run
 MFG_CFG = Path.home() / ".config" / "mfg-unlocker" / "config.json"
 MFG_RUN = str(Path.home() / ".local" / "bin" / "mfg-unlocker-run")
 MFG_DEFAULT_DLL = Path.home() / ".local" / "share" / "mfg-unlocker" / "MFGUnlocker.dll"
-MFG_DLL_NAMES = ["version.dll", "winmm.dll", "dinput8.dll", "dxgi.dll", "d3d12.dll", "d3d11.dll", "dsound.dll", "xinput9_1_0.dll",
+MFG_DLL_NAMES = ["version.dll", "winmm.dll", "dinput8.dll", "dxgi.dll", "d3d12.dll", "d3d11.dll", "dsound.dll",
                  "wininet.dll", "winhttp.dll", "binkw64.dll", "bink2w64.dll", "xinput1_3.dll", "xinput1_4.dll"]
 STEAM_TOOLS = ("proton", "steam linux runtime", "steamworks", "steamvr")
 
@@ -1276,20 +898,6 @@ def mfg_save(c):
     tmp = str(MFG_CFG) + ".tmp"
     with open(tmp, "w") as f: json.dump(c, f, ensure_ascii=False, indent=2)
     os.replace(tmp, MFG_CFG)
-
-
-_MFG_MOD = []
-def mfg_runner():
-    """~/.local/bin/mfg-unlocker-run як модуль (таблиця сумісності, параметри запуску Steam)."""
-    if not _MFG_MOD:
-        try:
-            import importlib.util, importlib.machinery
-            ld = importlib.machinery.SourceFileLoader("mfg_unlocker_run", MFG_RUN)
-            sp = importlib.util.spec_from_loader("mfg_unlocker_run", ld)
-            m = importlib.util.module_from_spec(sp); ld.exec_module(m); _MFG_MOD.append(m)
-        except Exception as e:
-            print("mfg-unlocker-run:", e); _MFG_MOD.append(None)
-    return _MFG_MOD[0]
 
 
 def steam_games():
@@ -1456,6 +1064,17 @@ def list_sound_themes():
 TP_FILE = Path.home() / ".config" / "hypr" / "touchpad-user.conf"
 
 
+def _tp_gesture_defined():
+    """True, якщо mgos-auto.conf підключає touchpad.conf із жестом «3, down» (є що знімати через unset)."""
+    try:
+        h = Path.home() / ".config" / "hypr"
+        if "touchpad.conf" not in (h / "mgos-auto.conf").read_text():
+            return False
+        return "gesture = 3, down" in (h / "touchpad.conf").read_text()
+    except Exception:
+        return False
+
+
 def tp_sensitivity(v):  # 0..100 → -1..1
     return round(v / 50.0 - 1.0, 2)
 
@@ -1474,7 +1093,7 @@ class TouchpadBackend:
         """Apple Magic Mouse (1/2/USB-C) — Hyprland називає її за Bluetooth-ім'ям, напр. «apple-magic-mouse»."""
         try:
             out = subprocess.run(["hyprctl", "devices", "-j"], capture_output=True, text=True, timeout=1).stdout
-            return [m["name"] for m in json.loads(out).get("mice", []) if "magic" in m["name"].lower()]
+            return [m["name"] for m in json.loads(out).get("mice", []) if "magic" in m["name"].lower() and "trackpad" not in m["name"].lower()]
         except Exception:
             return []
 
@@ -1482,7 +1101,7 @@ class TouchpadBackend:
     def touchpads():
         try:
             out = subprocess.run(["hyprctl", "devices", "-j"], capture_output=True, text=True, timeout=1).stdout
-            return [m["name"] for m in json.loads(out).get("mice", []) if "touchpad" in m["name"].lower()]
+            return [m["name"] for m in json.loads(out).get("mice", []) if "touchpad" in m["name"].lower() or "trackpad" in m["name"].lower()]
         except Exception:
             return []
 
@@ -1516,15 +1135,19 @@ class TouchpadBackend:
             "}",
         ]
         if self.g("tp_swipe_down") != "runner":
-            # «3 пальці вниз» з touchpad.conf (сховати Runner) знімаємо: жест читає док і сам веде анімацію
-            s += ["# Три пальці вниз: " + ("вікно в док (SYSui/dock_genie.h)" if self.g("tp_swipe_down") == "minimize" else "вимкнено"),
-                  "gesture = 3, down, unset"]
+            # «3 пальці вниз» з touchpad.conf (сховати Runner) знімаємо: жест читає док і сам веде анімацію.
+            # unset лише якщо жест реально існує (touchpad.conf підключено в mgos-auto.conf) — інакше Hyprland
+            # лається «Can't remove a non-existent gesture».
+            s += ["# Три пальці вниз: " + ("вікно в док (SYSui/dock_genie.h)" if self.g("tp_swipe_down") == "minimize" else "вимкнено")]
+            if _tp_gesture_defined():
+                s.append("gesture = 3, down, unset")
         sock = Path.home() / ".config/SYSui/runner.sock"
         up = self.g("tp_swipe_up")
         s += ["# Три пальці вгору: " + {"fullscreen": "вікно на повний екран, коротко вниз — назад (SYSui/dock_genie.h)",
                                         "maximize": "розгорнути вікно, коротко вниз — назад (SYSui/dock_genie.h)",
                                         "runner": "Runner", "off": "вимкнено"}.get(up, up),
-              "gesture = 3, up, unset"]
+              ]
+        # «up» у touchpad.conf не визначено — знімати нічого (unset неіснуючого жесту = помилка конфігу)
         if up == "runner":
             s.append(f"gesture = 3, up, dispatcher, exec, echo toggle | socat - UNIX-CLIENT:{sock}")
         if self.g("tp_tap3") != "runner":
@@ -1542,6 +1165,61 @@ class TouchpadBackend:
                   f"    accel_profile = {self.g('mm_accel')}", f"    natural_scroll = {self._b('mm_natural')}",
                   f"    left_handed = {self._b('mm_left')}", "}"]
         return "\n".join(s) + "\n"
+
+    @staticmethod
+    def _notify(title, body=""):
+        try: subprocess.Popen(["notify-send", "-a", "mgOS", title, body])
+        except Exception: pass
+
+    def install_driver(self):
+        """Apple Magic Trackpad/Mouse: hid_magicmouse + BlueZ без bonding (потрібен пароль — polkit). Працює на будь-якому ПК."""
+        script = Path.home() / ".local/bin/mgos-apple-trackpad"
+        if not script.exists():
+            script = Path.home() / ".local/share/mgos/installer/scripts/mgos-apple-trackpad"
+        if not script.exists():
+            self._notify("Драйвер трекпада", "Скрипт mgos-apple-trackpad не знайдено — оновіть mgOS")
+            return
+        def run():
+            try:
+                r = subprocess.run(["pkexec", str(script)], capture_output=True, text=True, timeout=180)
+                ok = r.returncode == 0
+                self._notify("Драйвер Apple-трекпада " + ("встановлено" if ok else "не встановлено"),
+                             "Тепер увімкніть трекпад (перемикач збоку)" if ok else (r.stderr or r.stdout)[-160:])
+            except Exception as e:
+                self._notify("Драйвер трекпада", str(e)[:160])
+        threading.Thread(target=run, daemon=True).start()
+
+    def setup_gestures(self):
+        """Підготувати жести на цьому ПК: touchpad.conf (якщо нема) → mgos-auto.conf → touchpad-user.conf → перезавантаження."""
+        h = Path.home() / ".config/hypr"
+        try:
+            tp = h / "touchpad.conf"
+            if not tp.exists():
+                for d in (Path.home() / ".local/share/mgos/installer/gui", Path.home() / ".local/share/mgos/recovery/gui"):
+                    t = d / "hypr-touchpad.conf"
+                    if t.exists():
+                        tp.write_text(t.read_text().replace("@HOME@", str(Path.home()))); break
+            auto = h / "mgos-auto.conf"
+            line = "source = ~/.config/hypr/touchpad.conf    # жести 3 пальцями, плавний скрол"
+            if tp.exists():
+                if auto.exists():
+                    txt = auto.read_text()
+                    if "touchpad.conf" not in txt:
+                        # має стояти ДО touchpad-user.conf
+                        if "touchpad-user.conf" in txt:
+                            txt = txt.replace("source = ~/.config/hypr/touchpad-user.conf", line + "\nsource = ~/.config/hypr/touchpad-user.conf", 1)
+                        else:
+                            txt += "\n" + line + "\n"
+                        auto.write_text(txt)
+                else:
+                    hc = h / "hyprland.conf"
+                    if hc.exists() and "touchpad.conf" not in hc.read_text():
+                        with open(hc, "a") as fh: fh.write("\n" + line + "\n")
+            self.apply()
+            subprocess.run(["hyprctl", "reload"], capture_output=True, timeout=5)
+            self._notify("Жести тачпада налаштовано", "Файли: touchpad.conf, touchpad-user.conf; конфіг Hyprland перезавантажено")
+        except Exception as e:
+            self._notify("Жести тачпада", "Помилка: " + str(e)[:160])
 
     def ensure_source(self):
         """Гарантує, що файл існує і підключений (Hyprland падає з помилкою на source неіснуючого файлу)."""
@@ -1595,10 +1273,10 @@ class TouchpadBackend:
             f"keyword input:left_handed {self._b('ms_left')}",
         ]
         sock = Path.home() / ".config/SYSui/runner.sock"
-        kw.append("keyword gesture 3, down, unset")   # спершу знімаємо — інакше повторне застосування дублює жест
+        if _tp_gesture_defined():
+            kw.append("keyword gesture 3, down, unset")   # спершу знімаємо — інакше повторне застосування дублює жест
         if self.g("tp_swipe_down") == "runner":
             kw.append(f"keyword gesture 3, down, dispatcher, exec, echo hide | socat - UNIX-CLIENT:{sock}")
-        kw.append("keyword gesture 3, up, unset")
         if self.g("tp_swipe_up") == "runner":
             kw.append(f"keyword gesture 3, up, dispatcher, exec, echo toggle | socat - UNIX-CLIENT:{sock}")
         kw.append("keyword unbind , mouse:274")
@@ -2616,6 +2294,276 @@ class OsdPreview(QWidget):
         p.drawText(QRectF(0, scr.bottom() + 6, W, H - scr.bottom() - 6), Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, txt)
 
 
+class MgShareGuide(QWidget):
+    """Анімована інструкція Mg Share: ноутбук ліворуч, телефон праворуч, сцена — за вибраним кроком."""
+    MODES = {
+        "pair": "Спершу один раз: Налаштування → «Додати пристрій» → у застосунку Mg Share наведіть камеру на код",
+        "phone": "Телефон → ПК: на телефоні «Поділитися» → Mg Share → файл падає в «Отримані файли» на ПК",
+        "pc": "Файл → на телефон: перетягніть файл на ГОДИННИК угорі екрана, відпустіть, у блоці «Надіслати» натисніть свій телефон",
+        "link": "Посилання з телефона відкривається у браузері ПК (з ПК: mgos-share link)",
+    }
+    ORDER = ["pc", "phone", "link", "pair"]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.mode, self.t0 = "pc", time.monotonic()
+        self.on_mode = None
+        self.setFixedHeight(262)
+        self.timer = QTimer(self, interval=16)
+        self.timer.timeout.connect(self.update)
+
+    def showEvent(self, e): self.timer.start(); super().showEvent(e)
+    def hideEvent(self, e): self.timer.stop(); super().hideEvent(e)
+
+    def set_mode(self, m):
+        if m in self.MODES and m != self.mode:
+            self.mode, self.t0 = m, time.monotonic()
+            if self.on_mode: self.on_mode(m)
+
+    @staticmethod
+    def _ease(q):
+        q = min(1.0, max(0.0, q))
+        return q * q * (3 - 2 * q)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        t = time.monotonic() - self.t0
+        W = self.width()
+        a = accent()
+        green = QColor("#30d158")
+        dark = T is not LIGHT
+        ink = QColor(T["text"])
+        E = self._ease
+        # --- ноутбук ---
+        lw, lh = 330, 186
+        gap = max(40.0, min(110.0, W - lw - 84 - 40))
+        lx = (W - lw - gap - 84) / 2 + 6
+        scr = QRectF(lx, 18, lw, lh)
+        p.setPen(QPen(tint(ink, 60), 1.4)); p.setBrush(QColor(28, 28, 32) if dark else QColor(60, 60, 66))
+        p.drawRoundedRect(scr.adjusted(-6, -6, 6, 6), 10, 10)
+        g = QLinearGradient(scr.topLeft(), scr.bottomRight())
+        g.setColorAt(0, tint(a, 90)); g.setColorAt(1, QColor(20, 22, 30) if dark else QColor(200, 205, 220))
+        p.setPen(Qt.PenStyle.NoPen); p.setBrush(QBrush(g)); p.drawRoundedRect(scr, 4, 4)
+        base = QPolygonF([QPointF(scr.left() - 22, scr.bottom() + 8), QPointF(scr.right() + 22, scr.bottom() + 8),
+                          QPointF(scr.right() + 10, scr.bottom() + 16), QPointF(scr.left() - 10, scr.bottom() + 16)])
+        p.setBrush(tint(ink, 110)); p.drawPolygon(base)
+        # топбар ноутбука з «годинником»
+        bar = QRectF(scr.left(), scr.top(), lw, 16)
+        p.setBrush(QColor(0, 0, 0, 120)); p.drawRect(bar)
+        clock = QRectF(scr.center().x() - 22, scr.top() + 2, 44, 12)
+        p.setBrush(QColor(255, 255, 255, 40)); p.drawRoundedRect(clock, 6, 6)
+        f = QFont(FONT_UI); f.setPixelSize(9); f.setWeight(QFont.Weight.Bold); p.setFont(f); p.setPen(QColor(255, 255, 255))
+        p.drawText(clock, Qt.AlignmentFlag.AlignCenter, time.strftime("%H:%M"))
+        # --- телефон ---
+        pw_, ph_ = 84, 160
+        px = lx + lw + gap
+        phone = QRectF(px, 18 + (lh + 16 - ph_) / 2, pw_, ph_)
+        p.setPen(QPen(tint(ink, 70), 1.4)); p.setBrush(QColor(28, 28, 32) if dark else QColor(60, 60, 66))
+        p.drawRoundedRect(phone.adjusted(-4, -4, 4, 4), 14, 14)
+        ps = phone.adjusted(1, 1, -1, -1)
+        p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor(16, 17, 22) if dark else QColor(236, 238, 244))
+        p.drawRoundedRect(ps, 11, 11)
+        p.setBrush(QColor(0, 0, 0, 200)); p.drawRoundedRect(QRectF(ps.center().x() - 9, ps.top() + 4, 18, 5), 2.5, 2.5)
+
+        def file_icon(c, s=1.0, col=None, al=255):
+            col = QColor(col or a); col.setAlpha(al)
+            w, h = 16 * s, 20 * s
+            r = QRectF(c.x() - w / 2, c.y() - h / 2, w, h)
+            poly = QPolygonF([r.topLeft(), QPointF(r.right() - 5 * s, r.top()), QPointF(r.right(), r.top() + 5 * s),
+                              r.bottomRight(), r.bottomLeft()])
+            p.setPen(QPen(QColor(255, 255, 255, al), 1.2)); p.setBrush(col); p.drawPolygon(poly)
+
+        def fly(A, B, k):
+            ek = E(k)
+            return QPointF(A.x() + (B.x() - A.x()) * ek, A.y() + (B.y() - A.y()) * ek - 34 * math.sin(math.pi * ek))
+
+        def toast(r, text, al, col=None):
+            if al <= 0: return
+            p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(QColor(30, 32, 40), int(225 * al)))
+            p.drawRoundedRect(r, 6, 6)
+            p.setBrush(tint(col or green, int(255 * al))); p.drawEllipse(QPointF(r.left() + 9, r.center().y()), 4, 4)
+            f = QFont(FONT_UI); f.setPixelSize(9); p.setFont(f); p.setPen(QColor(255, 255, 255, int(235 * al)))
+            p.drawText(r.adjusted(17, 0, -3, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
+
+        def check(c, r, al):
+            if al <= 0: return
+            p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(green, int(255 * al))); p.drawEllipse(c, r, r)
+            p.setPen(QPen(QColor(255, 255, 255, int(255 * al)), 2.2, cap=Qt.PenCapStyle.RoundCap))
+            p.drawPolyline(QPolygonF([QPointF(c.x() - r * .45, c.y()), QPointF(c.x() - r * .1, c.y() + r * .38),
+                                      QPointF(c.x() + r * .5, c.y() - r * .35)]))
+
+        m = self.mode
+        if m == "pair":
+            k = (t % 4.0) / 4.0
+            # QR у вікні налаштувань
+            win = QRectF(scr.center().x() - 46, scr.top() + 20, 92, 102)
+            p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor(250, 250, 252)); p.drawRoundedRect(win, 6, 6)
+            q0 = QPointF(win.center().x() - 36, win.top() + 8); cell = 72 / 12
+            p.setBrush(QColor(20, 20, 24))
+            for i in range(12):
+                for j in range(12):
+                    fin = (i < 3 and j < 3) or (i < 3 and j > 8) or (i > 8 and j < 3)
+                    if fin or ((i * 7 + j * 13 + i * j) % 5 < 2):
+                        p.drawRect(QRectF(q0.x() + j * cell, q0.y() + i * cell, cell, cell))
+            f = QFont(FONT_UI); f.setPixelSize(8); p.setFont(f); p.setPen(QColor(60, 60, 70))
+            p.drawText(QRectF(win.left(), win.bottom() - 18, win.width(), 14), Qt.AlignmentFlag.AlignCenter, "Додати пристрій")
+            # камера телефона
+            vf = ps.adjusted(8, 22, -8, -30)
+            p.setPen(QPen(QColor(255, 255, 255, 200) if dark else tint(ink, 160), 2))
+            for cx_, cy_, dx, dy in ((vf.left(), vf.top(), 1, 1), (vf.right(), vf.top(), -1, 1),
+                                     (vf.left(), vf.bottom(), 1, -1), (vf.right(), vf.bottom(), -1, -1)):
+                p.drawLine(QPointF(cx_, cy_), QPointF(cx_ + 9 * dx, cy_)); p.drawLine(QPointF(cx_, cy_), QPointF(cx_, cy_ + 9 * dy))
+            if k < 0.62:
+                y = vf.top() + vf.height() * ((k / 0.62 * 2) % 1)
+                p.setPen(QPen(tint(a, 220), 2)); p.drawLine(QPointF(vf.left() + 3, y), QPointF(vf.right() - 3, y))
+                # промінь від телефона до коду
+                p.setPen(QPen(tint(a, 60), 1, Qt.PenStyle.DashLine))
+                p.drawLine(QPointF(ps.left(), ps.center().y()), QPointF(win.right(), win.center().y()))
+            else:
+                al = min(1.0, (k - 0.62) / 0.1)
+                check(vf.center(), 14, al)
+                toast(QRectF(scr.right() - 108, scr.top() + 16, 102, 18), "Телефон з'єднано", al)
+        elif m == "phone":
+            k = (t % 4.2) / 4.2
+            # галерея на телефоні
+            for i in range(6):
+                r = QRectF(ps.left() + 6 + (i % 3) * 20, ps.top() + 16 + (i // 3) * 20, 17, 17)
+                p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(QColor(["#0a84ff", "#ff9f0a", "#30d158", "#bf5af2", "#ff375f", "#64d2ff"][i]), 200))
+                p.drawRoundedRect(r, 3, 3)
+            sheet_k = E(min(1.0, k / 0.18)) if k < 0.4 else E(1 - (k - 0.4) / 0.08)
+            if sheet_k > 0:
+                sh = QRectF(ps.left(), ps.bottom() - 54 * sheet_k, ps.width(), 54)
+                p.setBrush(QColor(44, 46, 56) if dark else QColor(255, 255, 255)); p.setPen(QPen(tint(ink, 40), 1))
+                p.drawRoundedRect(sh, 9, 9)
+                f = QFont(FONT_UI); f.setPixelSize(8); p.setFont(f); p.setPen(QColor(T["text2"]))
+                p.drawText(QRectF(sh.left(), sh.top() + 4, sh.width(), 10), Qt.AlignmentFlag.AlignCenter, "Поділитися")
+                for i in range(3):
+                    c = QPointF(sh.left() + 14 + i * 21, sh.top() + 27)
+                    hot = i == 0
+                    pulse = 1 + (0.15 * math.sin(t * 9) if hot and 0.2 < k < 0.4 else 0)
+                    p.setPen(Qt.PenStyle.NoPen); p.setBrush(green if hot else tint(ink, 50)); p.drawEllipse(c, 7 * pulse, 7 * pulse)
+                p.setPen(QColor(T["text"])); f.setPixelSize(6); p.setFont(f)
+                p.drawText(QRectF(sh.left(), sh.top() + 36, 30, 10), Qt.AlignmentFlag.AlignCenter, "Mg Share")
+            A = QPointF(ps.center().x(), ps.bottom() - 30); B = QPointF(scr.right() - 40, scr.top() + 50)
+            if 0.42 < k < 0.72:
+                file_icon(fly(A, B, (k - 0.42) / 0.3), 1.1)
+            if k >= 0.72:
+                al = min(1.0, (k - 0.72) / 0.08)
+                toast(QRectF(scr.right() - 116, scr.top() + 16, 110, 18), "Отримано: фото.jpg", al)
+                # тека «Отримані»
+                fc = QPointF(scr.left() + 30, scr.bottom() - 28)
+                p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(QColor("#64d2ff"), int(230 * al)))
+                p.drawRoundedRect(QRectF(fc.x() - 14, fc.y() - 9, 28, 20), 3, 3)
+                f = QFont(FONT_UI); f.setPixelSize(8); p.setFont(f); p.setPen(QColor(255, 255, 255, int(220 * al)))
+                p.drawText(QRectF(fc.x() - 30, fc.y() + 12, 60, 10), Qt.AlignmentFlag.AlignCenter, "Отримані")
+        elif m == "pc":
+            k = (t % 7.0) / 7.0
+            def callout(pt, n, text, al=1.0, right=True):
+                if al <= 0: return
+                f = QFont(FONT_UI); f.setPixelSize(10); f.setWeight(QFont.Weight.Bold); p.setFont(f)
+                tw = QFontMetrics(f).horizontalAdvance(text)
+                r = QRectF(pt.x() if right else pt.x() - tw - 30, pt.y() - 10, tw + 30, 20)
+                p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor(0, 0, 0, int(190 * al))); p.drawRoundedRect(r, 10, 10)
+                p.setBrush(tint(a, int(255 * al))); p.drawEllipse(QPointF(r.left() + 10, r.center().y()), 7, 7)
+                p.setPen(QColor(255, 255, 255, int(255 * al)))
+                p.drawText(QRectF(r.left() + 3, r.top(), 14, 20), Qt.AlignmentFlag.AlignCenter, str(n))
+                p.drawText(r.adjusted(22, 0, -6, 0), Qt.AlignmentFlag.AlignVCenter, text)
+            def cursor(c):
+                cur = QPolygonF([QPointF(0, 0), QPointF(0, 14), QPointF(4, 10.5), QPointF(7, 16.5), QPointF(9.5, 15.5), QPointF(6.5, 9.5), QPointF(12, 9.5)])
+                cur.translate(c.x(), c.y())
+                p.setPen(QPen(QColor(0, 0, 0), 1)); p.setBrush(QColor(255, 255, 255)); p.drawPolygon(cur)
+            # вікно файлового менеджера з файлом
+            fm = QRectF(scr.left() + 12, bar.bottom() + 40, 110, 88)
+            p.setPen(QPen(QColor(255, 255, 255, 40), 1)); p.setBrush(QColor(36, 38, 46, 240)); p.drawRoundedRect(fm, 6, 6)
+            p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor(255, 255, 255, 18)); p.drawRoundedRect(QRectF(fm.left(), fm.top(), fm.width(), 12), 6, 6)
+            for i in range(3):
+                p.setBrush(QColor(255, 255, 255, 30)); p.drawRoundedRect(QRectF(fm.left() + 62, fm.top() + 22 + i * 18, 40, 8), 3, 3)
+            home = QPointF(fm.left() + 30, fm.top() + 44)
+            f = QFont(FONT_UI); f.setPixelSize(8); p.setFont(f); p.setPen(QColor(255, 255, 255, 200))
+            p.drawText(QRectF(home.x() - 26, home.y() + 16, 52, 12), Qt.AlignmentFlag.AlignCenter, "фото.jpg")
+            target = QPointF(clock.center().x(), clock.center().y() + 2)
+            drag = E((k - 0.08) / 0.27)
+            # пунктирна стрілка «куди нести» — видно, поки файл не кинули
+            if k < 0.38:
+                path = QPainterPath(QPointF(home.x() + 10, home.y() - 12))
+                path.quadTo(QPointF(home.x() + 10, target.y() + 6), QPointF(target.x() - 26, target.y() + 6))
+                p.setPen(QPen(tint(QColor("#ffd60a"), 230), 2, Qt.PenStyle.DashLine, Qt.PenCapStyle.RoundCap)); p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawPath(path)
+                tip = QPointF(target.x() - 24, target.y() + 6)
+                p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor("#ffd60a"))
+                p.drawPolygon(QPolygonF([tip, QPointF(tip.x() - 8, tip.y() - 5), QPointF(tip.x() - 8, tip.y() + 5)]))
+                # годинник пульсує — ціль
+                pr = 3 + 3 * (0.5 + 0.5 * math.sin(t * 6)) + (4 if k > 0.3 else 0)
+                p.setPen(QPen(QColor("#ffd60a"), 2)); p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawRoundedRect(clock.adjusted(-pr, -pr, pr, pr), 8 + pr, 8 + pr)
+            if k < 0.36:
+                c = QPointF(home.x() + (target.x() - home.x()) * drag, home.y() + (target.y() + 4 - home.y()) * drag)
+                file_icon(c, 1.4)
+                cursor(QPointF(c.x() + 4, c.y() + 4))
+            # блок «Надіслати» під годинником
+            pop_k = E((k - 0.36) / 0.08) if k < 0.9 else E(1 - (k - 0.9) / 0.06)
+            chip = None
+            if k > 0.36 and pop_k > 0:
+                pop = QRectF(clock.center().x() - 62, bar.bottom() + 4, 124, 66 * pop_k)
+                p.setPen(QPen(QColor(255, 255, 255, 60), 1)); p.setBrush(QColor(26, 28, 36, 245)); p.drawRoundedRect(pop, 10, 10)
+                if pop_k > 0.8:
+                    f = QFont(FONT_UI); f.setPixelSize(9); f.setWeight(QFont.Weight.Bold); p.setFont(f); p.setPen(QColor(255, 255, 255, 210))
+                    p.drawText(QRectF(pop.left(), pop.top() + 5, pop.width(), 11), Qt.AlignmentFlag.AlignCenter, "Надіслати фото.jpg")
+                    chip = QRectF(pop.left() + 10, pop.top() + 24, pop.width() - 20, 30)
+                    hot = 0.5 < k < 0.62
+                    p.setPen(QPen(QColor("#ffd60a"), 2) if hot else Qt.PenStyle.NoPen)
+                    p.setBrush(tint(a, 230 if hot else 110)); p.drawRoundedRect(chip, 15, 15)
+                    p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor("#ff9fc8")); p.drawEllipse(QPointF(chip.left() + 15, chip.center().y()), 10, 10)
+                    f = QFont(FONT_UI); f.setPixelSize(10); f.setWeight(QFont.Weight.DemiBold); p.setFont(f); p.setPen(QColor(255, 255, 255))
+                    p.drawText(chip.adjusted(31, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter, "Мій телефон")
+            if chip is not None and 0.44 < k < 0.64:
+                q = E((k - 0.44) / 0.08)
+                c0 = QPointF(target.x() + 4, target.y() + 6); c1 = QPointF(chip.center().x() + 10, chip.center().y() + 2)
+                cursor(QPointF(c0.x() + (c1.x() - c0.x()) * q, c0.y() + (c1.y() - c0.y()) * q))
+            if 0.62 < k < 0.8:
+                src = QPointF(clock.center().x(), bar.bottom() + 40)
+                file_icon(fly(src, QPointF(ps.center().x(), ps.center().y()), (k - 0.62) / 0.18), 1.4)
+            if k >= 0.8:
+                al = min(1.0, (k - 0.8) / 0.05)
+                toast(QRectF(ps.left() + 3, ps.top() + 14, ps.width() - 6, 18), "фото.jpg ✓", al)
+                check(QPointF(ps.center().x(), ps.center().y() + 10), 14, al)
+            # підказки-кроки
+            callout(QPointF(fm.left(), fm.bottom() + 16), 1, "візьміть файл", 1.0 if k < 0.36 else 0.35)
+            if k < 0.38:
+                callout(QPointF(clock.right() + 12, clock.center().y() + 20), 2, "несіть на годинник", 1.0 if k > 0.04 else 0.4)
+            if 0.42 < k < 0.8:
+                callout(QPointF(clock.center().x() - 62, bar.bottom() + 88), 3, "натисніть на телефон", 1.0 if k < 0.64 else 0.4)
+        elif m == "link":
+            k = (t % 4.2) / 4.2
+            ab = QRectF(ps.left() + 5, ps.top() + 14, ps.width() - 10, 11)
+            p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(ink, 40)); p.drawRoundedRect(ab, 5.5, 5.5)
+            f = QFont(FONT_UI); f.setPixelSize(7); p.setFont(f); p.setPen(QColor(T["text2"]))
+            p.drawText(ab, Qt.AlignmentFlag.AlignCenter, "youtu.be/…")
+            for i in range(4):
+                p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(ink, 28)); p.drawRoundedRect(QRectF(ps.left() + 6, ab.bottom() + 6 + i * 16, ps.width() - 12, 11), 3, 3)
+            A = QPointF(ab.center().x(), ab.center().y()); B = QPointF(scr.center().x(), scr.center().y())
+            if 0.18 < k < 0.5:
+                c = fly(A, B, (k - 0.18) / 0.32)
+                chip = QRectF(c.x() - 26, c.y() - 7, 52, 14)
+                p.setPen(Qt.PenStyle.NoPen); p.setBrush(a); p.drawRoundedRect(chip, 7, 7)
+                p.setPen(QColor(255, 255, 255)); p.drawText(chip, Qt.AlignmentFlag.AlignCenter, "посилання")
+            if k >= 0.5:
+                g_ = E((k - 0.5) / 0.15)
+                ww, wh = 40 + (lw - 30 - 40) * g_, 26 + (lh - 30 - 26) * g_
+                br = QRectF(scr.center().x() - ww / 2, scr.center().y() + 6 - wh / 2, ww, wh)
+                p.setPen(QPen(QColor(255, 255, 255, 60), 1)); p.setBrush(QColor(245, 245, 248)); p.drawRoundedRect(br, 5, 5)
+                p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor(220, 222, 228)); p.drawRoundedRect(QRectF(br.left(), br.top(), br.width(), 12), 5, 5)
+                if g_ > 0.9:
+                    p.setBrush(QColor(255, 255, 255)); p.drawRoundedRect(QRectF(br.left() + 20, br.top() + 2.5, br.width() - 40, 7), 3.5, 3.5)
+                    p.setBrush(QColor(255, 0, 51, 210)); p.drawRoundedRect(QRectF(br.center().x() - 34, br.top() + 22, 68, 42), 4, 4)
+                    p.setBrush(QColor(255, 255, 255))
+                    p.drawPolygon(QPolygonF([QPointF(br.center().x() - 6, br.top() + 36), QPointF(br.center().x() - 6, br.top() + 50),
+                                             QPointF(br.center().x() + 7, br.top() + 43)]))
+        f = QFont(FONT_UI); f.setPixelSize(11); p.setFont(f); p.setPen(QColor(T["text2"]))
+        p.drawText(QRectF(8, 18 + lh + 24, W - 16, 30), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self.MODES.get(m, ""))
+
+
 class SettingRow(QWidget):
     def __init__(self, icon_name, fallback_emoji, title, description="", control=None, is_last=False, on_click=None,
                  preview=None, preview_mode=None):
@@ -3565,10 +3513,95 @@ class ImageCropperDialog(QDialog):
 # 5. ГОЛОВНЕ ВІКНО (macOS 26 System Settings)
 # ==========================================
 
+MGSHARE = str(Path.home() / ".local/bin/mgos-share")
+
+
+def mgshare_devices():
+    """[(id, ім'я, тип, онлайн, шлях аватарки)] зі служби Mg Share."""
+    try:
+        out = subprocess.run([MGSHARE, "devices"], capture_output=True, text=True, timeout=3).stdout
+    except Exception:
+        return []
+    avd = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "mgos" / "share" / "avatars"
+    res = []
+    for ln in out.splitlines():
+        f = ln.split("\t")
+        if len(f) >= 4 and f[0]:
+            av = avd / f"{f[0]}.png"
+            res.append((f[0], f[1], f[2], f[3] == "1", str(av) if av.exists() else ""))
+    return res
+
+
+def mgshare_downloads():
+    try:
+        d = subprocess.run(["xdg-user-dir", "DOWNLOAD"], capture_output=True, text=True, timeout=2).stdout.strip()
+    except Exception:
+        d = ""
+    return d if d and d != str(Path.home()) else str(Path.home() / "Downloads")
+
+
+def round_pixmap(path, size):
+    src = QPixmap(path)
+    if src.isNull():
+        return None
+    src = src.scaled(size * 2, size * 2, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+    pm = QPixmap(size * 2, size * 2); pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm); p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    path_ = QPainterPath(); path_.addEllipse(QRectF(0, 0, size * 2, size * 2)); p.setClipPath(path_)
+    p.drawPixmap(0, 0, src); p.end()
+    pm.setDevicePixelRatio(2)
+    return pm
+
+
+class MgSharePairDialog(QDialog):
+    """QR для з'єднання нового телефона: `mgos-share pair` → URL|QR| … PAIRED|id|name / EXPIRED."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Додати пристрій — Mg Share")
+        self.paired = False
+        lay = QVBoxLayout(self); lay.setContentsMargins(24, 20, 24, 18); lay.setSpacing(12)
+        t = QLabel("Відкрийте Mg Share на телефоні → «Додати пристрій» і наведіть камеру на код.\n"
+                   "Немає застосунку? Відскануйте код звичайною камерою — там буде посилання на .apk.")
+        t.setWordWrap(True); t.setProperty("role", "desc")
+        lay.addWidget(t)
+        self.qr = QLabel("Готую код…"); self.qr.setAlignment(Qt.AlignmentFlag.AlignCenter); self.qr.setMinimumSize(260, 260)
+        lay.addWidget(self.qr)
+        self.status = QLabel(""); self.status.setAlignment(Qt.AlignmentFlag.AlignCenter); self.status.setWordWrap(True)
+        lay.addWidget(self.status)
+        row = QHBoxLayout(); row.addStretch(); row.addWidget(LinkButton("Скасувати", self.reject)); lay.addLayout(row)
+        self.proc = QProcess(self)
+        self.proc.readyReadStandardOutput.connect(self._read)
+        self.proc.finished.connect(lambda *_: None if self.paired else self.status.setText(self.status.text() or "Службу не вдалося запустити"))
+        self.proc.start(MGSHARE, ["pair"])
+
+    def _read(self):
+        for ln in bytes(self.proc.readAllStandardOutput()).decode(errors="ignore").splitlines():
+            k, _, v = ln.partition("|")
+            if k == "QR":
+                pm = QPixmap(v)
+                if not pm.isNull():
+                    self.qr.setPixmap(pm.scaled(260, 260, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation))
+                self.status.setText("Чекаю на телефон… (код дійсний 5 хв)")
+            elif k == "PAIRED":
+                self.paired = True
+                self.status.setText(f"З'єднано: {v.partition('|')[2]}")
+                QTimer.singleShot(900, self.accept)
+            elif k == "EXPIRED":
+                self.status.setText("Код застарів — відкрийте «Додати» ще раз")
+            elif k == "ERROR":
+                self.status.setText({"nonet": "Немає мережі — під'єднайтесь до Wi-Fi"}.get(v, f"Помилка: {v}"))
+
+    def done(self, r):
+        if self.proc.state() != QProcess.ProcessState.NotRunning:
+            self.proc.terminate(); self.proc.waitForFinished(800)
+        super().done(r)
+
+
 # (індекс сторінки, назва для --page, заголовок, гліф, колір іконки, група сайдбару)
 PAGES = [
     ("wifi", "Wi-Fi", G["wifi"], "#0a84ff", 0),
     ("bluetooth", "Bluetooth", G["bt"], "#0a84ff", 0),
+    ("mgshare", "Mg Share", "\U000F011C", "#30d158", 0),
     ("appearance", "Вигляд", G["palette"], "#5e5ce6", 1),
     ("wallpapers", "Шпалери", G["image"], "#32ade6", 1),
     ("pixelwp", "Піксельні шпалери", "\U000F0D74", "#bf5af2", 1),
@@ -3587,7 +3620,7 @@ PAGES = [
     ("keyboard", "Клавіатура", G["keyboard"], "#8e8e93", 3),
     ("magickb", "Magic Keyboard", G["keyboard"], "#c7c7cc", 3),
     ("games", "Ігри", "\U000F0297", "#ff453a", 5),
-    ("power", "Продуктивність", "\U000F04C5", "#ff9f0a", 4),   # id «power» лишився — на нього посилаються --page і док
+    ("power", "Батарея", G["battery"], "#30d158", 4),
     ("system", "Система", G["cog"], "#8e8e93", 4),
     ("about", "Про систему", G["info"], "#8e8e93", 4),
     ("help", "Довідка", "\U000F02D7", "#0a84ff", 4),
@@ -3766,7 +3799,7 @@ class MeguminSettings(QWidget):
         cmds = {"wifi": "nmcli -t -f WIFI general", "bt": "bluetoothctl show | grep 'Powered: yes'",
                 "blur": "hyprctl getoption decoration:blur:enabled -j",
                 "theme": "gsettings get org.gnome.desktop.interface color-scheme",
-                "night": "~/.local/bin/mgos-brightness night | grep -qx on && echo on", "pp": "powerprofilesctl get"}
+                "night": "pgrep hyprsunset", "pp": "powerprofilesctl get"}
         procs = {k: subprocess.Popen(c, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
                  for k, c in cmds.items()}
         out = {}
@@ -3845,8 +3878,8 @@ class MeguminSettings(QWidget):
                 set_gtk_ini("gtk-application-prefer-dark-theme", 1 if value else 0)
                 self.apply_ui_theme()
             elif key == "night_light":
-                # через mgos-brightness: той самий hyprsunset тримає й затемнення монітора без DDC — killall скинув би його
-                subprocess.Popen([str(Path.home() / ".local/bin/mgos-brightness"), "night", "on" if value else "off"], start_new_session=True, stdout=DEVNULL, stderr=DEVNULL)
+                if value: subprocess.Popen(["hyprsunset", "-t", "4000"], start_new_session=True, stdout=DEVNULL, stderr=DEVNULL)
+                else: subprocess.Popen(["killall", "hyprsunset"], stdout=DEVNULL, stderr=DEVNULL)
             elif key == "power_profile":
                 # лише процесор; кулер у «Авто» підхопить зміну сам (mgos-fan слухає D-Bus), «Крива» лишається кривою
                 subprocess.Popen(["powerprofilesctl", "set", value], stdout=DEVNULL, stderr=DEVNULL)
@@ -3856,11 +3889,8 @@ class MeguminSettings(QWidget):
                 QTimer.singleShot(600, self.refresh_fan)
             elif key == "volume":
                 subprocess.Popen(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{value}%"], stdout=DEVNULL, stderr=DEVNULL)
-            elif key == "wp_video_fps":   # нова частота — перезапустити відео-шпалери (копія зробиться у фоні)
-                QTimer.singleShot(300, lambda: subprocess.Popen([str(Path.home() / ".config/SYSui/wallpaper_restore.sh")],
-                                                                 start_new_session=True, stdout=DEVNULL, stderr=DEVNULL))
             elif key == "screen_brightness":
-                subprocess.Popen([str(Path.home() / ".local/bin/mgos-brightness"), "set", str(max(1, int(value)))], stdout=DEVNULL, stderr=DEVNULL)
+                subprocess.Popen(["brightnessctl", "-q", "set", f"{max(1, value)}%"], stdout=DEVNULL, stderr=DEVNULL)
         except Exception: pass
 
     def launch_app(self, cmd, close_ui=False):
@@ -4061,7 +4091,7 @@ class MeguminSettings(QWidget):
                         power=self.create_power_page, system=self.create_system_page,
                         sounds=self.create_sounds_page, login=self.create_login_page, about=self.create_about_page, games=self.create_games_page, help=self.create_help_page, osd=self.create_osd_page,
                         developer=self.create_developer_page, profile=self.create_profile_page,
-                        dashboard=self.create_dashboard_page)
+                        dashboard=self.create_dashboard_page, mgshare=self.create_mgshare_page)
         for i, (pid, *_r) in enumerate(PAGES):
             self._building = i
             self.page_words[i] = [PAGES[i][1].lower()]
@@ -4317,6 +4347,63 @@ class MeguminSettings(QWidget):
         ]))
         return page
 
+    # --- Mg Share: свої телефони ---
+    def create_mgshare_page(self):
+        page, lay = self.page_base("mgshare")
+        self.hero(lay, "mgshare", "Обмін файлами з телефоном через Wi-Fi: список з'єднаних пристроїв, додати новий або забути старий.")
+        # інструкція: анімація + кроки; наведення на рядки нижче теж перемикає сцену
+        G_ = MgShareGuide()
+        steps = SegmentedSelector("mgshare_step", [("pc", "ПК → телефон"), ("phone", "Телефон → ПК"),
+                                                   ("link", "Посилання"), ("pair", "Додати телефон")], "pc",
+                                  lambda k, v: G_.set_mode(v), seg_width=128)
+        G_.on_mode = lambda m: steps.select(m, save=False)
+        self.section(lay, "Як користуватись")
+        sh = QHBoxLayout(); sh.addStretch(); sh.addWidget(steps); sh.addStretch()
+        lay.addLayout(sh)
+        lay.addWidget(GroupCard([G_]))
+        devs = mgshare_devices()
+        self._mgshare_sig = repr(devs)
+        self.section(lay, "Мої пристрої")
+        rows = []
+        for did, name, kind, online, av in devs:
+            ctl = QWidget(); cl = QHBoxLayout(ctl); cl.setContentsMargins(0, 0, 0, 0); cl.setSpacing(10)
+            if av and (pm := round_pixmap(av, 28)) is not None:
+                al = QLabel(); al.setPixmap(pm); cl.addWidget(al)
+            btn = LinkButton("Забути", lambda: None)
+            def forget(b=btn, i=did, n=name):
+                if b.text() != "Точно забути?":   # друге натискання підтверджує
+                    b.setText("Точно забути?"); b.setFixedWidth(QFontMetrics(b._f).horizontalAdvance(b.text()) + 26); b.update()
+                    return
+                subprocess.run([MGSHARE, "forget", i], timeout=3)
+                self.rebuild_page("mgshare")
+            btn.clicked.connect(lambda *_, f=forget: f())
+            cl.addWidget(btn)
+            what = "Ноутбук" if kind == "laptop" else "Телефон"
+            rows.append(SettingRow("", "", name, f"{what} · {'● на зв\'язку' if online else 'не видно (застосунок закритий або інша мережа)'}", ctl))
+        if not rows:
+            rows.append(SettingRow("", "", "Ще немає пристроїв", "Натисніть «Додати пристрій» і відскануйте код телефоном"))
+        lay.addWidget(self.create_card(rows))
+
+        def add():
+            if MgSharePairDialog(self).exec():
+                self.rebuild_page("mgshare")
+        lay.addWidget(self.create_card([
+            SettingRow("", "", "Додати пристрій", "QR-код для з'єднання з телефоном (застосунок Mg Share)", LinkButton("Додати…", add), on_click=add,
+                       preview=G_, preview_mode="pair"),
+            SettingRow("", "", "Отримані файли", f"Файли з телефона падають у {mgshare_downloads().replace(str(Path.home()), '~')}",
+                       LinkButton("Відкрити", lambda: subprocess.Popen(["xdg-open", mgshare_downloads()])),
+                       on_click=lambda: subprocess.Popen(["xdg-open", mgshare_downloads()]), preview=G_, preview_mode="phone"),
+        ]))
+        # статус «на зв'язку» оновлюється сам, поки сторінка відкрита
+        if not getattr(self, "_mgshare_timer", None):
+            self._mgshare_timer = QTimer(self); self._mgshare_timer.setInterval(8000)
+            def tick():
+                ids = [p[0] for p in PAGES]
+                if self.pages.currentIndex() == ids.index("mgshare") and repr(mgshare_devices()) != self._mgshare_sig:
+                    self.rebuild_page("mgshare")
+            self._mgshare_timer.timeout.connect(tick); self._mgshare_timer.start()
+        return page
+
     # --- Вигляд ---
     def create_appearance_page(self):
         page, lay = self.page_base("appearance")
@@ -4363,10 +4450,6 @@ class MeguminSettings(QWidget):
             SettingRow("", "", "Пауза під вікнами", "Поки вікна закривають ≥85% екрана — відео й піксельні шпалери стоять, блюр «запікається»",
                        MeguminSwitch("wp_pause_covered", bool(self.settings.get("wp_pause_covered", True)), self.save_setting)),
             SettingRow("", "", "Шейдери Anime4K", "Деблюр і апскейл «мильних» відео-шпалер", self.sw("wp_anime4k")),
-            SettingRow("", "", "Частота відео-шпалер",
-                       "Легка копія відео: роздільність монітора, HEVC на відеокарті. 30 к/с — удвічі менше перемальовок столу з розмиттям",
-                       SegmentedSelector("wp_video_fps", [(30, "30 к/с"), (60, "60 к/с"), (0, "Як у файлі")],
-                                         int(self.settings.get("wp_video_fps", 30)), self.save_setting)),
             SettingRow("", "", "Швидкий вибір", "Super + W — панель шпалер поверх усіх вікон",
                        on_click=lambda: self.launch_app(f"echo show | socat - UNIX-CONNECT:{Path.home()}/.config/SYSui/wallpapers.sock")),
         ]))
@@ -4531,17 +4614,10 @@ class MeguminSettings(QWidget):
         page, lay = self.page_base("display")
         self.hero(lay, "display", "Яскравість, нічне світло та розташування моніторів.")
         rows = []
-        # mgos-brightness: підсвітка ноутбука, DDC/CI монітора або програмне затемнення (hyprsunset) — що є
         try:
-            cur, how = subprocess.run([str(Path.home() / ".local/bin/mgos-brightness"), "get"], capture_output=True, text=True, timeout=25).stdout.split()[:2]
-            desc = {"backlight": "Підсвітка екрана · Fn+F2 / Fn+F3",
-                     "ddc": "Підсвітка монітора (DDC/CI) · Super+F2 / Super+F3",
-                     "soft": "Монітор не приймає DDC/CI — програмне затемнення (не яскравіше за 100%) · Super+F2 / Super+F3"}.get(how, "")
-            rows.append(SettingRow("", "", "Яскравість", desc,
-                                   MeguminSlider("screen_brightness", int(cur), 20 if how == "soft" else 1, 100, "%", self.save_setting, width=220)))
-            if how == "soft":
-                rows.append(SettingRow("", "", "Шукати DDC/CI ще раз", "Після ввімкнення DDC/CI в меню монітора або перезавантаження з новим драйвером",
-                                       LinkButton("Перевірити", lambda: (subprocess.run([str(Path.home() / ".local/bin/mgos-brightness"), "detect"], timeout=30), self.rebuild_page("display")))))
+            cur = int(subprocess.run(["brightnessctl", "-m"], capture_output=True, text=True, timeout=1).stdout.split(",")[3].rstrip("%"))
+            rows.append(SettingRow("", "", "Яскравість", "Також Fn+F2 / Fn+F3",
+                                   MeguminSlider("screen_brightness", cur, 1, 100, "%", self.save_setting, width=220)))
         except Exception:
             pass
         rows += [
@@ -4710,7 +4786,6 @@ class MeguminSettings(QWidget):
         except Exception:
             lays = ""
         self.hero(lay, "keyboard", f"Розкладки: {lays.upper().replace(',', ' · ')}" if lays else "Повтор клавіш і розкладки.")
-        self.kbd_section(lay)
         lay.addWidget(self.create_card([
             SettingRow("", "", "Швидкість повтору", "Скільки символів за секунду, коли клавішу затиснуто",
                        self.sl("kb_rate", 10, 60, labels=("Повільно", "Швидко"), ticks=8, width=240)),
@@ -4718,7 +4793,7 @@ class MeguminSettings(QWidget):
         ]))
         lay.addWidget(self.create_card([
             SettingRow("", "", "Перемикання розкладки", "Alt + Shift", None),
-            SettingRow("", "", "Яскравість екрана", "Fn + F2 / Fn + F3 · на будь-якій клавіатурі — Super + F2 / Super + F3", None),
+            SettingRow("", "", "Яскравість екрана", "Fn + F2 / Fn + F3", None),
         ]))
         if KBD_LED:
             self.section(lay, "Підсвітка клавіатури")
@@ -4735,68 +4810,6 @@ class MeguminSettings(QWidget):
         t = QLineEdit(); t.setPlaceholderText("Перевірте повтор клавіш тут…")
         lay.addWidget(t)
         return page
-
-    # --- Звичайна клавіатура: схема + розпізнавання (kbd_preview.py) ---
-    def kbd_section(self, lay):
-        try:
-            import kbd_preview as kp
-        except Exception as e:
-            print("kbd_preview:", e); return
-        pv = kp.KeyboardPreview(T, ACCENT[0], FONT_UI)
-        self.kbd_preview = pv
-        lay.addWidget(GroupCard([pv]))
-
-        start = LinkButton("Перевірити клавіші", pv.start_test)
-        stop = LinkButton("Завершити перевірку", pv.stop_test)
-        reset = LinkButton("Скинути", pv.reset_test)
-        form = SegmentedSelector("kbd_form", [("auto", "Авто"), ("ansi", "ANSI"), ("iso", "ISO")], pv.form,
-                                 lambda k, v: pv.set_form(v), seg_width=70)
-        bar = QWidget(); bh = QHBoxLayout(bar); bh.setContentsMargins(0, 0, 0, 0); bh.setSpacing(8)
-        bh.addWidget(start); bh.addWidget(stop); bh.addWidget(reset); bh.addStretch(); bh.addWidget(form)
-        lay.addWidget(bar)
-
-        kb = pv.kb
-        f = pv.feat
-        lname = lambda l, v: (l.upper() + (f" ({v})" if v else ""))
-        laytxt = " · ".join(lname(l, v) for l, v in pv.lays) + (f" — зараз: {pv.active}" if pv.active else "")
-        if kb:
-            src = kp.bus_name(kb["bus"]) + (" · приймач, через який працює й миша" if kb["mouse"] else "")
-            others = [g["name"] for g in pv.kbds[1:]]
-            kbtxt = f"{kb['name']} ({src})" + (f". Ще: {', '.join(others)}" if others else "")
-        else:
-            kbtxt = "Клавіатуру не знайдено"
-        declared = "заявлено приймачем — приймачі часто заявляють усе підряд, перевірка покаже точно" if kb and kb["mouse"] else "заявлено пристроєм"
-        spec_names = [kp.SPECIAL[c] for c in f["special"]]
-        self.kbd_rows = {
-            "kb": SettingRow("", "", "Клавіатура", kbtxt),
-            "lay": SettingRow("", "", "Розкладки", laytxt + ". Підписи на схемі — з розкладок системи (xkb), друга — кольором"),
-            "form": SettingRow("", "", "Форма", "…"),
-            "size": SettingRow("", "", "Розмір", f"{f['size']} — {declared}"),
-            "spec": SettingRow("", "", "Спецклавіші", (f"{len(spec_names)}: " + ", ".join(spec_names[:10]) + ("…" if len(spec_names) > 10 else "")
-                                                       + f" — {declared}") if spec_names else "Немає — лише стандартні клавіші"),
-            "found": SettingRow("", "", "Знайдено перевіркою", "…"),
-        }
-        lay.addWidget(self.create_card(list(self.kbd_rows.values())))
-
-        def refresh():
-            start.setVisible(not pv.testing); stop.setVisible(pv.testing)
-            reset.setVisible(not pv.testing and bool(pv.tested or pv.extra))
-            iso = pv.iso()
-            why = ("натискали клавішу < > біля лівого Shift" if pv.seen_iso else "клавіші < > біля лівого Shift не натискали") if pv.form == "auto" else "вибрано вручну"
-            self.kbd_rows["form"].desc_lbl.setText(("ISO — Enter «чобітком», коротший лівий Shift" if iso else "ANSI — широкий Enter і лівий Shift") + f" ({why})")
-            if pv.extra:
-                parts = []
-                for code, x in sorted(pv.extra.items()):
-                    act = f" → {x['bind']}" if x.get("bind") else (" → не призначено" if x.get("sym") else "")
-                    parts.append(f"{x['name']} ({x.get('sym') or x.get('ev') or code}){act}")
-                found = "Поза схемою: " + "; ".join(parts)
-            elif pv.tested:
-                found = f"Перевірено {len(pv.tested)} клавіш, спецклавіш поза стандартною схемою не натискали"
-            else:
-                found = "Натисніть «Перевірити клавіші»: медіа-, макро- та Fn-клавіші виробника з'являться тут — з кодом і тим, чи призначена на них дія"
-            self.kbd_rows["found"].desc_lbl.setText(found)
-        pv.changed.connect(refresh)
-        refresh()
 
     def kbd_light_control(self):
         if not KBD_LED: return None
@@ -4823,6 +4836,15 @@ class MeguminSettings(QWidget):
         lay.addLayout(th)
         P = self.tp_preview
         R = lambda title, desc, ctl, mode: SettingRow("", "", title, desc, ctl, preview=P, preview_mode=mode)
+        setup_card = self.create_card([
+            SettingRow("", "", "Драйвер Apple-трекпада", "Magic Trackpad / Magic Mouse по Bluetooth: завантажує драйвер ядра, дозволяє підключення, додає в автозапуск. Один раз на ПК, спитає пароль",
+                       LinkButton("Встановити драйвер", self.tp.install_driver)),
+            SettingRow("", "", "Налаштувати жести на цьому ПК", "Створює/виправляє файли жестів (3 пальці, док, Runner) і застосовує налаштування з цих вкладок",
+                       LinkButton("Налаштувати", self.tp.setup_gestures)),
+            SettingRow("", "", "Вібровідгук (haptic)", "Magic Trackpad 2: клік відчувається апаратно, його сила й «вібрація» в Linux недоступні — драйвер ядра не дає ними керувати, тож перемикача тут немає",
+                       None, is_last=True),
+        ])
+        lay.addWidget(setup_card)
 
         point = self.create_card([
             R("Швидкість курсора", "", self.sl("tp_speed", 0, 100, labels=("Повільно", "Швидко"), ticks=10, width=240), "pointer"),
@@ -4860,8 +4882,6 @@ class MeguminSettings(QWidget):
               self.sw("genie_squash", True), "minimize"),
             R("Відкриття з іконки", "Запуск програми з доку: вікно виростає з її іконки (зворотно до «здачі»). Без анімацій / в еко-режимі — з'являється миттєво",
               self.sw("genie_grow", True), "minimize"),
-            R("Вікно-заглушка при запуску", "Запуск з доку чи runner: одразу з'являється прозоре вікно з іконкою програми і спінером, а коли програма готова — вона заповнює це вікно",
-              self.sw("launch_splash", True), "minimize"),
             R("Швидкість «здачі»", "Тривалість анімації вікно → іконка",
               self.sl("genie_speed", 50, 200, "%", width=220), "minimize"),
         ])
@@ -5330,16 +5350,14 @@ class MeguminSettings(QWidget):
     # --- Дашборд робочого столу 1 (логіка — dashboard_settings.py) ---
     def create_dashboard_page(self):
         page, lay = self.page_base("dashboard")
-        self.hero(lay, "dashboard", "Віджети на робочому столі 1: продуктивність, ігри Steam, погода, тривога, курс НБУ, музика, оновлення, календар та інше.")
+        self.hero(lay, "dashboard", "Віджети на робочому столі 1: годинник, система, мережа, погода, музика, нотатки, швидкі дії, календар.")
         import dashboard_settings
         dashboard_settings.build_page(self, lay, SettingRow, MeguminSwitch, SegmentedSelector, GroupCard)
         return page
 
-    # --- Продуктивність (колишня «Батарея») ---
+    # --- Батарея ---
     def create_power_page(self):
         page, lay = self.page_base("power")
-        fs = fan_status()
-        laptop = fs.get("laptop") == "1"
         bat = ""
         for d in glob.glob("/sys/class/power_supply/BAT*"):
             try:
@@ -5347,102 +5365,12 @@ class MeguminSettings(QWidget):
                 st = open(d + "/status").read().strip()
                 bat = f"Заряд {cap}% · " + {"Charging": "заряджається", "Discharging": "від батареї", "Full": "заряджена"}.get(st, "від мережі")
             except Exception: pass
-        self.hero(lay, "power", bat or "Температури, кулери та режим живлення.")
-        self.page_words[self._building] += ["батарея", "температура", "кулер", "вентилятор", "історія", "графік", "продуктивність", "сенсори"]
-
-        # живі плитки
-        tiles = QWidget(); tl = QHBoxLayout(tiles); tl.setContentsMargins(0, 0, 0, 0); tl.setSpacing(10)
-        self.perf_tiles = {k: StatTile(n, ms) for k, n, ms in (("cpu", "Процесор", 15), ("gpu", "Відеокарта", 15), ("fan1", "CPU-кулер", 600), ("nvme", "Диск NVMe", 15))}
-        for t in self.perf_tiles.values(): tl.addWidget(t)
-        lay.addWidget(tiles)
-
-        # історія
-        self.section(lay, "Історія")
-        hist = QWidget(); hl = QVBoxLayout(hist); hl.setContentsMargins(14, 12, 14, 12); hl.setSpacing(10)
-        top = QHBoxLayout(); top.setContentsMargins(0, 0, 0, 0)
-        cap_l = QLabel("Записується у фоні кожні 15 с, зберігається 7 днів"); cap_l.setProperty("role", "desc")
-        top.addWidget(cap_l); top.addStretch()
-        self.hist_range = SegmentedSelector("hist_range", [("1h", "1 год"), ("6h", "6 год"), ("24h", "24 год"), ("7d", "7 днів")],
-                                            self.settings.get("hist_range", "1h"),
-                                            lambda k, v: (self.save_setting(k, v), self.refresh_history()))
-        top.addWidget(self.hist_range)
-        hl.addLayout(top)
-        self.temp_chart = HistoryChart("Температури", "°C", 10)
-        self.fan_chart = HistoryChart("Кулери", "об/хв", 250, height=180)
-        hl.addWidget(self.temp_chart); hl.addWidget(self.fan_chart)
-        lay.addWidget(GroupCard([hist]))
-
-        # живлення
-        self.section(lay, "Живлення")
+        self.hero(lay, "power", bat or "Режим енергоспоживання процесора.")
         lay.addWidget(self.create_card([
-            SettingRow("", "", "Режим живлення", "Економ — тихіше й холодніше, Макс — для ігор і збирання",
+            SettingRow("", "", "Режим живлення", "Економ — довше від батареї, Макс — для ігор",
                        PowerProfileSelector(self.settings.get("power_profile", "balanced"), self.save_setting)),
-            SettingRow("", "", "Що навантажує систему", "Процеси, памʼять і диск (btop)", on_click=lambda: self.launch_app("kitty -e btop")),
+            SettingRow("", "", "Споживання енергії", "Що з'їдає батарею (btop)", on_click=lambda: self.launch_app("kitty -e btop")),
         ]))
-
-        # кулери
-        self.section(lay, "Кулери")
-        self.fan_selector = SegmentedSelector("fan_mode", [("auto", "Авто"), ("quiet", "Тихий"), ("balanced", "Баланс"),
-                                                           ("performance", "Макс"), ("curve", "Крива")],
-                                              fs.get("mode", "auto"), self.save_setting)
-        self.fan_row = SettingRow("", "", "Режим кулера", "Зараз: …", self.fan_selector)
-        rows = [self.fan_row]
-        if laptop and (fs.get("writable") != "1" or fs.get("split") != "1"):
-            rows.append(SettingRow("", "", "Дозволити керування кулером",
-                                   "Один раз потрібен пароль: права на профіль прошивки кулера",
-                                   LinkButton("Дозволити", self.install_fan_rule)))
-        if not laptop and fs.get("pwm_writable") != "1":
-            rows.append(SettingRow("", "", "Драйвер кулерів материнки",
-                                   f"Стандартний драйвер {fs.get('fan_chip', '')} лише показує оберти. Щоб керувати кулерами, "
-                                   "потрібен nct6687 (один раз, з паролем)",
-                                   LinkButton("Встановити", self.install_nct6687)))
-        lay.addWidget(self.create_card(rows))
-        # крива: видно в режимі «Крива»
-        self.fan_curve_card = QWidget(); cl = QVBoxLayout(self.fan_curve_card); cl.setContentsMargins(0, 0, 0, 0); cl.setSpacing(6)
-        self.fan_curve = FanCurveWidget(lambda: self.settings.get("fan_mode") == "curve" and
-                                        subprocess.Popen([MGOS_FAN, "set", "curve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
-                                        laptop=laptop)
-        hint = QLabel("Тягніть точки. Клік по порожньому місцю — нова точка, подвійний клік або правий клік по точці — прибрати. "
-                      + ("Прошивка Samsung вміє лише 4 рівні, тому оберти змінюються сходинками за смугами." if laptop else
-                         "Без драйвера nct6687 крива лише зберігається — оберти не зміняться." if fs.get("pwm_writable") != "1" else ""))
-        hint.setProperty("role", "desc"); hint.setWordWrap(True)
-        box = QWidget(); bl = QVBoxLayout(box); bl.setContentsMargins(14, 12, 14, 10); bl.setSpacing(8)
-        bl.addWidget(self.fan_curve); bl.addWidget(hint)
-        rl2 = QHBoxLayout(); rl2.setSpacing(8)
-        pl = QLabel("Готові криві:"); pl.setProperty("role", "desc"); rl2.addWidget(pl)
-        for name, pts in (("Тиха", [(45, 10), (60, 25), (75, 50), (88, 100)]),
-                          ("Збалансована", list(FAN_CURVE_DEFAULT)),
-                          ("Холодна", [(35, 25), (50, 45), (65, 70), (78, 100)])):
-            rl2.addWidget(LinkButton(name, lambda p=pts: self.fan_curve.set_points(list(p))))
-        rl2.addStretch(); bl.addLayout(rl2)
-        cl.addWidget(GroupCard([box]))
-        lay.addWidget(self.fan_curve_card)
-        self.settings["fan_mode"] = fs.get("mode", "auto")   # правда — у mgos-fan, не в settings.json
-        self.fan_curve_card.setVisible(self.settings["fan_mode"] == "curve")
-
-        # пам'ять і zram
-        self.section(lay, "Пам'ять і zram")
-        self.page_words[self._building] += ["zram", "пам'ять", "swap", "своп", "ігровий режим", "оперативна"]
-        z = self.zram_json()
-        self.mem_zram_row = SettingRow("", "", "Стиснена пам'ять (zram)", self.zram_perf_text(z),
-                                       None if z.get("enabled") else LinkButton("Налаштувати", lambda: self.launch_app(
-                                           f"kitty --class mgos-zram-setup -e sudo {Path.home()}/.local/bin/mgos-zram setup")))
-        self.mem_boost_row = SettingRow("", "", "Ігровий режим пам'яті",
-                                        self.boost_text(z), self.sw("mem_boost", True))
-        mrows = [self.mem_zram_row, self.mem_boost_row]
-        if not z.get("boost"):
-            mrows.append(SettingRow("", "", "Увімкнути ігровий режим",
-                                    "Фонова служба перемикає zram на агресивний режим, коли запущена гра або бракує памʼяті "
-                                    "(один раз, з паролем)",
-                                    LinkButton("Встановити", lambda: self.launch_app(
-                                        f"kitty --class mgos-zram-setup -e bash -c 'sudo {Path.home()}/.local/bin/mgos-zram boost-install; "
-                                        "read -rp \"Enter — закрити\"'"))))
-        mrows.append(SettingRow("", "", "Стиснути фонові програми зараз",
-                                "Firefox, Telegram, Discord, Spotify, VS Code — їхня памʼять іде в zram, при зверненні повертається",
-                                LinkButton("Стиснути", self.pageout_bg_now)))
-        lay.addWidget(self.create_card(mrows))
-
-        # економія
         self.section(lay, "Економія та оптимізація")
         lay.addWidget(self.create_card([
             SettingRow("", "", "Запечений блюр на весь екран",
@@ -5454,9 +5382,32 @@ class MeguminSettings(QWidget):
                        "Вимкни — повернеться звичайне живе розмиття Hyprland",
                        self.sw("baked_blur", True)),
         ]))
-        self._fan_once = False
-        self._hist_tick = 0
-        self.refresh_history()
+        self.section(lay, "Кулер")
+        self.fan_selector = SegmentedSelector("fan_mode", [("auto", "Авто"), ("quiet", "Тихий"), ("balanced", "Баланс"),
+                                                           ("performance", "Макс"), ("curve", "Крива")],
+                                              fan_status().get("mode", "auto"), self.save_setting)
+        self.fan_row = SettingRow("", "", "Режим кулера", "Зараз: …", self.fan_selector)
+        rows = [self.fan_row]
+        fs = fan_status()
+        if fs.get("writable") != "1" or fs.get("split") != "1":
+            rows.append(SettingRow("", "", "Дозволити керування кулером",
+                                   "Один раз потрібен пароль: права на профіль прошивки кулера",
+                                   LinkButton("Дозволити", self.install_fan_rule)))
+        lay.addWidget(self.create_card(rows))
+        # графік кривої: видно завжди, працює в режимі «Крива»
+        self.fan_curve_card = QWidget(); cl = QVBoxLayout(self.fan_curve_card); cl.setContentsMargins(0, 0, 0, 0); cl.setSpacing(6)
+        self.fan_curve = FanCurveWidget(lambda: self.settings.get("fan_mode") == "curve" and
+                                        subprocess.Popen([MGOS_FAN, "set", "curve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        hint = QLabel("Тягніть точки: при якій температурі які оберти. Клік по порожньому місцю — нова точка, правий клік — прибрати. "
+                      "Прошивка Samsung вміє лише 4 рівні, тому реальні оберти змінюються сходинками за смугами.")
+        hint.setProperty("role", "desc"); hint.setWordWrap(True)
+        box = QWidget(); bl = QVBoxLayout(box); bl.setContentsMargins(14, 12, 14, 10); bl.setSpacing(6)
+        bl.addWidget(self.fan_curve); bl.addWidget(hint)
+        rl2 = QHBoxLayout(); rl2.addStretch(); rl2.addWidget(LinkButton("За замовчуванням", self.fan_curve.reset)); bl.addLayout(rl2)
+        cl.addWidget(GroupCard([box]))
+        lay.addWidget(self.fan_curve_card)
+        self.settings["fan_mode"] = fan_status().get("mode", "auto")   # правда — у mgos-fan, не в settings.json
+        self.fan_curve_card.setVisible(self.settings["fan_mode"] == "curve")
         self.refresh_fan()
         if not getattr(self, "fan_timer", None):
             self.fan_timer = QTimer(self, interval=2000)
@@ -5464,117 +5415,23 @@ class MeguminSettings(QWidget):
             self.fan_timer.start()
         return page
 
-    def refresh_history(self):
-        tc = getattr(self, "temp_chart", None)
-        if tc is None: return
-        rows = SENSOR_HIST.load()
-        span = {"1h": 3600, "6h": 6 * 3600, "24h": 86400, "7d": 7 * 86400}.get(self.settings.get("hist_range", "1h"), 3600)
-        t1 = time.time(); t0 = t1 - span
-        last = rows[-1] if rows else None
-        def mk(keys):
-            out = []
-            for k in keys:
-                pts, step = SENSOR_HIST.series(k, t0, t1)
-                if not pts or (k.startswith("fan") and max(v for _, v in pts) <= 0): continue
-                now = last[SC[k]] if last and last[SC[k]] is not None else None
-                out.append(dict(key=k, label=HIST_NAMES.get(k, f"Кулер {k[3:]}"), color=HIST_COLORS[k], pts=pts, now=now))
-            return out, step
-        temps, step = mk(["cpu", "gpu", "board", "nvme"])
-        fans, _ = mk([f"fan{i}" for i in range(1, 9)])
-        gap = max(30, step)
-        tc.set_data(temps, t0, t1, gap)
-        self.fan_chart.set_data(fans, t0, t1, gap)
-        # спарклайни плиток — остання година
-        self._spark = {k: SENSOR_HIST.series(k, t1 - 3600, t1, 60)[0] for k in ("cpu", "gpu", "fan1", "nvme")}
-        self._gpufan = last[SC["gpufan"]] if last else None
-
     def refresh_fan(self):
         row = getattr(self, "fan_row", None)
         if row is None: return
-        # оновлюємо лише видиму сторінку і лише коли вікно не згорнуте
-        try:
-            if self._fan_once and not (row.isVisible() and self.isVisible()): return
-        except RuntimeError: return   # сторінку перебудували — старий рядок уже видалено
+        # оновлюємо лише видиму сторінку «Батарея» і лише коли вікно не згорнуте
+        if getattr(self, "_fan_once", False) and not (row.isVisible() and self.isVisible()): return
         self._fan_once = True
         st = fan_status()
         rpm = int(st.get("rpm", "0") or 0)
         spin = f"{rpm} об/хв" if rpm else "зупинений"
         names = {"low-power": "економ", "quiet": "тихий", "balanced": "баланс", "performance": "макс"}
-        if st.get("laptop") == "1":
-            txt = f"Зараз: {spin} · крива прошивки «{names.get(st.get('profile', ''), st.get('profile', '?'))}»"
-        else:
-            txt = f"CPU-кулер {spin}" + ("" if st.get("pwm_writable") == "1" else " · керування недоступне без драйвера")
+        txt = f"Зараз: {spin} · CPU {st.get('temp', '?')}°C · крива прошивки «{names.get(st.get('profile', ''), st.get('profile', '?'))}»"
         try: row.desc_lbl.setText(txt)
         except Exception: pass
-        cpu = int(st.get("temp", "0") or 0)
         fc = getattr(self, "fan_curve", None)
         if fc is not None:
-            try: fc.set_live(cpu, rpm)
+            try: fc.set_live(int(st.get("temp", "0") or 0), rpm)
             except Exception: pass
-        # плитки
-        self._hist_tick = (self._hist_tick + 1) % 8
-        if self._hist_tick == 0: self.refresh_history()   # раз на ~16 с — нові точки з mgos-sensors
-        if self._hist_tick % 3 == 0: self.refresh_mem()     # zram / ігровий режим — раз на ~6 с
-        tiles = getattr(self, "perf_tiles", None)
-        if tiles:
-            sens = dict(st.get("sensors", []))
-            sp = getattr(self, "_spark", {})
-            tiles["cpu"].set(f"{cpu}°C" if cpu else "—", "", temp_color(cpu), sp.get("cpu", []))
-            g = sens.get("GPU")
-            gf = getattr(self, "_gpufan", None)
-            tiles["gpu"].set(f"{g}°C" if g else "—", f"кулер {gf}%" if gf is not None else "", temp_color(g or 0), sp.get("gpu", []))
-            tiles["fan1"].set(f"{rpm}" if rpm else "стоїть", "об/хв" if rpm else "", ACCENT[0], sp.get("fan1", []))
-            n = sens.get("NVMe")
-            tiles["nvme"].set(f"{n}°C" if n else "—", "", "#30d158" if (n or 0) < 55 else "#ff9f0a" if (n or 0) < 70 else "#ff453a", sp.get("nvme", []))
-
-    def zram_json(self):
-        try:
-            return json.loads(subprocess.run([str(Path.home() / ".local/bin/mgos-zram"), "json"],
-                                             capture_output=True, text=True, timeout=3).stdout)
-        except Exception:
-            return {}
-
-    def zram_perf_text(self, z):
-        if not z.get("enabled"): return "Вимкнено — стиснена памʼять у RAM замість повільного swap на диску"
-        ratio = f" (стиснення ×{z['orig_mb'] / z['used_mb']:.1f})" if z.get("used_mb") else ""
-        return (f"{z['size_mb'] / 1024:.0f} ГБ · {z.get('algo') or 'zstd'} · зараз {z['orig_mb']} МБ даних займають "
-                f"{z['used_mb']} МБ RAM{ratio}")
-
-    def boost_text(self, z):
-        base = "Коли йде гра або бракує памʼяті — охочіше стискати в zram, тримати запас вільної RAM, без фонового ущільнення"
-        if not z.get("boost"): return base + " · служба не встановлена"
-        if not self.settings.get("mem_boost", True): return base + " · вимкнено"
-        if z.get("boost_mode") == "game":
-            return f"Зараз: ігровий — {z.get('boost_reason') or 'активний'} (swappiness {z.get('swappiness')})"
-        return f"Зараз: звичайний (swappiness {z.get('swappiness')}) · вмикається сам, коли запускаєте гру"
-
-    def refresh_mem(self):
-        row = getattr(self, "mem_zram_row", None)
-        if row is None: return
-        try:
-            if not row.isVisible(): return
-        except RuntimeError: return
-        z = self.zram_json()
-        try:
-            row.desc_lbl.setText(self.zram_perf_text(z))
-            self.mem_boost_row.desc_lbl.setText(self.boost_text(z))
-        except Exception: pass
-
-    def pageout_bg_now(self):
-        cmd = ("pids=$(pgrep -u \"$USER\" -x 'firefox|telegram-desktop|Telegram|discord|Discord|vesktop|spotify|code|code-oss|chromium|chrome|obsidian|thunderbird' "
-               "| tr '\\n' ' '); [ -n \"$pids\" ] && nice -n 19 /usr/local/bin/mgos-pageout --tree $pids")
-        subprocess.Popen(["bash", "-c", cmd], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        QTimer.singleShot(2500, self.refresh_mem)
-
-    def install_nct6687(self):
-        cmd = ("echo 'mgOS: драйвер кулерів материнки MSI (nct6687). Потрібен пароль.'; echo; "
-               "yay -S --needed --noconfirm nct6687d-dkms-git && "
-               "echo nct6687 | sudo tee /etc/modules-load.d/msi-sensors.conf >/dev/null && "
-               "echo 'blacklist nct6683' | sudo tee /etc/modprobe.d/nct6683-blacklist.conf >/dev/null && "
-               "{ sudo modprobe -r nct6683; sudo modprobe nct6687; } && echo '✓ Готово' || echo '✗ Не вдалося'; "
-               "echo; read -rp 'Enter — закрити'")
-        subprocess.Popen(["kitty", "--class", "mgos-recovery", "-e", "bash", "-c", cmd], start_new_session=True,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def install_fan_rule(self):
         cmd = (f"echo 'mgOS: дозволяю керування кулером (потрібен пароль один раз)'; "
@@ -5598,28 +5455,9 @@ class MeguminSettings(QWidget):
             SettingRow("", "", "Оновлення", "Пакети системи (yay)", on_click=lambda: self.launch_app("kitty -e yay")),
             SettingRow("", "", "Монітор ресурсів", "btop", on_click=lambda: self.launch_app("kitty -e btop")),
         ]))
-        self.section(lay, "Місцезнаходження")
-        self.page_words[self._building] += ["геолокація", "місто", "місцезнаходження", "погода", "location", "розташування"]
-        loc = QLineEdit(self.settings.get("location", "")); loc.setPlaceholderText("Автоматично (за IP)"); loc.setFixedWidth(240)
-        self.loc_info = QLabel(""); self.loc_info.setStyleSheet(f"color: {T['text2']}; font-size: 11px;")
-        def loc_done(e=loc):
-            v = e.text().strip()
-            if v == self.settings.get("location", ""): return
-            self.save_setting("location", v)
-            self.reset_weather_cache()
-            subprocess.Popen(["pkill", "-USR1", "-x", "dashboard"])   # дашборд перечитає віджети з новим містом
-            self.loc_info.setText("")
-        loc.editingFinished.connect(loc_done)
-        lay.addWidget(self.create_card([
-            SettingRow("", "", "Місто", "Для погоди в дашборді та сонця/хмар у піксельних шпалерах. "
-                       "Порожньо — визначати за IP (часто показує місто провайдера, а не ваше). Можна латиницею: Lviv, Kyiv, Odesa", loc),
-            SettingRow("", "", "Перевірити", "Яке місце бачить сервіс погоди (wttr.in)",
-                       LinkButton("Перевірити", lambda e=loc: self.check_location(e.text().strip()))),
-        ]))
-        lay.addWidget(self.loc_info)
         self.section(lay, "Оболонка")
         lay.addWidget(self.create_card([
-            SettingRow("", "", "Перезапустити Ignis", "Alt+Tab (перемикач вікон)", on_click=lambda: self.launch_app("ignis quit; sleep 0.6; hyprctl dispatch exec 'env GSK_RENDERER=cairo ignis init'")),
+            SettingRow("", "", "Перезапустити Ignis", "Підняти оболонку після збою", on_click=lambda: self.launch_app("ignis quit; sleep 0.6; hyprctl dispatch exec 'ignis init'")),
             SettingRow("", "", "Перезапустити модулі SYSui", "Топбар, док, Control Center та OSD", on_click=lambda: self.launch_app("bash ~/.config/SYSui/restart_all.sh")),
         ]))
         self.section(lay, "Відновлення")
@@ -5630,27 +5468,6 @@ class MeguminSettings(QWidget):
                        LinkButton("Відкрити", self.launch_local_installer)),
         ]))
         return page
-
-    def reset_weather_cache(self):
-        """Місто змінилось — старий кеш погоди (дашборд, «Хмари») більше не наш."""
-        for f in (Path.home() / ".cache/mgos/dashboard_weather.json", Path.home() / ".cache/megumin-os/clouds_weather.txt"):
-            try: f.unlink()
-            except OSError: pass
-
-    def check_location(self, city):
-        import urllib.parse
-        self.loc_info.setText("Перевіряю…"); QApplication.processEvents()
-        url = "https://wttr.in/" + urllib.parse.quote(city.replace(" ", "+"), safe="+") + "?format=j1"
-        try:
-            out = subprocess.run(["curl", "-sf", "-m", "10", "-A", "curl", url], capture_output=True, text=True, timeout=12).stdout
-            d = json.loads(out)
-            a = d["nearest_area"][0]
-            name = ", ".join(x[0]["value"] for x in (a.get("areaName"), a.get("region"), a.get("country")) if x and x[0]["value"])
-            t = d["current_condition"][0].get("temp_C", "?")
-            src = "за IP" if not city else f"«{city}»"
-            self.loc_info.setText(f"   {src} → {name}  ({a.get('latitude')}, {a.get('longitude')}), зараз {t}°C")
-        except Exception:
-            self.loc_info.setText("   Не вдалося: немає звʼязку з wttr.in або місто не знайдено")
 
     # --- Системні звуки ---
     def create_sounds_page(self):
@@ -5715,14 +5532,9 @@ class MeguminSettings(QWidget):
         mod = Path(os.path.expanduser(cfg["mod_dll"]))
         launch = f"{MFG_RUN} %command%"
 
-        mctl = QWidget(); mh = QHBoxLayout(mctl); mh.setContentsMargins(0, 0, 0, 0); mh.setSpacing(8)
-        mh.addWidget(LinkButton("Оновити" if mod.exists() else "Завантажити", self.mfg_download))
-        mh.addWidget(LinkButton("Вибрати…", self.mfg_pick_dll))
-        ver = cfg.get("mod_version", "")
         self.mfg_mod_row = SettingRow("", "", "Файл мода",
-                                      (f"✓ {ver + ' · ' if ver else ''}{mod}" if mod.exists()
-                                       else "• Ще не завантажено — «Завантажити» бере останній реліз з GitHub і звіряє SHA256"),
-                                      mctl)
+                                      (f"✓ {mod}" if mod.exists() else f"• Немає: {mod}. Завантажте MFGUnlocker.dll з GitHub Releases"),
+                                      LinkButton("Вибрати…", self.mfg_pick_dll))
         ask = MeguminSwitch("mfg_ask", bool(cfg.get("ask", True)), lambda k, v: self.mfg_set(ask=bool(v)))
         lay.addWidget(self.create_card([
             self.mfg_mod_row,
@@ -5737,134 +5549,21 @@ class MeguminSettings(QWidget):
                        lambda: self.launch_app("xdg-open https://github.com/dashdogy/MFG-Unlocker/blob/main/docs/compatibility.md"))),
         ]))
 
-        # GPU: DLSS MFG лише на RTX 20–50, XeMFG — будь-яка (docs/compatibility.md)
-        try:
-            gpu = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True, timeout=3).stdout.strip().splitlines()[0]
-        except Exception:
-            gpu = ""
-        if re.search(r"RTX\s*50", gpu): gtxt = f"{gpu}: MFG рідна в драйвері — мод додає меню й керування"
-        elif re.search(r"RTX\s*[234]0", gpu): gtxt = f"{gpu}: DLSS Multi Frame Generation до 6x (DX12; Vulkan — експериментально)"
-        elif gpu: gtxt = f"{gpu}: DLSS MFG недоступна — лише XeMFG через OptiScaler"
-        else: gtxt = "Не NVIDIA: DLSS MFG недоступна — лише XeMFG через OptiScaler (AMD — так, Intel Arc — експериментально)"
-        # увімкнена гра без обгортки в параметрах запуску Steam = мод ніколи не ставиться (раніше рядок треба було
-        # вставити руками) — дописуємо самі; поки Steam відкритий — у чергу «Закрити Steam і застосувати»
-        mfg = mfg_runner()
-        if mfg:
-            pend = cfg.setdefault("pending_launch", {})
-            for aid, g in cfg["games"].items():
-                if g.get("enabled") and "mfg-unlocker-run" not in mfg.get_launch(aid) and aid not in pend:
-                    if mfg.set_launch(aid, True) == "steam": pend[aid] = True
-            if not pend: cfg.pop("pending_launch", None)
-            mfg_save(cfg); self.mfg_cfg = cfg
-        pend = cfg.get("pending_launch", {})
-        top = [SettingRow("", "", "Відеокарта", gtxt)]
-        if pend:
-            top.append(SettingRow("", "", f"Параметри запуску чекають: {len(pend)}",
-                                  "Steam відкритий і перезаписує свої налаштування — закрийте його, і параметри запишуться",
-                                  LinkButton("Закрити Steam і застосувати", self.mfg_apply_pending)))
-        lay.addWidget(self.create_card(top))
-
         self.section(lay, "Ігри Steam")
-        mfg = mfg_runner()
         games = steam_games()
         rows = []
         for aid, name in games:
             g = cfg["games"].get(aid, {})
-            c = mfg.compat_for(name) if mfg else {"status": "unknown", "use": "version.dll", "also": [], "dont": {}}
-            st = c["status"]
-            dll = g.get("dll") or c["use"] or "version.dll"
-            # збережена назва в «не можна» для цієї гри (напр. version.dll у Cyberpunk = Cyber Engine Tweaks) —
-            # міняємо на рекомендовану, якщо мод під нею ще ні разу не спрацював
-            if g and dll in c["dont"] and c["use"] and not g.get("works"):
-                dll = c["use"]; self.mfg_game(aid, name, dll=dll, tried=[])
-            # підписи в списку: ★ рекомендована, + ще працює, ✕ не можна (причина з таблиці)
-            items = []
-            for d in MFG_DLL_NAMES:
-                lab = d
-                if d == c["use"]: lab = f"★ {d}"
-                elif d in c["also"]: lab = f"+ {d}"
-                elif d in c["dont"]: lab = f"✕ {d} — {c['dont'][d]}"
-                items.append((d, lab))
-            if st == "ok":
-                desc = f"✓ Сумісна · рекомендовано {c['use']}" + (f", ще: {', '.join(c['also'])}" if c["also"] else "")
-            elif st == "optiscaler":
-                desc = "Працює лише як плагін OptiScaler (назву DLL дає OptiScaler)"
-            elif st == "anticheat":
-                desc = "⛔ Анти-чит — мод не можна (ризик бану)"
-            else:
-                desc = "Не перевірена: спершу version.dll, потім winmm.dll — якщо мод не завантажиться, назва зміниться сама"
-            if g.get("works"): desc = f"✓ Мод працював як {g['works']}"
-            elif g.get("tried"): desc += f" · не спрацювали: {', '.join(g['tried'])}"
-            if aid in pend: desc += " · параметри запуску запишуться після закриття Steam"
             ctl = QWidget(); h = QHBoxLayout(ctl); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(10)
-            if st != "anticheat":
-                pop = MacPopup(f"mfg_dll:{aid}", items, dll, lambda k, v, a=aid, n=name: self.mfg_game(a, n, dll=v, tried=[], works=""), width=150)
-                h.addWidget(pop)
-            sw = MeguminSwitch(f"mfg_on:{aid}", bool(g.get("enabled")), lambda k, v, a=aid, n=name, d=dll: self.mfg_toggle(a, n, bool(v), d))
-            sw.setEnabled(st != "anticheat")
-            h.addWidget(sw)
-            rows.append(SettingRow("", "", name, desc, ctl))
+            pop = MacPopup(f"mfg_dll:{aid}", [(d, d) for d in MFG_DLL_NAMES], g.get("dll", "version.dll"),
+                           lambda k, v, a=aid, n=name: self.mfg_game(a, n, dll=v), width=130)
+            sw = MeguminSwitch(f"mfg_on:{aid}", bool(g.get("enabled")), lambda k, v, a=aid, n=name: self.mfg_game(a, n, enabled=bool(v)))
+            h.addWidget(pop); h.addWidget(sw)
+            rows.append(SettingRow("", "", name, f"AppID {aid}" + (f" · тека: {g['exe_dir']}" if g.get("exe_dir") else ""), ctl))
         if not rows:
             rows.append(SettingRow("", "", "Ігор Steam не знайдено", "Встановіть гру в Steam і відкрийте цю сторінку знову"))
         lay.addWidget(self.create_card(rows))
         return page
-
-    # Увімкнути генерацію кадрів у грі одним перемикачем: DLL з таблиці, перевірка анти-чита в теці гри
-    # і обгортка в параметрах запуску Steam (сама, без копіювання рядка)
-    def mfg_toggle(self, appid, name, on, dll):
-        mfg = mfg_runner()
-        if on and mfg:
-            gd = mfg.install_dir(appid)
-            scan = mfg.scan_game(gd) if gd else {"anticheat": []}
-            if scan["anticheat"]:
-                subprocess.Popen(["notify-send", "-a", "Налаштування", "MFG Unlocker",
-                                  f"«{name}»: знайдено анти-чит ({', '.join(scan['anticheat'][:3])}) — мод не вмикаю"])
-                self.rebuild_page("games"); return
-        self.mfg_game(appid, name, enabled=on, dll=dll)
-        r = mfg.set_launch(appid, on) if mfg else "nosteam"
-        c = mfg_load()
-        pend = c.setdefault("pending_launch", {})
-        if r == "steam": pend[appid] = on
-        else: pend.pop(appid, None)
-        if not pend: c.pop("pending_launch", None)
-        mfg_save(c); self.mfg_cfg = c
-        if r == "ok":
-            subprocess.Popen(["notify-send", "-a", "Налаштування", "MFG Unlocker",
-                              f"«{name}»: генерацію кадрів " + ("увімкнено" if on else "вимкнено") + " — параметри запуску Steam оновлено"])
-        self.rebuild_page("games")
-
-    def mfg_download(self):
-        def work():
-            r = subprocess.run([MFG_RUN, "--update-mod"], capture_output=True, text=True, timeout=180).stdout.strip()
-            ok = r and not r.startswith("ERROR")
-            subprocess.Popen(["notify-send", "-a", "Налаштування", "MFG Unlocker",
-                              f"Мод {r} завантажено і перевірено (SHA256)" if ok else f"Не вдалося завантажити: {r[6:] or 'немає мережі'}"])
-        t = threading.Thread(target=work, daemon=True); t.start()
-        def poll():
-            if t.is_alive(): QTimer.singleShot(500, poll)
-            else: self.mfg_cfg = mfg_load(); self.rebuild_page("games")
-        QTimer.singleShot(500, poll)
-
-    def mfg_apply_pending(self):
-        """Закрити Steam (він перезаписує localconfig.vdf при виході), записати параметри, запустити Steam знову."""
-        mfg = mfg_runner()
-        if not mfg: return
-        def work():
-            subprocess.run(["steam", "-shutdown"], capture_output=True, timeout=30)
-            for _ in range(60):
-                if not mfg.steam_running(): break
-                time.sleep(0.5)
-            c = mfg_load()
-            for aid, on in list(c.get("pending_launch", {}).items()):
-                if mfg.set_launch(aid, on) == "ok": c["pending_launch"].pop(aid, None)
-            if not c.get("pending_launch"): c.pop("pending_launch", None)
-            mfg_save(c)
-            subprocess.Popen(["steam", "-silent"], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        t = threading.Thread(target=work, daemon=True); t.start()
-        def poll():
-            if t.is_alive(): QTimer.singleShot(500, poll)
-            else: self.mfg_cfg = mfg_load(); self.rebuild_page("games")
-        QTimer.singleShot(500, poll)
 
     def mfg_set(self, **kw):
         c = mfg_load(); c.update(kw); mfg_save(c); self.mfg_cfg = c

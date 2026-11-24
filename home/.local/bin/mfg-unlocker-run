@@ -24,224 +24,6 @@ SKIP_EXE = ("unitycrashhandler", "crashreport", "unins", "vcredist", "vc_redist"
             "easyanticheat", "eac", "battleye", "be_service", "launcher", "redist", "setup", "ue4prereq", "uecrash")
 
 
-# ---------------- сумісність (docs/compatibility.md MFG Unlocker) ----------------
-# гра (ключові слова назви, нижній регістр) → (рекомендована DLL, ще працюють, не можна: {dll: причина})
-COMPAT = {
-    "ace combat 8": ("version.dll", [], {}),
-    "aion 2": ("d3d12.dll", ["dxgi.dll"], {}),
-    "alan wake 2": ("winmm.dll", ["dinput8.dll"], {"version.dll": "не вантажиться (Epic)"}),
-    "black flag resynced": ("version.dll", ["dinput8.dll"], {}),
-    "black myth: wukong": ("version.dll", ["dsound.dll", "dxgi.dll"], {}),
-    "modern warfare 4": ("dxgi.dll", [], {}),
-    "control resonant": ("version.dll", ["winmm.dll", "bink2w64.dll"], {}),
-    "crimson desert": ("d3d12.dll", [], {"version.dll": "не вантажиться", "dinput8.dll": "не вантажиться", "winmm.dll": "завантажувач модів гри"}),
-    "cyberpunk 2077": ("xinput9_1_0.dll", ["dxgi.dll", "d3d12.dll"], {"version.dll": "Cyber Engine Tweaks", "winmm.dll": "RED4ext", "dinput8.dll": "не вантажиться"}),
-    "doom: the dark ages": ("winmm.dll", [], {}),
-    "dragon's dogma 2": ("winmm.dll", [], {}),
-    "dying light 2": ("winmm.dll", ["version.dll"], {}),
-    "dying light: the beast": ("winmm.dll", [], {}),
-    "enshrouded": ("winmm.dll", [], {}),
-    "farming simulator 25": ("dinput8.dll", ["version.dll"], {}),
-    "final fantasy vii rebirth": ("version.dll", ["dxgi.dll"], {"dsound.dll": "FF7RebirthFix"}),
-    "gothic 1 remake": ("version.dll", ["winmm.dll"], {}),
-    "hogwarts legacy": ("version.dll", [], {}),
-    "great circle": ("dinput8.dll", [], {}),
-    "spider-man 2": ("version.dll", [], {}),
-    "flight simulator 2020": ("version.dll", ["dinput8.dll"], {}),
-    "flight simulator 2024": ("version.dll", ["dinput8.dll", "d3d12.dll"], {}),
-    "monster hunter wilds": ("version.dll", ["winmm.dll"], {"dinput8.dll": "REFramework"}),
-    "onimusha: way of the sword": ("winmm.dll", [], {"version.dll": "краш"}),
-    "phantom blade zero": ("version.dll", ["dxgi.dll"], {"winmm.dll": "власна DLL гри"}),
-    "planet zoo 2": ("winmm.dll", [], {"dxgi.dll": "ламає HDR"}),
-    "pragmata": ("version.dll", [], {}),
-    "resident evil requiem": ("version.dll", ["dxgi.dll"], {"dinput8.dll": "REFramework"}),
-    "s.t.a.l.k.e.r. 2": ("version.dll", ["d3d12.dll"], {"dxgi.dll": "не вантажиться"}),
-    "silent hill: townfall": ("version.dll", [], {}),
-    "galactic racer": ("version.dll", ["dxgi.dll"], {}),
-    "subnautica 2": ("version.dll", [], {}),
-    "blood of dawnwalker": ("version.dll", [], {}),
-    "the first descendant": ("dxgi.dll", [], {}),
-    "the last of us part ii": ("dinput8.dll", [], {}),
-    "the witcher 3": ("winmm.dll", ["version.dll", "d3d11.dll"], {"dxgi.dll": "ReShade"}),
-    "where winds meet": ("winmm.dll", [], {}),
-    "wuthering waves": ("version.dll", ["dxgi.dll"], {"dinput8.dll": "без меню", "winmm.dll": "без меню", "d3d12.dll": "без меню"}),
-}
-# Лише як плагін OptiScaler (своя назва DLL — з документації OptiScaler)
-OPTISCALER_ONLY = ["007 first light", "arknights: endfield", "clair obscur", "forza motorsport", "gta: the trilogy",
-                   "grand theft auto: the trilogy", "hitman world of assassination", "spider-man remastered",
-                   "neverness to everness", "no man's sky", "no rest for the wicked", "red dead redemption 2",
-                   "tainted grail", "the ascent", "x4: foundations"]
-# Ігри з анти-читом з документа (+ виявлення за файлами в теці гри нижче)
-ANTICHEAT_GAMES = ["battlefield 6", "redsec", "forza horizon 6", "gears of war: e-day", "grand theft auto v enhanced",
-                   "zenless zone zero",
-                   # не з документа — онлайн-ігри з анти-читом сервера (VAC тощо), файлів анти-чита в теці може не бути
-                   "counter-strike", "dota 2", "apex legends", "pubg", "rainbow six siege", "the finals", "marvel rivals",
-                   "deadlock", "team fortress 2", "rust", "destiny 2", "warframe", "naraka"]
-ANTICHEAT_FILES = ("easyanticheat", "battleye", "beclient", "be_service", "vgk", "nprotect", "xigncode", "anticheat")
-# Часто зайняті назви (модами/грою) — з документа
-TAKEN_BY = {"version.dll": "Cyber Engine Tweaks / Ultimate ASI Loader", "winmm.dll": "RED4ext / завантажувачі модів",
-            "dinput8.dll": "REFramework", "dxgi.dll": "ReShade / OptiScaler / Special K", "dsound.dll": "ASI-завантажувачі"}
-TRY_ORDER = ["version.dll", "winmm.dll", "dinput8.dll", "d3d12.dll", "dxgi.dll", "xinput9_1_0.dll", "dsound.dll", "d3d11.dll"]
-
-
-def _norm(s):
-    return "".join(c for c in s.lower().replace("™", "").replace("®", "") if c.isalnum() or c in " :'.-").strip()
-
-
-def compat_for(name):
-    """→ dict(status=ok|optiscaler|anticheat|unknown, use, also, dont)"""
-    n = _norm(name)
-    if any(k in n for k in ANTICHEAT_GAMES):
-        return {"status": "anticheat", "use": None, "also": [], "dont": {}}
-    for k, (use, also, dont) in COMPAT.items():
-        if k in n or _norm(k) in n:
-            return {"status": "ok", "use": use, "also": also, "dont": dont}
-    if any(k in n for k in OPTISCALER_ONLY):
-        return {"status": "optiscaler", "use": None, "also": [], "dont": {}}
-    return {"status": "unknown", "use": "version.dll", "also": ["winmm.dll"], "dont": {}}
-
-
-def scan_game(game_dir, exe_dir=None):
-    """Що лежить у теці гри: анти-чит, графічне API, DLL з потрібними назвами, які вже зайняті грою/модами."""
-    res = {"anticheat": [], "api": set(), "taken": {}, "exe_dir": str(exe_dir) if exe_dir else ""}
-    if not game_dir or not Path(game_dir).is_dir(): return res
-    n = 0
-    for p in Path(game_dir).rglob("*"):
-        n += 1
-        if n > 20000: break                 # великі ігри: досить перших 20 тис. файлів
-        low = p.name.lower()
-        if any(a in low for a in ANTICHEAT_FILES) and low not in res["anticheat"]: res["anticheat"].append(p.name)
-        if low in ("d3d12core.dll", "d3d12.dll") or "dx12" in str(p.parent).lower(): res["api"].add("DX12")
-        if low.startswith("vulkan") or low == "amd_fidelityfx_vk.dll": res["api"].add("Vulkan")
-        if low.startswith("sl.dlss_g") or low == "nvngx_dlssg.dll": res["api"].add("DLSS-FG")
-    if exe_dir and Path(exe_dir).is_dir():
-        for d in TRY_ORDER + ["bink2w64.dll", "binkw64.dll"]:
-            f = Path(exe_dir) / d
-            if f.exists() and not f.name.endswith(".mfgbak"): res["taken"][d] = TAKEN_BY.get(d, "файл гри")
-    res["api"] = sorted(res["api"])
-    return res
-
-
-def next_dll(name, tried):
-    """Наступна назва для спроби після невдалої (мод не завантажився): спершу з таблиці, потім загальний порядок."""
-    c = compat_for(name)
-    order = ([c["use"]] if c["use"] else []) + c["also"] + TRY_ORDER
-    for d in order:
-        if d not in tried and d not in c["dont"]: return d
-    return None
-
-
-# ---------------- параметри запуску Steam (localconfig.vdf) ----------------
-# Steam тримає їх у userdata/<акаунт>/config/localconfig.vdf → ...apps/<appid>/LaunchOptions і перезаписує файл
-# при виході — тож писати можна лише коли Steam закритий.
-def _vdf_parse(text):
-    toks, i, n = [], 0, len(text)
-    while i < n:
-        c = text[i]
-        if c == '"':
-            j, buf = i + 1, []
-            while j < n and text[j] != '"':
-                if text[j] == "\\" and j + 1 < n: buf.append(text[j:j + 2]); j += 2; continue
-                buf.append(text[j]); j += 1
-            toks.append(("s", "".join(buf))); i = j + 1
-        elif c in "{}": toks.append((c, c)); i += 1
-        elif c == "/" and text[i:i + 2] == "//":
-            while i < n and text[i] != "\n": i += 1
-        else: i += 1
-    pos = 0
-
-    def obj():
-        nonlocal pos
-        d = {}
-        while pos < len(toks):
-            t, v = toks[pos]
-            if t == "}": pos += 1; return d
-            pos += 1
-            if pos < len(toks) and toks[pos][0] == "{": pos += 1; d[v] = obj()
-            elif pos < len(toks): d[v] = toks[pos][1]; pos += 1
-        return d
-    return obj()
-
-
-def _vdf_dump(d, ind=0):
-    out = []
-    for k, v in d.items():
-        if isinstance(v, dict):
-            out.append("\t" * ind + f'"{k}"\n' + "\t" * ind + "{\n" + _vdf_dump(v, ind + 1) + "\t" * ind + "}\n")
-        else:
-            out.append("\t" * ind + f'"{k}"\t\t"{v}"\n')
-    return "".join(out)
-
-
-def steam_root():
-    for r in (Path.home() / ".local/share/Steam", Path.home() / ".steam/steam"):
-        if (r / "userdata").is_dir(): return r
-    return None
-
-
-def steam_localconfig():
-    """localconfig.vdf акаунта, що входив останнім (loginusers.vdf → MostRecent)."""
-    r = steam_root()
-    if not r: return None
-    try:
-        users = _vdf_parse((r / "config/loginusers.vdf").read_text(errors="ignore")).get("users", {})
-        for sid, u in users.items():
-            if str(u.get("MostRecent", u.get("mostrecent", "0"))) == "1":
-                p = r / "userdata" / str(int(sid) - 76561197960265728) / "config/localconfig.vdf"
-                if p.exists(): return p
-    except Exception:
-        pass
-    c = sorted(r.glob("userdata/*/config/localconfig.vdf"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return c[0] if c else None
-
-
-def steam_running():
-    return subprocess.run(["pgrep", "-x", "steam"], capture_output=True).returncode == 0
-
-
-def _apps_node(root):
-    """…/Software/Valve/Steam/apps — Steam пише ці ключі то з великої, то з малої літери."""
-    d = root
-    for k in ("UserLocalConfigStore", "Software", "Valve", "Steam", "apps"):
-        key = next((x for x in d if x.lower() == k.lower()), k)
-        d = d.setdefault(key, {})
-    return d
-
-
-def get_launch(appid):
-    p = steam_localconfig()
-    if not p: return ""
-    try: return _apps_node(_vdf_parse(p.read_text(errors="ignore"))).get(str(appid), {}).get("LaunchOptions", "")
-    except Exception: return ""
-
-
-def set_launch(appid, enable):
-    """Додати/прибрати обгортку в параметрах запуску гри, зберігаючи інші параметри (змінні, -dx12 …).
-    → "ok" | "steam" (Steam відкритий) | "nosteam" | помилка"""
-    p = steam_localconfig()
-    if not p: return "nosteam"
-    if steam_running(): return "steam"
-    root = _vdf_parse(p.read_text(errors="ignore"))
-    app = _apps_node(root).setdefault(str(appid), {})
-    cur = app.get("LaunchOptions", "")
-    me = str(Path(__file__).resolve())
-    parts = [w for w in cur.split() if Path(w).name != "mfg-unlocker-run"]
-    if enable:
-        if "%command%" in parts:
-            i = parts.index("%command%"); parts[i:i] = [me]
-        else:
-            parts = parts + [me, "%command%"]          # без %command% Steam дописав би параметри після гри
-    new = " ".join(parts)
-    if new == f"%command%": new = ""
-    if new == cur: return "ok"
-    shutil.copy2(p, p.with_name(p.name + ".mfgbak"))  # одна резервна копія перед кожною зміною
-    if new: app["LaunchOptions"] = new
-    else: app.pop("LaunchOptions", None)
-    t = p.with_suffix(".tmp"); t.write_text(_vdf_dump(root)); os.replace(t, p)
-    log(f"[{appid}] параметри запуску: {cur!r} → {new!r}")
-    return "ok"
-
-
 def log(msg):
     STATE.mkdir(parents=True, exist_ok=True)
     with open(LOG, "a") as f:
@@ -379,35 +161,8 @@ def notify(msg):
     subprocess.run(["notify-send", "-a", "MFG Unlocker", "MFG Unlocker", msg], stderr=subprocess.DEVNULL)
 
 
-def update_mod():
-    """Останній реліз з GitHub → перевірка SHA256SUMS → MFGUnlocker.dll у ~/.local/share/mfg-unlocker. → версія"""
-    import io, urllib.request, zipfile
-    api = "https://api.github.com/repos/dashdogy/MFG-Unlocker/releases/latest"
-    get = lambda u: urllib.request.urlopen(urllib.request.Request(u, headers={"User-Agent": "mgOS"}), timeout=60).read()
-    rel = json.loads(get(api))
-    assets = {a["name"]: a["browser_download_url"] for a in rel.get("assets", [])}
-    zname = next((n for n in assets if n.lower().endswith(".zip")), None)
-    if not zname: raise RuntimeError("у релізі немає zip")
-    data = get(assets[zname])
-    sums = get(assets["SHA256SUMS.txt"]).decode() if "SHA256SUMS.txt" in assets else ""
-    want = next((l.split()[0] for l in sums.splitlines() if l.strip().endswith(zname)), None)
-    if want and hashlib.sha256(data).hexdigest() != want.lower():
-        raise RuntimeError("контрольна сума не збігається — файл пошкоджений або підмінений")
-    z = zipfile.ZipFile(io.BytesIO(data))
-    dll = next((n for n in z.namelist() if Path(n).name.lower() == "mfgunlocker.dll"), None)
-    if not dll: raise RuntimeError("у zip немає MFGUnlocker.dll")
-    DEFAULT_MOD.parent.mkdir(parents=True, exist_ok=True)
-    t = DEFAULT_MOD.with_suffix(".tmp"); t.write_bytes(z.read(dll)); os.replace(t, DEFAULT_MOD)
-    cfg = load_cfg(); cfg["mod_dll"] = str(DEFAULT_MOD); cfg["mod_version"] = rel.get("tag_name", ""); _save_cfg(cfg)
-    log(f"мод оновлено: {rel.get('tag_name')} ({'SHA256 ✓' if want else 'без SHA256SUMS'})")
-    return rel.get("tag_name", "")
-
-
 def main():
     argv = sys.argv[1:]
-    if argv[:1] == ["--update-mod"]:
-        try: print(update_mod()); return 0
-        except Exception as e: print(f"ERROR {e}"); return 1
     if argv[:1] == ["--restore-all"]:
         for jp in STATE.glob("*.json"): restore(jp.stem)
         return 0
@@ -430,64 +185,21 @@ def main():
             try:
                 if not mod.exists(): raise RuntimeError(f"немає {mod} — вкажіть MFGUnlocker.dll у Налаштуваннях → Ігри")
                 if not exe_dir or not exe_dir.is_dir(): raise RuntimeError("не знайшов теку з .exe гри — вкажіть її в Налаштуваннях")
-                # анти-чит: мод у такій грі = ризик бану (docs/compatibility.md — не підтримується взагалі)
-                if compat_for(name)["status"] == "anticheat" or scan_game(exe_dir)["anticheat"]:
-                    raise RuntimeError("у грі анти-чит — MFG Unlocker тут не можна")
                 install(appid, exe_dir, dll, mod)
                 use = True
                 base = Path(dll).stem
                 os.environ["WINEDLLOVERRIDES"] = f"{base}=n,b" + (";" + os.environ["WINEDLLOVERRIDES"] if os.environ.get("WINEDLLOVERRIDES") else "")
-                # DLSS Frame Generation у Proton іде через dxvk-nvapi — без цього гра не бачить RTX і ховає FG
-                os.environ.setdefault("PROTON_ENABLE_NVAPI", "1")
             except Exception as e:
                 log(f"[{appid}] {e}"); restore(appid); notify(f"Гра запускається без мода: {e}")
 
-    started = time.time()
     child = subprocess.Popen(argv)
     def fwd(sig, _):
         try: child.send_signal(sig)
         except Exception: pass
     for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP): signal.signal(s, fwd)
     rc = child.wait()
-    if use:
-        check_loaded(appid, exe_dir, started, rc)
-        restore(appid)
+    if use: restore(appid)
     return rc
-
-
-def check_loaded(appid, exe_dir, started, rc):
-    """Мод пише RTXMFG-*.log біля .exe (або в %TEMP% префікса). Нема свіжого лога після гри, що йшла > 60 с —
-    гра не завантажила цю назву DLL: наступного разу пробуємо наступну з таблиці сумісності (крок 4 документації)."""
-    if time.time() - started < 60: return          # гру одразу закрили / краш на старті — висновків не робимо
-    dirs = [Path(exe_dir)]
-    pfx = os.environ.get("STEAM_COMPAT_DATA_PATH")
-    if pfx: dirs.append(Path(pfx) / "pfx/drive_c/users/steamuser/AppData/Local/Temp")
-    for d in dirs:
-        for f in d.glob("RTXMFG-*.log") if d.is_dir() else []:
-            if f.stat().st_mtime >= started - 5:
-                cfg = load_cfg(); g = cfg.get("games", {}).get(appid)
-                if g is not None:
-                    g["works"] = g.get("dll"); g.pop("tried", None)
-                    _save_cfg(cfg)
-                log(f"[{appid}] мод завантажився ({f.name})")
-                return
-    cfg = load_cfg(); g = cfg.get("games", {}).get(appid)
-    if g is None: return
-    tried = list(dict.fromkeys(g.get("tried", []) + [g.get("dll", "version.dll")]))
-    nxt = next_dll(g.get("name", appid), tried)
-    g["tried"] = tried
-    if nxt:
-        g["dll"] = nxt
-        notify(f"«{g.get('name', appid)}» не завантажила мод як {tried[-1]}. Наступного запуску спробую {nxt}.")
-    else:
-        notify(f"«{g.get('name', appid)}» не завантажила мод під жодною назвою. Спробуйте OptiScaler (Налаштування → Ігри).")
-    log(f"[{appid}] лог мода не з'явився з {tried[-1]} → далі {nxt}")
-    _save_cfg(cfg)
-
-
-def _save_cfg(c):
-    CFG.parent.mkdir(parents=True, exist_ok=True)
-    t = CFG.with_suffix(".tmp"); t.write_text(json.dumps(c, ensure_ascii=False, indent=2)); os.replace(t, CFG)
 
 
 if __name__ == "__main__":
