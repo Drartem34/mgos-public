@@ -1,0 +1,11 @@
+--- live
++++ pub
+@@ -9,3 +9,3 @@
+                  [powermenu_osd]=powermenu_osd [controller_addon]=controller_addon [about_osd]=about_osd
+-                 [pixel_wallpaper]=pixel_wallpaper [welcome]=welcome [genie_osd]=genie_osd [cards_osd]=cards_osd [dashboard]=dashboard )
++                 [pixel_wallpaper]=pixel_wallpaper [welcome]=welcome [genie_osd]=genie_osd [cards_osd]=cards_osd [dashboard]=dashboard [launch_splash]=mgos-launch )
+ RESTART=0; ARGS=()
+@@ -42,2 +42,3 @@
+         [ "$out" = cards_osd ] && continue   # шар карток простору запускає док сам
++        [ "$out" = mgos-launch ] && continue   # splash запуску — разовий процес на кожен запуск програми
+         [ "$out" = pixel_wallpaper ] && ! grep -q '^pixel:' ~/.cache/ignis/last_wallpaper.txt 2>/dev/null && continue

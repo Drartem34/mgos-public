@@ -14,7 +14,6 @@
 #include <gtk/gtk.h>
 #include <gtk4-layer-shell.h>
 #include "sysui_common.h"
-#include <gio/gdesktopappinfo.h>
 #include <gio/gio.h>
 #include <sys/statvfs.h>
 #include <dirent.h>
@@ -430,15 +429,12 @@ static void notif_load() {
 }
 
 // Спливаюче вікно через notify_osd (той самий формат, що пише dunst-хук)
-static void popup_via_osd(const std::string& title, const std::string& body, const std::string& icon,
-                          const std::string& level = "", const std::string& app = "") {
+static void popup_via_osd(const std::string& title, const std::string& body, const std::string& icon) {
     {
         std::ofstream f("/tmp/notify_osd_data");
         std::string b = body;
         std::replace(b.begin(), b.end(), '\n', ' ');
         f << "SENDER=" << title << "\nICON=" << icon << "\nBODY=" << b << "\n";
-        if (!level.empty()) f << "LEVEL=" << level << "\n";
-        if (!app.empty())   f << "APP=" << app << "\n";
     }
     std::string path = sysui::home() + "/.config/SYSui/notify.sock";
     int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -453,8 +449,7 @@ static void popup_via_osd(const std::string& title, const std::string& body, con
 static void notif_ui_added(const Notif& n);   // нижче
 static void update_notif_tile();
 
-static void notif_add(const std::string& title, const std::string& body, const std::string& level, bool sys,
-                      const std::string& app = "") {
+static void notif_add(const std::string& title, const std::string& body, const std::string& level, bool sys) {
     Notif n{g_notif_next_id++, (gint64)time(nullptr), title, body, level, sys};
     g_notifs.push_front(n);
     while (g_notifs.size() > 200) g_notifs.pop_back();
@@ -467,88 +462,15 @@ static void notif_add(const std::string& title, const std::string& body, const s
         if (level == "error" || level == "warn") g_unseen_sys_err++;
         // Спливаючими — лише попередження й помилки; інформаційні події тільки в історії
         bool show = sysui::settings().sys_popups && level != "info";
-        if (show) popup_via_osd(title, body,
-                                level == "error" ? "dialog-error" : level == "warn" ? "dialog-warning" : "dialog-information",
-                                level, app);
+        if (show) popup_via_osd("SYSui · " + title, body,
+                                level == "error" ? "dialog-error" : level == "warn" ? "dialog-warning" : "dialog-information");
     }
     update_notif_tile();
     notif_ui_added(n);
 }
 
-static void sys_event(const std::string& level, const std::string& title, const std::string& body, const std::string& app = "") {
-    notif_add(title, body, level, true, app);
-}
-
-// ============================================================================
-//  СТОРОЖ ПАДІНЬ ПРОГРАМ: systemd-coredump і OOM-кілер ядра → плашка-помилка
-// ============================================================================
-static std::string pretty_app_name(const std::string& comm) {
-    std::string name = comm;
-    if (gchar*** res = g_desktop_app_info_search(comm.c_str())) {
-        if (res[0] && res[0][0])
-            if (GDesktopAppInfo* di = g_desktop_app_info_new(res[0][0])) {
-                if (const char* n = g_app_info_get_display_name(G_APP_INFO(di))) name = n;
-                g_object_unref(di);
-            }
-        for (gchar*** g = res; *g; ++g) g_strfreev(*g);
-        g_free(res);
-    }
-    return name;
-}
-
-static void crash_line(const std::string& line) {
-    json j;
-    try { j = json::parse(line); } catch (...) { return; }
-    auto f = [&](const char* k) { return j.contains(k) && j[k].is_string() ? j[k].get<std::string>() : std::string(); };
-    static std::map<std::string, gint64> last;   // одна плашка на програму за 15 с (краш-цикли)
-    auto fresh = [&](const std::string& key) {
-        gint64 now = g_get_monotonic_time();
-        if (last.count(key) && now - last[key] < 15 * G_USEC_PER_SEC) return false;
-        last[key] = now; return true;
-    };
-    if (!f("COREDUMP_COMM").empty()) {
-        if (f("COREDUMP_UID") != std::to_string(getuid())) return;
-        std::string comm = f("COREDUMP_COMM"), exe = f("COREDUMP_EXE"), sig = f("COREDUMP_SIGNAL_NAME");
-        if (!fresh(comm)) return;
-        bool ours = exe.rfind(sysui::home() + "/.config/SYSui/", 0) == 0;   // модулі SYSui — попередження, їх піднімає сторож
-        std::string why = sig == "SIGSEGV" ? "збій пам'яті (SIGSEGV)" : sig == "SIGABRT" ? "аварійне завершення (SIGABRT)"
-                        : sig == "SIGBUS" ? "помилка шини (SIGBUS)" : sig == "SIGFPE" ? "арифметична помилка (SIGFPE)"
-                        : sig == "SIGILL" ? "недопустима інструкція (SIGILL)" : (sig.empty() ? "аварійне завершення" : sig);
-        sys_event(ours ? "warn" : "error", "«" + pretty_app_name(comm) + "» аварійно закрилась",
-                  why + " · " + (exe.empty() ? comm : exe), comm);
-        return;
-    }
-    // ядро: «Out of memory: Killed process 1234 (firefox) ...»
-    std::string msg = f("MESSAGE");
-    auto p = msg.find("Killed process");
-    if (msg.find("Out of memory") == std::string::npos || p == std::string::npos) return;
-    auto a = msg.find('(', p), b = msg.find(')', a);
-    std::string comm = a != std::string::npos && b != std::string::npos ? msg.substr(a + 1, b - a - 1) : "?";
-    if (!fresh("oom:" + comm)) return;
-    sys_event("error", "Не вистачило пам'яті", "Система закрила «" + pretty_app_name(comm) + "», щоб звільнити RAM", comm);
-}
-
-static void crash_watch_start() {
-    const char* argv[] = {"journalctl", "-f", "-n", "0", "-o", "json", "--output-fields=COREDUMP_COMM,COREDUMP_EXE,COREDUMP_SIGNAL_NAME,COREDUMP_UID,MESSAGE",
-                          "MESSAGE_ID=fc2e22bc6ee647b6b90729ab34a250b1", "+", "_TRANSPORT=kernel", nullptr};
-    GPid pid; gint out = -1;
-    if (!g_spawn_async_with_pipes(nullptr, (gchar**)argv, nullptr, (GSpawnFlags)(G_SPAWN_SEARCH_PATH | G_SPAWN_STDERR_TO_DEV_NULL | G_SPAWN_DO_NOT_REAP_CHILD),
-                                  nullptr, nullptr, &pid, nullptr, &out, nullptr, nullptr)) return;
-    // journalctl вмер (перезапуск journald) — піднімаємо знову за 10 с
-    g_child_watch_add(pid, [](GPid p, gint, gpointer) {
-        g_spawn_close_pid(p);
-        g_timeout_add_seconds(10, [](gpointer) -> gboolean { crash_watch_start(); return G_SOURCE_REMOVE; }, nullptr);
-    }, nullptr);
-    GIOChannel* ch = g_io_channel_unix_new(out);
-    g_io_channel_set_close_on_unref(ch, TRUE);
-    g_io_add_watch(ch, (GIOCondition)(G_IO_IN | G_IO_HUP), [](GIOChannel* c, GIOCondition cond, gpointer) -> gboolean {
-        gchar* l = nullptr; gsize n = 0;
-        GIOStatus st = g_io_channel_read_line(c, &l, &n, nullptr, nullptr);
-        if (st == G_IO_STATUS_NORMAL && l) { crash_line(std::string(l, n)); g_free(l); return G_SOURCE_CONTINUE; }
-        g_free(l);
-        if (st == G_IO_STATUS_EOF || (cond & G_IO_HUP)) { g_io_channel_unref(c); return G_SOURCE_REMOVE; }
-        return G_SOURCE_CONTINUE;
-    }, nullptr);
+static void sys_event(const std::string& level, const std::string& title, const std::string& body) {
+    notif_add(title, body, level, true);
 }
 
 // ============================================================================
@@ -1259,7 +1181,7 @@ static GtkWidget* build_main_page() {
     gtk_box_append(GTK_BOX(page), pp);
     anim_tile(pp);
 
-    // --- Дисплей: яскравість через ~/.local/bin/mgos-brightness (підсвітка ноутбука / DDC монітора / hyprsunset) ---
+    // --- Дисплей (лише якщо монітор підтримує DDC/CI) ---
     cc.bright_tile = tile_box(GTK_ORIENTATION_VERTICAL, 6);
     gtk_box_append(GTK_BOX(cc.bright_tile), mklabel("Дисплей", "title"));
     GtkWidget* bbtn;
@@ -1268,7 +1190,7 @@ static GtkWidget* build_main_page() {
         v = std::clamp(v, 0.0, 100.0);
         cc.touch_bright = now_ms();
         gtk_label_set_text(GTK_LABEL(cc.bright_pct), (std::to_string((int)v) + "%").c_str());
-        throttle_run(&cc.th_bright, "~/.local/bin/mgos-brightness set " + std::to_string(std::max(1, (int)v)) + " >/dev/null 2>&1");
+        throttle_run(&cc.th_bright, "ddcutil setvcp 10 " + std::to_string((int)v) + " --noverify 2>/dev/null");
         return FALSE;
     }), nullptr);
     gtk_widget_set_visible(cc.bright_tile, FALSE);
@@ -2379,11 +2301,9 @@ static gboolean on_socket(GIOChannel* src, GIOCondition, gpointer) {
     } else if (cmd.rfind("sysnotify|", 0) == 0) {              // sysnotify|level|title|body
         std::string p = cmd.substr(10);
         auto a = p.find('|'), b = p.find('|', a + 1);
-        auto c = b == std::string::npos ? b : p.find('|', b + 1);   // необов'язкове 4-те поле — програма (її іконка на плашці)
         if (a != std::string::npos)
             sys_event(p.substr(0, a), p.substr(a + 1, b == std::string::npos ? std::string::npos : b - a - 1),
-                      b == std::string::npos ? "" : p.substr(b + 1, c == std::string::npos ? std::string::npos : c - b - 1),
-                      c == std::string::npos ? "" : p.substr(c + 1));
+                      b == std::string::npos ? "" : p.substr(b + 1));
     } else if (cmd.rfind("expect|", 0) == 0) {                 // expect|dock — плановий перезапуск (build.sh, налаштування)
         std::string bin = cmd.substr(7);
         for (auto& m : g_modules)
@@ -2486,15 +2406,15 @@ static void build_ui(GtkApplication* app) {
 
     gtk_widget_set_visible(cc.win, FALSE);
 
-    // Яскравість у фоні: mgos-brightness кешує спосіб (перша перевірка DDC на моніторі без DDC ~6 с)
-    sh_async("timeout 25 ~/.local/bin/mgos-brightness get 2>/dev/null", [](const std::string& out, bool ok) {
-        // формат: "70 ddc" | "100 soft" | "45 backlight"
+    // Перевірка DDC/CI у фоні (на моніторах без DDC займає ~6 с — тому один раз і асинхронно)
+    sh_async("command -v ddcutil >/dev/null && timeout 12 ddcutil getvcp 10 --brief 2>/dev/null", [](const std::string& out, bool ok) {
+        // формат: "VCP 10 C 50 100"
         std::istringstream ss(out);
-        int cur = -1; std::string how;
-        if (ok && (ss >> cur >> how) && cur >= 0) {
-            cc.ddc_ok = how == "ddc";
-            gtk_range_set_value(GTK_RANGE(cc.bright_scale), cur);
-            gtk_label_set_text(GTK_LABEL(cc.bright_pct), (std::to_string(cur) + "%").c_str());
+        std::string vcp, code, type; int cur = -1, max = -1;
+        if (ok && (ss >> vcp >> code >> type >> cur >> max) && max > 0) {
+            cc.ddc_ok = true;
+            gtk_range_set_value(GTK_RANGE(cc.bright_scale), 100.0 * cur / max);
+            gtk_label_set_text(GTK_LABEL(cc.bright_pct), (std::to_string(100 * cur / max) + "%").c_str());
             gtk_widget_set_visible(cc.bright_tile, TRUE);
         }
     });
@@ -2510,7 +2430,6 @@ static void activate(GtkApplication* app, gpointer) {
     sysui::mem_ready();
     notif_load();
     setup_socket();
-    crash_watch_start();
     build_ui(app);
     mpris_init();
     update_notif_tile();

@@ -1062,6 +1062,16 @@ static void draw_bg(GtkDrawingArea*, cairo_t* cr, int w, int h, gpointer) {
     draw_bg_core(cr, w, h);
 }
 
+// Висота блоку дропу — за вмістом (статус/кнопки з'являються й зникають), без запасу «про всяк випадок»
+static int drop_measure_h() {
+    bool vis = gtk_widget_get_visible(g_drop_content);
+    if (!vis) gtk_widget_set_visible(g_drop_content, TRUE);
+    int mn = 0, nat = 0;
+    gtk_widget_measure(g_drop_content, GTK_ORIENTATION_VERTICAL, g_drop_W, &mn, &nat, nullptr, nullptr);
+    if (!vis) gtk_widget_set_visible(g_drop_content, FALSE);
+    return std::max(mn, nat);
+}
+
 static void layout_morph() {
     double dw = (g_W - g_from_w) * g_v, dh = (g_H - g_from_h) * g_v;
     if (g_v < 0) {
@@ -1082,6 +1092,10 @@ static gboolean on_tick(GtkWidget*, GdkFrameClock* fc, gpointer) {
     g_t = (now - g_t0) / 1e6;
     double k = std::clamp((now - g_anim_start) / 1000.0 / (g_open ? OPEN_MS : CLOSE_MS), 0.0, 1.0);
     g_v = g_open ? g_v_from + (1 - g_v_from) * ease_out_soft(k) : g_v_from * spring_close(k);
+    if (g_open && g_drop_mode && g_content_on) {   // вміст змінився (статус, кнопки, QR) — плавно підганяємо висоту
+        int want = drop_measure_h();
+        if (want != g_H) { int d = want - g_H; g_H += std::abs(d) <= 2 ? d : (int)std::lround(d * 0.3); }
+    }
     layout_morph();
 
     if (g_open && k >= 0.92 && !g_content_on) {   // вміст проявляється вже наприкінці розростання
@@ -1481,7 +1495,7 @@ static void sh_allow(GtkButton*, gpointer) {
 // ===================== Mg Share: свої пристрої =====================
 // Іконки з'єднаних пристроїв під зоною дропу. Стан пише служба mgos-share daemon у
 // ~/.cache/mgos/share-devices.tsv (id, ім'я, тип, час останнього «привіт»); «онлайн» = привіт < 45 с.
-struct MgDev { std::string id, name, kind; gint64 seen = 0; };
+struct MgDev { std::string id, name, kind; gint64 seen = 0; std::string avatar; };
 static GtkWidget* g_dv_row = nullptr;
 static GFileMonitor* g_dv_mon = nullptr;
 static guint g_dv_tick = 0;
@@ -1501,7 +1515,8 @@ static std::vector<MgDev> dv_load() {
         while ((b = ln.find('\t', a)) != std::string::npos) { f.push_back(ln.substr(a, b - a)); a = b + 1; }
         f.push_back(ln.substr(a));
         if (f.size() < 4 || f[0].empty()) continue;
-        v.push_back({f[0], f[1], f[2], g_ascii_strtoll(f[3].c_str(), nullptr, 10)});
+        // 5-та колонка (необов'язкова) — аватарка профілю телефона, яку він сам надіслав
+        v.push_back({f[0], f[1], f[2], g_ascii_strtoll(f[3].c_str(), nullptr, 10), f.size() > 4 ? f[4] : std::string()});
     }
     return v;
 }
@@ -1517,15 +1532,36 @@ static void dv_stop() {
 static void dv_rebuild();
 static void dv_push(const std::string& id, const std::string& name);
 
-static GtkWidget* dv_chip(const std::string& glyph, const std::string& name, bool online, bool add) {
+static GtkWidget* dv_chip(const std::string& glyph, const std::string& name, bool online, bool add, const std::string& avatar = "") {
     GtkWidget* b = gtk_button_new();
     gtk_widget_add_css_class(b, "cp-dv");
     if (online) gtk_widget_add_css_class(b, "online");
     if (add) gtk_widget_add_css_class(b, "add");
     gtk_widget_set_cursor_from_name(b, "pointer");
     GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
-    GtkWidget* g = gtk_label_new(glyph.c_str());
-    gtk_widget_add_css_class(g, "cp-dv-glyph");
+    GtkWidget* g = nullptr;
+    if (!avatar.empty() && g_file_test(avatar.c_str(), G_FILE_TEST_EXISTS)) {
+        // GtkPicture бере натуральний розмір файлу (аватарка 512px роздувала чип) — тож
+        // заздалегідь ріжемо квадрат по центру й масштабуємо, а GtkImage малює рівно 30px
+        GtkWidget* pic = gtk_image_new();
+        if (GdkPixbuf* src = gdk_pixbuf_new_from_file(avatar.c_str(), nullptr)) {
+            int w = gdk_pixbuf_get_width(src), h = gdk_pixbuf_get_height(src), s = std::min(w, h);
+            GdkPixbuf* sq = gdk_pixbuf_new_subpixbuf(src, (w - s) / 2, (h - s) / 2, s, s);
+            GdkPixbuf* sm = gdk_pixbuf_scale_simple(sq, 96, 96, GDK_INTERP_BILINEAR);
+            GdkTexture* tex = gdk_texture_new_for_pixbuf(sm);
+            gtk_image_set_from_paintable(GTK_IMAGE(pic), GDK_PAINTABLE(tex));
+            g_object_unref(tex); g_object_unref(sm); g_object_unref(sq); g_object_unref(src);
+        }
+        gtk_image_set_pixel_size(GTK_IMAGE(pic), 30);
+        gtk_widget_set_size_request(pic, 30, 30);
+        gtk_widget_set_halign(pic, GTK_ALIGN_CENTER);
+        gtk_widget_set_overflow(pic, GTK_OVERFLOW_HIDDEN);
+        gtk_widget_add_css_class(pic, "cp-dv-av");
+        g = pic;
+    } else {
+        g = gtk_label_new(glyph.c_str());
+        gtk_widget_add_css_class(g, "cp-dv-glyph");
+    }
     GtkWidget* n = gtk_label_new(name.c_str());
     gtk_widget_add_css_class(n, "cp-dv-name");
     gtk_label_set_ellipsize(GTK_LABEL(n), PANGO_ELLIPSIZE_END);
@@ -1543,8 +1579,8 @@ static void dv_rebuild() {
     g_dv_sig.clear();
     for (auto& d : devs) {
         bool on = dv_online(d);
-        g_dv_sig += d.id + (on ? "1" : "0");
-        GtkWidget* b = dv_chip(d.kind == "laptop" ? "\U000F0322" : "\U000F011C", d.name, on, false);
+        g_dv_sig += d.id + (on ? "1" : "0") + d.name + d.avatar;
+        GtkWidget* b = dv_chip(d.kind == "laptop" ? "\U000F0322" : "\U000F011C", d.name, on, false, d.avatar);
         gtk_widget_set_tooltip_text(b, on ? "Відкрито Mg Share — надішле одразу" : "Надішле, щойно відкриєте Mg Share на пристрої");
         g_object_set_data_full(G_OBJECT(b), "id", g_strdup(d.id.c_str()), g_free);
         g_object_set_data_full(G_OBJECT(b), "name", g_strdup(d.name.c_str()), g_free);
@@ -1570,7 +1606,7 @@ static void dv_rebuild() {
         g_dv_tick = g_timeout_add_seconds(5, [](gpointer) -> gboolean {
             if (!g_open || !g_drop_mode) { g_dv_tick = 0; return G_SOURCE_REMOVE; }
             std::string sig;
-            for (auto& d : dv_load()) sig += d.id + (dv_online(d) ? "1" : "0");
+            for (auto& d : dv_load()) sig += d.id + (dv_online(d) ? "1" : "0") + d.name + d.avatar;
             if (sig != g_dv_sig) dv_rebuild();
             return G_SOURCE_CONTINUE;
         }, nullptr);
@@ -2120,7 +2156,7 @@ static void show_pop(GtkWidget* bubble, GtkWidget* bar, bool drop = false) {
     g_W = drop ? g_drop_W : g_main_W;
     g_H = drop ? g_drop_H : g_main_H;
     if (drop && !g_qs_proc && !g_dv_proc) drop_reset();
-    if (drop) dv_rebuild();
+    if (drop) { dv_rebuild(); g_H = drop_measure_h(); }
     // той самий монітор, що й топбар
     if (GdkSurface* s = gtk_native_get_surface(GTK_NATIVE(bar)))
         if (GdkMonitor* mon = gdk_display_get_monitor_at_surface(gtk_widget_get_display(bar), s))
@@ -2231,5 +2267,7 @@ button.cp-dv.online { border-color: alpha(#30d158, 0.75); }
 button.cp-dv.add { border-style: dashed; border-color: alpha(#f5f5f7, 0.22); background-color: transparent; }
 .cp-dv-glyph { font-family: "JetBrainsMono Nerd Font"; font-size: 22px; color: alpha(#f5f5f7, 0.55); }
 button.cp-dv.online .cp-dv-glyph { color: #f5f5f7; }
+.cp-dv-av { border-radius: 999px; min-width: 30px; min-height: 30px; opacity: 0.55; }
+button.cp-dv.online .cp-dv-av { opacity: 1; }
 .cp-dv-name { font-family: "SF Pro Display", "Inter", sans-serif; font-size: 11px; color: alpha(#f5f5f7, 0.7); }
 )"; }

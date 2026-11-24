@@ -1,0 +1,28 @@
+#!/bin/bash
+# mgOS: драйвер Apple Magic Trackpad / Magic Mouse (ядровий hid_magicmouse) — завантажити зараз і щоразу при старті.
+# Запуск: sudo ~/.local/share/mgos/recovery/scripts/mgos-apple-trackpad   (або з установщика)
+set -e
+if [ "$(id -u)" != 0 ]; then
+    if [ -t 0 ]; then exec sudo "$0" "$@"; elif [ -n "$DISPLAY$WAYLAND_DISPLAY" ] && pgrep -f polkit.*agent >/dev/null 2>&1; then exec timeout 120 pkexec "$0" "$@"; else echo "потрібен sudo (немає polkit-агента)"; exec sudo -n "$0" "$@"; fi   # з Налаштувань (без терміналу) — вікно пароля polkit
+fi
+modprobe uhid
+modprobe hid_magicmouse
+printf 'uhid\nhid_magicmouse\n' > /etc/modules-load.d/mgos-apple.conf
+# Magic Trackpad спаровується без bonding — BlueZ за замовчуванням такий HID відкидає («Rejected connection from !bonded device»)
+mkdir -p /etc/bluetooth/input.conf.d 2>/dev/null || true
+if ! grep -q '^ClassicBondedOnly *= *false' /etc/bluetooth/input.conf; then
+    if grep -q '^#\?ClassicBondedOnly' /etc/bluetooth/input.conf; then
+        sed -i 's/^#\?ClassicBondedOnly.*/ClassicBondedOnly=false/' /etc/bluetooth/input.conf
+    else
+        sed -i '0,/^\[General\]/s//[General]\nClassicBondedOnly=false/' /etc/bluetooth/input.conf
+    fi
+    systemctl restart bluetooth; sleep 3
+fi
+# перепідключити вже спарені Apple-пристрої, щоб ядро їх підхопило
+for m in $(timeout 5 bluetoothctl devices | awk '{print $2}'); do
+    timeout 5 bluetoothctl info "$m" | grep -q 'Modalias: bluetooth:v004C' || continue
+    timeout 5 bluetoothctl info "$m" | grep -q 'Paired: yes' || continue
+    bluetoothctl disconnect "$m" >/dev/null 2>&1 || true; sleep 1
+    bluetoothctl connect "$m" >/dev/null 2>&1 || true
+done
+echo "OK: hid_magicmouse завантажено й додано в автозавантаження"

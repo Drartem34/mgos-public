@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+# mgos-timer 5m "чай"  |  mgos-timer 90s  |  mgos-timer 1h30m "кава"  |  mgos-timer --clear [id]
+import sys, os, json, re, time, hashlib
+d = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "mgos", "activities")
+os.makedirs(d, exist_ok=True)
+a = sys.argv[1:]
+if a[:1] == ["--clear"]:
+    for f in os.listdir(d):
+        if f.startswith("timer-") and (len(a) < 2 or f == f"timer-{a[1]}.json"):
+            os.remove(os.path.join(d, f))
+    sys.exit(0)
+if not a:
+    sys.exit("використання: mgos-timer 5m [назва]")
+m = re.fullmatch(r"(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s?)?", a[0])
+if not m or not any(m.groups()):
+    sys.exit("невірна тривалість: " + a[0])
+h, mi, s = (int(x or 0) for x in m.groups())
+sec = h * 3600 + mi * 60 + s
+text = " ".join(a[1:]) or "Таймер"
+now = time.time()
+tid = hashlib.md5(f"{text}{now}".encode()).hexdigest()[:6]
+json.dump({"id": "timer-" + tid, "icon": "\U000F051B", "text": text, "until_epoch": now + sec, "start_epoch": now},
+          open(os.path.join(d, f"timer-{tid}.json"), "w"), ensure_ascii=False)

@@ -1,0 +1,844 @@
+#!/usr/bin/env python3
+# mgos-share — передача файлів на телефон через QR-код (без додатків на телефоні).
+#
+#   mgos-share serve FILE...   підняти тимчасову сторінку в локальній Wi-Fi і видати QR
+#   mgos-share send FILE...    показати QR у блоці годинника топбару (для Nautilus тощо)
+#   mgos-share check           ok | nonet | firewall
+#   mgos-share setup           одноразово відкрити порти у firewalld (потрібен sudo)
+#
+# Mg Share — свої пристрої (телефон із застосунком Mg Share):
+#   mgos-share daemon          служба: приймає файли й «привіт» від своїх пристроїв (порт 47811 tcp+udp)
+#   mgos-share pair            QR для з'єднання з новим пристроєм → PAIRED|<id>|<name>
+#   mgos-share push ID FILE... надіслати на свій пристрій → WAIT|  SENDING|<name>  GOT|<name>  DONE|  ERROR|<код>
+#   mgos-share devices         список своїх пристроїв: id<TAB>name<TAB>kind<TAB>online(0/1)
+#   mgos-share forget ID       забути пристрій
+#   mgos-share open            відкрити блок «Надіслати» в топбарі (іконки пристроїв)
+#
+# Протокол для топбару (stdout, рядки):
+#   URL|<url>   QR|<png>   OPEN|   GOT|<name>   DONE|   EXPIRED|   ERROR|<код>
+# Телефон має бути в тій самій Wi-Fi мережі. Сторінка живе 15 хв або до 30 с після отримання всього.
+import html, http.server, json, mimetypes, os, secrets, shutil, socket, subprocess, sys, tempfile, threading, time, urllib.parse, zipfile
+
+PORTS = range(47800, 47810)
+LINK_PORT = 47811        # служба Mg Share (tcp + udp)
+PHONE_PORT = 47812       # телефон слухає, лише поки відкритий застосунок
+IDLE = 15 * 60
+
+
+def out(*a):
+    print("|".join(a), flush=True)
+
+
+def lan_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("10.255.255.255", 1))
+        ip = s.getsockname()[0]
+        s.close()
+        return None if ip.startswith("127.") else ip
+    except OSError:
+        return None
+
+
+def active_zones():
+    """Зони firewalld з інтерфейсами (firewall-cmd --get-active-zones працює без root)."""
+    try:
+        o = subprocess.run(["firewall-cmd", "--get-active-zones"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    zones = [l.split()[0] for l in o.splitlines() if l and not l[0].isspace()]
+    return zones
+
+
+def zone_ports(zone):
+    """(tcp-діапазони, udp-діапазони, accept) з XML зони firewalld."""
+    import xml.etree.ElementTree as ET
+    for d in ("/etc/firewalld/zones", "/usr/lib/firewalld/zones"):
+        f = os.path.join(d, zone + ".xml")
+        if not os.path.exists(f):
+            continue
+        try:
+            root = ET.parse(f).getroot()
+        except (OSError, ET.ParseError):
+            return [], [], False
+        r = {"tcp": [], "udp": []}
+        for p in root.iter("port"):
+            a, _, b = p.get("port", "").partition("-")
+            try:
+                r.setdefault(p.get("protocol"), []).append((int(a), int(b or a)))
+            except ValueError:
+                pass
+        return r["tcp"], r["udp"], root.get("target") == "ACCEPT"
+    return [], [], False
+
+
+def _covers(ranges, lo, hi):
+    return any(a <= lo and b >= hi for a, b in ranges)
+
+
+def zone_allows(zone):
+    tcp, udp, accept = zone_ports(zone)
+    return accept or (_covers(tcp, PORTS.start, PORTS.stop - 1) and _covers(tcp, LINK_PORT, LINK_PORT)
+                      and _covers(udp, LINK_PORT, LINK_PORT))
+
+
+def firewall_ok():
+    if subprocess.run(["systemctl", "is-active", "-q", "firewalld"]).returncode != 0:
+        return True
+    zones = active_zones()
+    if not zones:  # не змогли дізнатись — не блокуємо
+        return True
+    return all(zone_allows(z) for z in zones)
+
+
+def state_dir():
+    d = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")), "mgos")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def check():
+    if not lan_ip():
+        return "nonet"
+    if not firewall_ok():
+        return "firewall"
+    return "ok"
+
+
+def setup():
+    print("\033[1;35m━━ Передача файлів на телефон ━━\033[0m")
+    print("Відкриваю порти 47800–47811/tcp і 47811/udp у firewalld (одноразово).\n")
+    for zone in sorted(set(active_zones()) | {"public", "home"}):
+        for spec in (f"{PORTS.start}-{LINK_PORT}/tcp", f"{LINK_PORT}/udp"):
+            subprocess.run(["sudo", "firewall-cmd", "--permanent", f"--zone={zone}", f"--add-port={spec}"])
+    r = subprocess.run(["sudo", "firewall-cmd", "--reload"])
+    if r.returncode == 0:
+        print("\n\033[1;32m✓ Готово — тепер просто кидайте файл на годинник.\033[0m")
+        time.sleep(1.5)
+    else:
+        input("\n✗ Не вдалося. Enter — закрити")
+    return r.returncode
+
+
+PAGE = """<!doctype html><html lang="uk"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b0b0f"><title>{title}</title><style>
+:root{{color-scheme:dark;--a:{accent}}}
+*{{box-sizing:border-box;margin:0}}
+body{{min-height:100svh;background:radial-gradient(120% 70% at 50% -10%,color-mix(in srgb,var(--a) 38%,transparent),transparent 70%),#0b0b0f;
+color:#f5f5f7;font:16px/1.4 -apple-system,"SF Pro Text",system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;
+padding:calc(env(safe-area-inset-top) + 36px) 18px calc(env(safe-area-inset-bottom) + 28px)}}
+.from{{font:800 11px/1 ui-monospace,monospace;letter-spacing:.18em;opacity:.55;text-transform:uppercase}}
+h1{{font:700 26px/1.15 -apple-system,"SF Pro Display",system-ui;margin:10px 0 26px;text-align:center}}
+.list{{width:100%;max-width:440px;display:flex;flex-direction:column;gap:12px}}
+.card{{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);border-radius:22px;padding:14px;display:flex;flex-direction:column;gap:12px;
+backdrop-filter:blur(20px)}}
+.card img,.card video{{width:100%;max-height:52svh;object-fit:contain;border-radius:14px;background:#000}}
+.row{{display:flex;align-items:center;gap:12px}}
+.ic{{flex:none;width:44px;height:44px;border-radius:12px;display:grid;place-items:center;background:color-mix(in srgb,var(--a) 30%,#222);font:800 11px ui-monospace,monospace}}
+.meta{{flex:1;min-width:0}}.name{{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}.size{{opacity:.55;font-size:13px}}
+a.btn{{display:block;text-align:center;text-decoration:none;color:#fff;background:var(--a);border-radius:14px;padding:14px;font-weight:700;font-size:17px}}
+a.btn.all{{margin-top:6px;background:#f5f5f7;color:#0b0b0f}}
+.hint{{opacity:.5;font-size:13px;text-align:center;margin-top:22px;max-width:360px}}
+</style></head><body>
+<div class="from">{host}</div><h1>{title}</h1><div class="list">{cards}{all}</div>
+<p class="hint">{hint}</p>{auto}</body></html>"""
+
+
+def human(n):
+    for u in ("Б", "КБ", "МБ", "ГБ"):
+        if n < 1024 or u == "ГБ":
+            return (f"{n:.0f} {u}" if u == "Б" else f"{n:.1f} {u}").replace(".", ",")
+        n /= 1024
+
+
+def accent():
+    a = os.environ.get("MGOS_ACCENT", "")
+    if a.startswith("#") and len(a) == 7:
+        return a
+    try:
+        p = os.path.expanduser("~/.config/SYSui/accent")
+        a = open(p).read().strip()
+        if a.startswith("#") and len(a) in (4, 7):
+            return a
+    except OSError:
+        pass
+    return "#0a84ff"
+
+
+def serve(paths):
+    files = [os.path.abspath(p) for p in paths if os.path.isfile(p)]
+    if not files:
+        out("ERROR", "nofile"); return 2
+    ip = lan_ip()
+    if not ip:
+        out("ERROR", "nonet"); return 3
+    token = secrets.token_urlsafe(6)
+    st = {"last": time.time(), "got": set(), "done_at": None}
+    lock = threading.Lock()
+    tmp = tempfile.mkdtemp(prefix="mgos-share-")
+    host = socket.gethostname()
+
+    def zip_path():
+        z = os.path.join(tmp, "files.zip")
+        if not os.path.exists(z):
+            with zipfile.ZipFile(z + ".part", "w", zipfile.ZIP_STORED) as zf:
+                for f in files:
+                    zf.write(f, os.path.basename(f))
+            os.rename(z + ".part", z)
+        return z
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def page(self):
+            cards = []
+            for i, f in enumerate(files):
+                name = os.path.basename(f)
+                mt = mimetypes.guess_type(f)[0] or ""
+                url = f"/{token}/f/{i}/{urllib.parse.quote(name)}"
+                prev = ""
+                if mt.startswith("image/"):
+                    prev = f'<img src="{url}?inline=1" alt="">'
+                elif mt.startswith("video/"):
+                    prev = f'<video src="{url}?inline=1" controls playsinline preload="metadata"></video>'
+                ext = (os.path.splitext(name)[1][1:] or "file")[:4].upper()
+                cards.append(f'<div class="card">{prev}<div class="row"><div class="ic">{html.escape(ext)}</div>'
+                             f'<div class="meta"><div class="name">{html.escape(name)}</div><div class="size">{human(os.path.getsize(f))}</div></div></div>'
+                             f'<a class="btn" href="{url}" download>Завантажити</a></div>')
+            allb = f'<a class="btn all" href="/{token}/all.zip" download>Завантажити все (.zip)</a>' if len(files) > 1 else ""
+            title = "Вам файл" if len(files) == 1 else f"Вам {len(files)} файли" if len(files) < 5 else f"Вам {len(files)} файлів"
+            first = f"/{token}/f/0/{urllib.parse.quote(os.path.basename(files[0]))}" if len(files) == 1 else f"/{token}/all.zip"
+            auto = ('<script>addEventListener("load",function(){setTimeout(function(){'
+                    'var a=document.createElement("a");a.href=%s;a.download="";document.body.appendChild(a);a.click()},350)})</script>'
+                    % json.dumps(first))
+            body = PAGE.format(title=title, host=html.escape(host), accent=accent(), cards="".join(cards), all=allb, auto=auto,
+                               hint="Фото й відео можна зберегти в галерею: утримуйте палець на картинці.")
+            return body.encode()
+
+        def send_file(self, path, name, inline):
+            size = os.path.getsize(path)
+            mt = mimetypes.guess_type(name)[0] or "application/octet-stream"
+            disp = "inline" if inline else "attachment"
+            self.send_response(200)
+            self.send_header("Content-Type", mt)
+            self.send_header("Content-Length", str(size))
+            self.send_header("Content-Disposition", f"{disp}; filename*=UTF-8''{urllib.parse.quote(name)}")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            sent = 0
+            with open(path, "rb") as fh:
+                while chunk := fh.read(1 << 16):
+                    self.wfile.write(chunk)
+                    sent += len(chunk)
+                    with lock:
+                        st["last"] = time.time()
+            return sent == size
+
+        def do_GET(self):
+            with lock:
+                st["last"] = time.time()
+            u = urllib.parse.urlsplit(self.path)
+            parts = u.path.strip("/").split("/")
+            inline = "inline=1" in u.query
+            try:
+                if not parts or parts[0] != token:
+                    self.send_error(404); return
+                if len(parts) == 1:
+                    b = self.page()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(b)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(b)
+                    out("OPEN")
+                elif parts[1] == "f" and len(parts) >= 3 and parts[2].isdigit() and int(parts[2]) < len(files):
+                    i = int(parts[2]); f = files[i]
+                    if self.send_file(f, os.path.basename(f), inline) and not inline:
+                        mark({i})
+                elif parts[1] == "all.zip" and len(files) > 1:
+                    if self.send_file(zip_path(), "files.zip", False):
+                        mark(set(range(len(files))))
+                else:
+                    self.send_error(404)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+    def mark(ids):
+        with lock:
+            new = ids - st["got"]
+            st["got"] |= ids
+            for i in sorted(new):
+                out("GOT", os.path.basename(files[i]))
+            if len(st["got"]) == len(files) and not st["done_at"]:
+                st["done_at"] = time.time()
+                out("DONE")
+
+    srv = None
+    for port in PORTS:
+        try:
+            srv = http.server.ThreadingHTTPServer(("0.0.0.0", port), H)
+            break
+        except OSError:
+            continue
+    if not srv:
+        out("ERROR", "port"); return 4
+    srv.daemon_threads = True
+    url = f"http://{ip}:{port}/{token}/"
+    qr = os.path.join(tmp, "qr.png")
+    try:
+        subprocess.run(["qrencode", "-t", "PNG", "-s", "6", "-m", "1", "-l", "M", "-o", qr, url], check=True)
+    except (OSError, subprocess.CalledProcessError):
+        qr = ""
+    out("URL", url)
+    if qr:
+        out("QR", qr)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    rc = 0
+    try:
+        while True:
+            time.sleep(1)
+            with lock:
+                if st["done_at"] and time.time() - st["done_at"] > 30 and time.time() - st["last"] > 10:
+                    break
+                if time.time() - st["last"] > IDLE:
+                    out("EXPIRED"); rc = 5; break
+    except KeyboardInterrupt:
+        pass
+    finally:
+        srv.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
+    return rc
+
+
+# ===================== Mg Share: свої пристрої =====================
+# Довіра: один раз з'єднуємось через QR (pair) → обидва боки мають спільний ключ.
+# Кожен запит підписаний HMAC-SHA256(key, "from\ntime\nMETHOD\npath"); чужі пристрої в тій самій
+# Wi-Fi нічого не можуть надіслати і в списку не з'являються. Телефон слухає порт лише поки
+# відкритий застосунок — без фонових служб, тому PC чекає (WAIT|), доки його відкриють.
+import hashlib, hmac, json, select
+
+ONLINE_S = 45
+
+
+def conf_dir():
+    d = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "mgos", "share")
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    return d
+
+
+def cache_dir():
+    d = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "mgos")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def sock_path():
+    return os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "mgos-share.sock")
+
+
+def identity():
+    f = os.path.join(conf_dir(), "identity.json")
+    try:
+        return json.load(open(f))
+    except (OSError, ValueError):
+        me = {"id": secrets.token_hex(8), "name": socket.gethostname(), "kind": "laptop"}
+        json.dump(me, open(f, "w"))
+        return me
+
+
+_dev_lock = threading.RLock()
+
+
+def load_devices():
+    with _dev_lock:
+        try:
+            return json.load(open(os.path.join(conf_dir(), "devices.json")))
+        except (OSError, ValueError):
+            return {}
+
+
+def save_devices(devs):
+    with _dev_lock:
+        f = os.path.join(conf_dir(), "devices.json")
+        fd = os.open(f + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            json.dump(devs, fh, ensure_ascii=False, indent=1)
+        os.replace(f + ".tmp", f)
+        write_tsv(devs)
+
+
+def is_online(d):
+    return time.time() - d.get("seen", 0) < ONLINE_S
+
+
+def write_tsv(devs=None):
+    """Стан для топбару: id, ім'я, тип, час останнього «привіт» (топбар сам вирішує, чи онлайн)."""
+    devs = load_devices() if devs is None else devs
+    lines = [f"{i}\t{d.get('name', '?')}\t{d.get('kind', 'phone')}\t{int(d.get('seen', 0))}" for i, d in devs.items()]
+    f = os.path.join(cache_dir(), "share-devices.tsv")
+    with open(f + ".tmp", "w") as fh:
+        fh.write("\n".join(lines) + ("\n" if lines else ""))
+    os.replace(f + ".tmp", f)
+
+
+def sign(key, frm, t, method, path):
+    return hmac.new(bytes.fromhex(key), f"{frm}\n{t}\n{method}\n{path}".encode(), hashlib.sha256).hexdigest()
+
+
+def unique_path(d, name):
+    name = os.path.basename(name).strip() or "file"
+    base, ext = os.path.splitext(name)
+    p, n = os.path.join(d, name), 1
+    while os.path.exists(p):
+        p = os.path.join(d, f"{base} ({n}){ext}"); n += 1
+    return p
+
+
+def downloads_dir():
+    try:
+        d = subprocess.run(["xdg-user-dir", "DOWNLOAD"], capture_output=True, text=True).stdout.strip()
+    except OSError:
+        d = ""
+    d = d if d and d != os.path.expanduser("~") else os.path.expanduser("~/Downloads")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def notify_received(dev_name, path):
+    def run():
+        try:
+            r = subprocess.run(["notify-send", "-a", "Mg Share", "-i", "folder-download", "-A", "open=Відкрити",
+                                "-A", "folder=Показати в теці", f"Від {dev_name}", os.path.basename(path)],
+                               capture_output=True, text=True, timeout=600).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            return
+        if r == "open":
+            subprocess.Popen(["xdg-open", path])
+        elif r == "folder":
+            subprocess.Popen(["nautilus", "--select", path])
+    threading.Thread(target=run, daemon=True).start()
+
+
+APP_APK = os.path.expanduser("~/.local/share/mgos/mgshare.apk")
+
+PAIR_PAGE = """<!doctype html><html lang="uk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mg Share</title><style>body{{background:#0b0b0f;color:#f5f5f7;font:16px/1.45 system-ui,sans-serif;display:flex;flex-direction:column;
+align-items:center;padding:48px 22px;text-align:center}}h1{{font-size:24px;margin:0 0 14px}}p{{opacity:.7;max-width:360px}}
+a{{display:block;margin-top:26px;background:#f5f5f7;color:#0b0b0f;border-radius:14px;padding:14px 22px;font-weight:700;text-decoration:none}}</style></head>
+<body><h1>З'єднання з {host}</h1><p>Відкрийте застосунок <b>Mg Share</b> → «Додати пристрій» і наведіть його на цей самий QR-код.</p>{apk}</body></html>"""
+
+
+class Link:
+    def __init__(self):
+        self.me = identity()
+        self.cv = threading.Condition()
+        self.pairs = {}            # token -> {"done": None | (id, name)}
+
+    # ---------- HTTP ----------
+    def handler(self):
+        link = self
+
+        class H(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *a):
+                pass
+
+            def reply(self, code, obj=None, ctype="application/json", body=None):
+                b = body if body is not None else json.dumps(obj or {}).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(b)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(b)
+
+            def body_json(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                if n > 65536:
+                    raise ValueError("big")
+                return json.loads(self.rfile.read(n) or b"{}")
+
+            def auth(self):
+                """→ (id, device) або None; перевіряє підпис і свіжість."""
+                frm, t, sig = (self.headers.get(h, "") for h in ("X-Mg-From", "X-Mg-Time", "X-Mg-Sig"))
+                d = load_devices().get(frm)
+                try:
+                    fresh = abs(time.time() - int(t)) < 300
+                except ValueError:
+                    fresh = False
+                if not d or not fresh or not hmac.compare_digest(sign(d["key"], frm, t, self.command, self.path), sig):
+                    return None
+                return frm, d
+
+            def do_GET(self):
+                u = urllib.parse.urlsplit(self.path)
+                parts = u.path.strip("/").split("/")
+                if parts[0] == "pair" and len(parts) == 2 and parts[1] in link.pairs:
+                    apk = '<a href="/app.apk">Завантажити Mg Share (.apk)</a>' if os.path.exists(APP_APK) else ""
+                    return self.reply(200, body=PAIR_PAGE.format(host=html.escape(link.me["name"]), apk=apk).encode(),
+                                      ctype="text/html; charset=utf-8")
+                if u.path == "/app.apk" and os.path.exists(APP_APK):
+                    b = open(APP_APK, "rb").read()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/vnd.android.package-archive")
+                    self.send_header("Content-Disposition", 'attachment; filename="MgShare.apk"')
+                    self.send_header("Content-Length", str(len(b)))
+                    self.end_headers()
+                    return self.wfile.write(b)
+                if u.path == "/ping":
+                    a = self.auth()
+                    if not a:
+                        return self.reply(403, {"error": "auth"})
+                    link.touch(a[0], self.client_address[0], None)
+                    return self.reply(200, {"id": link.me["id"], "name": link.me["name"]})
+                self.reply(404, {"error": "nf"})
+
+            def do_POST(self):
+                u = urllib.parse.urlsplit(self.path)
+                parts = u.path.strip("/").split("/")
+                try:
+                    if parts[0] == "pair" and len(parts) == 2:
+                        tok = parts[1]
+                        j = self.body_json()
+                        with link.cv:
+                            pend = link.pairs.get(tok)
+                            if not pend or pend["done"]:
+                                return self.reply(410, {"error": "expired"})
+                            did = str(j.get("id", ""))[:64]
+                            if not did:
+                                return self.reply(400, {"error": "id"})
+                            key = secrets.token_hex(32)
+                            devs = load_devices()
+                            devs[did] = {"name": str(j.get("name", "Телефон"))[:60], "kind": str(j.get("kind", "phone"))[:16],
+                                         "key": key, "ip": self.client_address[0], "port": int(j.get("port", PHONE_PORT)),
+                                         "seen": time.time(), "paired": time.time()}
+                            save_devices(devs)
+                            pend["done"] = (did, devs[did]["name"])
+                            link.cv.notify_all()
+                        return self.reply(200, {"id": link.me["id"], "name": link.me["name"], "kind": "laptop", "key": key})
+                    a = self.auth()
+                    if not a:
+                        return self.reply(403, {"error": "auth"})
+                    if u.path == "/hello":
+                        j = self.body_json()
+                        link.touch(a[0], self.client_address[0], int(j.get("port", PHONE_PORT)))
+                        return self.reply(200, {"id": link.me["id"], "name": link.me["name"]})
+                    if u.path == "/bye":
+                        link.touch(a[0], self.client_address[0], None, gone=True)
+                        return self.reply(200, {})
+                    self.reply(404, {"error": "nf"})
+                except (ValueError, KeyError):
+                    self.reply(400, {"error": "bad"})
+
+            def do_PUT(self):
+                u = urllib.parse.urlsplit(self.path)
+                a = self.auth()
+                if not a:
+                    return self.reply(403, {"error": "auth"})
+                if u.path != "/file":
+                    return self.reply(404, {"error": "nf"})
+                q = urllib.parse.parse_qs(u.query)
+                name = q.get("name", ["file"])[0]
+                n = int(self.headers.get("Content-Length") or -1)
+                if n < 0:
+                    return self.reply(411, {"error": "length"})
+                dst = unique_path(downloads_dir(), name)
+                part = dst + ".mgpart"
+                got = 0
+                try:
+                    with open(part, "wb") as fh:
+                        while got < n:
+                            chunk = self.rfile.read(min(1 << 16, n - got))
+                            if not chunk:
+                                break
+                            fh.write(chunk); got += len(chunk)
+                    if got != n:
+                        os.unlink(part)
+                        return
+                    os.rename(part, dst)
+                except OSError:
+                    try: os.unlink(part)
+                    except OSError: pass
+                    return self.reply(500, {"error": "disk"})
+                link.touch(a[0], self.client_address[0], None)
+                notify_received(a[1].get("name", "телефону"), dst)
+                self.reply(200, {"saved": os.path.basename(dst)})
+
+        return H
+
+    def touch(self, did, ip, port, gone=False):
+        with self.cv:
+            devs = load_devices()
+            d = devs.get(did)
+            if not d:
+                return
+            d["ip"] = ip
+            if port:
+                d["port"] = port
+            d["seen"] = 0 if gone else time.time()
+            save_devices(devs)
+            self.cv.notify_all()
+
+    # ---------- UDP: пошук (телефон шле «hello» широкомовно — відповідаємо лише своїм) ----------
+    def udp_loop(self):
+        u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        u.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        u.bind(("0.0.0.0", LINK_PORT))
+        while True:
+            try:
+                data, addr = u.recvfrom(2048)
+                j = json.loads(data)
+            except (OSError, ValueError):
+                continue
+            if j.get("t") != "hello" or j.get("id") not in load_devices():
+                continue
+            u.sendto(json.dumps({"t": "here", "id": self.me["id"], "name": self.me["name"], "port": LINK_PORT}).encode(), addr)
+
+    # ---------- керування з топбару / CLI (unix-сокет, один JSON-рядок → потік рядків) ----------
+    def ctl_loop(self, srv):
+        while True:
+            c, _ = srv.accept()
+            threading.Thread(target=self.ctl_one, args=(c,), daemon=True).start()
+
+    def ctl_one(self, c):
+        f = c.makefile("rwb", buffering=0)
+
+        def say(*a):
+            f.write(("|".join(a) + "\n").encode())
+
+        def gone():
+            r, _, _ = select.select([c], [], [], 0)
+            return bool(r) and not c.recv(1, socket.MSG_PEEK)
+
+        try:
+            j = json.loads(f.readline() or b"{}")
+            if j.get("cmd") == "pair":
+                self.ctl_pair(say, gone)
+            elif j.get("cmd") == "push":
+                self.ctl_push(j.get("id", ""), j.get("files", []), say, gone)
+            elif j.get("cmd") == "ping":
+                say("OK")
+        except (OSError, ValueError):
+            pass
+        finally:
+            try: c.close()
+            except OSError: pass
+
+    def ctl_pair(self, say, gone):
+        ip = lan_ip()
+        if not ip:
+            return say("ERROR", "nonet")
+        tok = secrets.token_urlsafe(9)
+        url = f"http://{ip}:{LINK_PORT}/pair/{tok}"
+        tmp = tempfile.mkdtemp(prefix="mgos-pair-")
+        qr = os.path.join(tmp, "qr.png")
+        subprocess.run(["qrencode", "-t", "PNG", "-s", "6", "-m", "1", "-l", "M", "-o", qr, url])
+        with self.cv:
+            self.pairs[tok] = {"done": None}
+        say("URL", url)
+        say("QR", qr)
+        end = time.time() + 300
+        try:
+            with self.cv:
+                while not self.pairs[tok]["done"] and time.time() < end:
+                    self.cv.wait(1.0)
+                    if gone():
+                        return
+                done = self.pairs[tok]["done"]
+            if done:
+                say("PAIRED", done[0], done[1])
+            else:
+                say("EXPIRED")
+        finally:
+            with self.cv:
+                self.pairs.pop(tok, None)
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def ctl_push(self, did, files, say, gone):
+        files = [f for f in files if os.path.isfile(f)]
+        if not files:
+            return say("ERROR", "nofile")
+        if did not in load_devices():
+            return say("ERROR", "unknown")
+        end = time.time() + 15 * 60
+        i = 0
+        waiting = False
+        while i < len(files):
+            d = load_devices().get(did)
+            if not d:
+                return say("ERROR", "unknown")
+            if not is_online(d):
+                if not waiting:
+                    say("WAIT"); waiting = True
+                with self.cv:
+                    self.cv.wait(1.0)
+                if gone():
+                    return
+                if time.time() > end:
+                    return say("ERROR", "timeout")
+                continue
+            if waiting:
+                say("FOUND"); waiting = False
+            r = self.put_file(d, did, files[i], say, gone)
+            if r == "ok":
+                say("GOT", os.path.basename(files[i])); i += 1
+            elif r == "cancel":
+                return
+            elif r == "auth":
+                return say("ERROR", "auth")
+            else:   # телефон закрив застосунок / мережа — чекаємо наступного «привіт»
+                with self.cv:
+                    devs = load_devices()
+                    if did in devs:
+                        devs[did]["seen"] = 0
+                        save_devices(devs)
+        say("DONE")
+
+    def put_file(self, d, did, path, say, gone):
+        import http.client
+        name = os.path.basename(path)
+        size = os.path.getsize(path)
+        q = "/file?name=" + urllib.parse.quote(name)
+        t = str(int(time.time()))
+        try:
+            conn = http.client.HTTPConnection(d["ip"], d.get("port", PHONE_PORT), timeout=15)
+            conn.putrequest("PUT", q)
+            conn.putheader("Content-Length", str(size))
+            conn.putheader("X-Mg-From", self.me["id"])
+            conn.putheader("X-Mg-Time", t)
+            conn.putheader("X-Mg-Sig", sign(d["key"], self.me["id"], t, "PUT", q))
+            conn.endheaders()
+            say("SENDING", name)
+            sent, last = 0, -1
+            with open(path, "rb") as fh:
+                while chunk := fh.read(1 << 16):
+                    conn.send(chunk)
+                    sent += len(chunk)
+                    pct = sent * 100 // max(size, 1)
+                    if pct != last:
+                        say("PROG", str(pct)); last = pct
+                    if gone():
+                        conn.close(); return "cancel"
+            r = conn.getresponse()
+            r.read()
+            conn.close()
+            return "ok" if r.status == 200 else "auth" if r.status == 403 else "fail"
+        except (OSError, http.client.HTTPException):
+            return "fail"
+
+
+def daemon():
+    sp = sock_path()
+    if os.path.exists(sp):
+        try:
+            t = socket.socket(socket.AF_UNIX); t.connect(sp); t.close()
+            return 0          # уже працює
+        except OSError:
+            os.unlink(sp)
+    srv = socket.socket(socket.AF_UNIX)
+    srv.bind(sp)
+    os.chmod(sp, 0o600)
+    srv.listen(8)
+    link = Link()
+    with _dev_lock:
+        devs = load_devices()
+        for d in devs.values():
+            d["seen"] = 0
+        save_devices(devs)
+    http_srv = http.server.ThreadingHTTPServer(("0.0.0.0", LINK_PORT), link.handler())
+    http_srv.daemon_threads = True
+    threading.Thread(target=http_srv.serve_forever, daemon=True).start()
+    threading.Thread(target=link.udp_loop, daemon=True).start()
+    try:
+        link.ctl_loop(srv)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        try: os.unlink(sp)
+        except OSError: pass
+    return 0
+
+
+def ctl(req):
+    """Передає команду службі (запускає її, якщо не працює) і друкує відповідь рядок за рядком."""
+    sp = sock_path()
+    c = None
+    for attempt in range(30):
+        try:
+            c = socket.socket(socket.AF_UNIX); c.connect(sp); break
+        except OSError:
+            c = None
+            if attempt == 0:
+                subprocess.Popen([os.path.abspath(__file__), "daemon"], start_new_session=True,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(0.1)
+    if not c:
+        out("ERROR", "daemon"); return 6
+    c.sendall((json.dumps(req) + "\n").encode())
+    f = c.makefile("rb")
+    try:
+        for line in f:
+            sys.stdout.write(line.decode()); sys.stdout.flush()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+def devices_cmd():
+    for i, d in load_devices().items():
+        print(f"{i}\t{d.get('name', '?')}\t{d.get('kind', 'phone')}\t{1 if is_online(d) else 0}")
+    return 0
+
+
+def forget(did):
+    devs = load_devices()
+    if devs.pop(did, None) is None:
+        print("немає такого пристрою", file=sys.stderr); return 1
+    save_devices(devs)
+    return 0
+
+
+def main():
+    a = sys.argv[1:]
+    if not a:
+        print(open(__file__).read().split("\nimport")[0].replace("# ", "").replace("#!/usr/bin/env python3\n", ""))
+        return 0
+    if a[0] == "serve":
+        return serve(a[1:])
+    if a[0] == "send":
+        files = [os.path.abspath(f) for f in a[1:] if os.path.isfile(f)]
+        d = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "mgos")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "share-request"), "w") as fh:
+            fh.write("\n".join(files) + "\n")
+        return subprocess.run(["pkill", "-USR2", "-x", "topbar"]).returncode
+    if a[0] == "check":
+        print(check()); return 0
+    if a[0] == "setup":
+        return setup()
+    if a[0] == "daemon":
+        return daemon()
+    if a[0] == "open":     # блок «Надіслати» в топбарі без файлу (іконки пристроїв, «Додати»)
+        try: os.unlink(os.path.join(cache_dir(), "share-request"))
+        except OSError: pass
+        return subprocess.run(["pkill", "-USR2", "-x", "topbar"]).returncode
+    if a[0] == "pair":
+        return ctl({"cmd": "pair"})
+    if a[0] == "push" and len(a) >= 3:
+        return ctl({"cmd": "push", "id": a[1], "files": [os.path.abspath(f) for f in a[2:]]})
+    if a[0] == "devices":
+        return devices_cmd()
+    if a[0] == "forget" and len(a) == 2:
+        return forget(a[1])
+    print(f"невідома команда: {a[0]}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    import signal
+    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt))
+    sys.exit(main())

@@ -1,0 +1,321 @@
+### replace base 15-15 pub 15-15
+-from PyQt6.QtCore import (Qt, QEvent,QPropertyAnimation, QVariantAnimation, QEasingCurve, QRect, QRectF, QPoint, QPointF,
++from PyQt6.QtCore import (Qt, QEvent, QProcess,QPropertyAnimation, QVariantAnimation, QEasingCurve, QRect, QRectF, QPoint, QPointF,
+### replace base 601-601 pub 601-601
+-    "tp_swipe_down": "minimize", "tp_min_dist": 300, "genie_squash": True, "genie_grow": True, "genie_speed": 100, "genie_anim": True, "tp_swipe_up": "fullscreen", "tp_tap3": "runner", "dock_stash_cards": True,
++    "tp_swipe_down": "minimize", "tp_min_dist": 300, "genie_squash": True, "genie_grow": True, "launch_splash": True, "genie_speed": 100, "genie_anim": True, "tp_swipe_up": "fullscreen", "tp_tap3": "middle", "dock_stash_cards": True,
+### insert base 694-693 pub 694-714
++_GPU_T = {"t": None, "ts": 0.0, "busy": False}
++
++
+### replace base 695-696 pub 716-718
+-    """rpm/temp/profile/mode/writable/split — напряму з sysfs, БЕЗ процесів (викликається раз на 2 с з UI-потоку).
+-    Кулер Samsung — лише профілі прошивки, без PWM; логіка режимів — у ~/.local/bin/mgos-fan."""
++    """rpm/temp/profile/mode/writable/split + датчики — напряму з sysfs, БЕЗ блокуючих процесів (раз на 2 с з UI-потоку).
++    Ноутбук Samsung: кулер — лише профілі прошивки (platform_profile). Десктоп (MSI nct6687): CPU — k10temp/coretemp,
++    кулери — через hwmon материнки. Логіка режимів — у ~/.local/bin/mgos-fan."""
+### replace base 700-701 pub 722-727
+-    st = {"rpm": "0", "temp": "0"}
+-    for h in Path("/sys/class/hwmon").glob("hwmon*"):
++    def c(path):
++        v = rd(path)
++        return int(v) // 1000 if v.lstrip("-").isdigit() else None
+### replace base 704-704 pub 730-746
+-        elif name == "coretemp": st["temp"] = str(int(rd(h / "temp1_input", "0") or 0) // 1000)
++        elif name == "coretemp": cpu = c(h / "temp1_input")
++        elif name in ("k10temp", "zenpower") and cpu is None: cpu = c(h / "temp1_input")   # Tctl
++        elif name in ("nct6687", "nct6683", "nct6775", "nct6798", "it87"):
+### insert base 707-706 pub 749-749
++    st["laptop"] = "1" if os.path.exists(pp) else "0"
+### replace base 737-738 pub 780-782
+-    """Сітка «температура × оберти»: крива з точками, які можна тягати. Смуги = профілі прошивки Samsung
+-    (кулер Galaxy Book керується лише ними). Жива точка — поточна температура CPU і реальні оберти."""
++    """Крива кулера «температура CPU → оберти». Точки тягаються; клік по порожньому — нова точка,
++    подвійний клік або ПКМ по точці — прибрати. Ноутбук Samsung: смуги = 4 профілі прошивки;
++    десктоп: вісь у відсотках PWM. Жива точка — поточна температура CPU і реальні оберти."""
+### insert base 740-739 pub 784-785
++    MIN_GAP = 3          # мінімум °C між сусідніми точками
++    MAX_PTS = 8
+### replace base 741-741 pub 787-787
+-    def __init__(self, on_change, parent=None):
++    def __init__(self, on_change, laptop=False, parent=None):
+### insert base 744-743 pub 790-790
++        self.laptop = laptop
+### replace base 748-748 pub 795-795
+-        self.setMinimumHeight(230)
++        self.setMinimumHeight(240)
+### replace base 750-750 pub 797-797
+-        self.save_timer = QTimer(self, singleShot=True, interval=350)
++        self.save_timer = QTimer(self, singleShot=True, interval=400)
+### insert base 753-752 pub 800-800
++    # ---- геометрія ----
+### replace base 754-754 pub 802-803
+-        return QRectF(64, 12, self.width() - 64 - 14, self.height() - 12 - 30)
++        left = 64 if self.laptop else 46
++        return QRectF(left, 14, self.width() - left - 14, self.height() - 14 - 34)
+### insert base 777-776 pub 826-828
++    def set_points(self, pts):
++        self.pts = sorted(pts); self.drag = self.hover = -1; self.update(); self.save_timer.start()
++
+### replace base 778-778 pub 830-830
+-        self.pts = list(FAN_CURVE_DEFAULT); self.update(); self.save_timer.start()
++        self.set_points(list(FAN_CURVE_DEFAULT))
+### replace base 781-781 pub 833-833
+-        best, bd = -1, 14.0
++        best, bd = -1, 16.0
+### insert base 787-786 pub 839-844
++    def _clamp(self, i, t, v):
++        lo = self.pts[i - 1][0] + self.MIN_GAP if i > 0 else self.T_MIN
++        hi = self.pts[i + 1][0] - self.MIN_GAP if i < len(self.pts) - 1 else self.T_MAX
+### replace base 788-796 pub 846-863
+-        self.drag = self._nearest(e.position())
+-        if self.drag < 0 and self.plot().contains(e.position()) and e.button() == Qt.MouseButton.LeftButton:
+-            t, v = self.from_px(e.position())          # клік по порожньому місцю — нова точка
+-            if len(self.pts) < 8:
++        pos = e.position()
++        i = self._nearest(pos)
++        if e.button() == Qt.MouseButton.RightButton:
+### insert base 799-798 pub 866-871
++
++    def mouseDoubleClickEvent(self, e):
++        i = self._nearest(e.position())
+### replace base 803-805 pub 876-876
+-            lo = self.pts[self.drag - 1][0] + 2 if self.drag > 0 else self.T_MIN
+-            hi = self.pts[self.drag + 1][0] - 2 if self.drag < len(self.pts) - 1 else self.T_MAX
+-            self.pts[self.drag] = (int(round(max(lo, min(hi, t)))), int(round(max(0, min(100, v)))))
++            self.pts[self.drag] = self._clamp(self.drag, t, v)
+### insert base 815-814 pub 886-888
++        if self.drag >= 0:
++            self.hover = self.drag
++            self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
+### insert base 819-818 pub 893-906
++
++    # ---- малювання ----
++    def _bubble(self, p, anchor, text, color, above=True):
+### replace base 826-830 pub 914-921
+-        # смуги профілів
+-        for i, (lo, hi, name) in enumerate(FAN_BANDS):
+-            top, bot = self.to_px(0, hi).y(), self.to_px(0, lo).y()
+-            c = QColor(acc); c.setAlpha(10 + i * 9)
++        # фон області графіка
++        p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(T["text"], 6)); p.drawRoundedRect(r, 8, 8)
++        if self.laptop:   # смуги профілів прошивки Samsung
+### replace base 832-837 pub 923-927
+-            p.drawText(QRectF(0, top, r.left() - 8, bot - top), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, name)
+-        # сітка
+-        grid = QColor(T["text2"]); grid.setAlpha(40)
+-        p.setPen(QPen(grid, 1, Qt.PenStyle.DotLine))
++            for v in (0, 25, 50, 75, 100):
++                y = self.to_px(0, v).y()
++                p.drawText(QRectF(0, y - 7, r.left() - 8, 14), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, f"{v}%")
+### replace base 839-840 pub 929-931
+-            y = self.to_px(0, v).y(); p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y))
+-        p.setPen(QPen(grid, 1)); p.setBrush(Qt.BrushStyle.NoBrush); p.drawRoundedRect(r, 6, 6)
++            y = self.to_px(0, v).y(); p.drawLine(QPointF(r.left() + 1, y), QPointF(r.right() - 1, y))
++        for t in range(self.T_MIN + 10, self.T_MAX, 10):
++            x = self.to_px(t, 0).x(); p.drawLine(QPointF(x, r.top() + 1), QPointF(x, r.bottom() - 1))
+### replace base 844-846 pub 935-937
+-            p.drawText(QRectF(x - 20, r.bottom() + 4, 40, 14), Qt.AlignmentFlag.AlignCenter, f"{t}°")
+-        p.drawText(QRectF(r.left(), r.bottom() + 16, r.width(), 14), Qt.AlignmentFlag.AlignCenter, "Температура CPU")
+-        # крива + заливка під нею
++            p.drawText(QRectF(x - 20, r.bottom() + 5, 40, 14), Qt.AlignmentFlag.AlignCenter, f"{t}°")
++        p.drawText(QRectF(r.left(), r.bottom() + 19, r.width(), 14), Qt.AlignmentFlag.AlignCenter, "Температура CPU")
++        # крива + заливка
+### replace base 852-855 pub 943-946
+-        c1 = QColor(acc); c1.setAlpha(70); c2 = QColor(acc); c2.setAlpha(0)
+-        g.setColorAt(0, c1); g.setColorAt(1, c2)
+-        p.fillPath(fill, QBrush(g))
+-        pen = QPen(acc, 2.4); pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin); pen.setCapStyle(Qt.PenCapStyle.RoundCap)
++        g.setColorAt(0, tint(acc, 95)); g.setColorAt(1, tint(acc, 8))
++        p.save(); clip = QPainterPath(); clip.addRoundedRect(r, 8, 8); p.setClipPath(clip)
++        p.fillPath(fill, QBrush(g)); p.restore()
+### insert base 857-856 pub 948-959
++        # жива температура
++        if self.live:
++            t, rpm = self.live
+### replace base 859-877 pub 962-1255
+-            c = self.to_px(t, v); rad = 7 if i in (self.drag, self.hover) else 5.5
+-            p.setPen(QPen(QColor("white"), 2)); p.setBrush(acc); p.drawEllipse(c, rad, rad)
+-            if i in (self.drag, self.hover):
+-                p.setPen(QColor(T["text"]))
++            c = self.to_px(t, v); act = i in (self.drag, self.hover)
++            rad = 7.5 if act else 6
++            p.setPen(Qt.PenStyle.NoPen); p.setBrush(tint(T["knob_shadow"], 80)); p.drawEllipse(c + QPointF(0, 1), rad, rad)
+### replace base 883-883 pub 1261-1261
+-MFG_DLL_NAMES = ["version.dll", "winmm.dll", "dinput8.dll", "dxgi.dll", "d3d12.dll", "d3d11.dll", "dsound.dll",
++MFG_DLL_NAMES = ["version.dll", "winmm.dll", "dinput8.dll", "dxgi.dll", "d3d12.dll", "d3d11.dll", "dsound.dll", "xinput9_1_0.dll",
+### insert base 901-900 pub 1279-1292
++
++
++_MFG_MOD = []
+### insert base 2227-2226 pub 2619-2888
++class MgShareGuide(QWidget):
++    """Анімована інструкція Mg Share: ноутбук ліворуч, телефон праворуч, сцена — за вибраним кроком."""
++    MODES = {
+### insert base 3177-3176 pub 3839-3922
++MGSHARE = str(Path.home() / ".local/bin/mgos-share")
++
++
+### insert base 3180-3179 pub 3926-3926
++    ("mgshare", "Mg Share", "\U000F011C", "#30d158", 0),
+### replace base 3198-3198 pub 3945-3945
+-    ("power", "Батарея", G["battery"], "#30d158", 4),
++    ("power", "Продуктивність", "\U000F04C5", "#ff9f0a", 4),   # id «power» лишився — на нього посилаються --page і док
+### replace base 3377-3377 pub 4124-4124
+-                "night": "pgrep hyprsunset", "pp": "powerprofilesctl get"}
++                "night": "~/.local/bin/mgos-brightness night | grep -qx on && echo on", "pp": "powerprofilesctl get"}
+### replace base 3456-3457 pub 4203-4204
+-                if value: subprocess.Popen(["hyprsunset", "-t", "4000"], start_new_session=True, stdout=DEVNULL, stderr=DEVNULL)
+-                else: subprocess.Popen(["killall", "hyprsunset"], stdout=DEVNULL, stderr=DEVNULL)
++                # через mgos-brightness: той самий hyprsunset тримає й затемнення монітора без DDC — killall скинув би його
++                subprocess.Popen([str(Path.home() / ".local/bin/mgos-brightness"), "night", "on" if value else "off"], start_new_session=True, stdout=DEVNULL, stderr=DEVNULL)
+### insert base 3467-3466 pub 4214-4216
++            elif key == "wp_video_fps":   # нова частота — перезапустити відео-шпалери (копія зробиться у фоні)
++                QTimer.singleShot(300, lambda: subprocess.Popen([str(Path.home() / ".config/SYSui/wallpaper_restore.sh")],
++                                                                 start_new_session=True, stdout=DEVNULL, stderr=DEVNULL))
+### replace base 3468-3468 pub 4218-4218
+-                subprocess.Popen(["brightnessctl", "-q", "set", f"{max(1, value)}%"], stdout=DEVNULL, stderr=DEVNULL)
++                subprocess.Popen([str(Path.home() / ".local/bin/mgos-brightness"), "set", str(max(1, int(value)))], stdout=DEVNULL, stderr=DEVNULL)
+### replace base 3669-3669 pub 4419-4419
+-                        dashboard=self.create_dashboard_page)
++                        dashboard=self.create_dashboard_page, mgshare=self.create_mgshare_page)
+### insert base 3925-3924 pub 4675-4731
++    # --- Mg Share: свої телефони ---
++    def create_mgshare_page(self):
++        page, lay = self.page_base("mgshare")
+### insert base 3971-3970 pub 4778-4781
++            SettingRow("", "", "Частота відео-шпалер",
++                       "Легка копія відео: роздільність монітора, HEVC на відеокарті. 30 к/с — удвічі менше перемальовок столу з розмиттям",
++                       SegmentedSelector("wp_video_fps", [(30, "30 к/с"), (60, "60 к/с"), (0, "Як у файлі")],
+### insert base 4135-4134 pub 4946-4946
++        # mgos-brightness: підсвітка ноутбука, DDC/CI монітора або програмне затемнення (hyprsunset) — що є
+### replace base 4136-4138 pub 4948-4956
+-            cur = int(subprocess.run(["brightnessctl", "-m"], capture_output=True, text=True, timeout=1).stdout.split(",")[3].rstrip("%"))
+-            rows.append(SettingRow("", "", "Яскравість", "Також Fn+F2 / Fn+F3",
+-                                   MeguminSlider("screen_brightness", cur, 1, 100, "%", self.save_setting, width=220)))
++            cur, how = subprocess.run([str(Path.home() / ".local/bin/mgos-brightness"), "get"], capture_output=True, text=True, timeout=25).stdout.split()[:2]
++            desc = {"backlight": "Підсвітка екрана · Fn+F2 / Fn+F3",
++                     "ddc": "Підсвітка монітора (DDC/CI) · Super+F2 / Super+F3",
+### replace base 4301-4301 pub 5119-5119
+-        page, lay = self.page_base("keyboard")
++        page, outer = self.page_base("keyboard")
+### replace base 4306-4306 pub 5124-5136
+-        self.hero(lay, "keyboard", f"Розкладки: {lays.upper().replace(',', ' · ')}" if lays else "Повтор клавіш і розкладки.")
++        self.hero(outer, "keyboard", f"Розкладки: {lays.upper().replace(',', ' · ')}" if lays else "Повтор клавіш і розкладки.")
++        # вкладки: «Клавіатура» (схема, повтор, підсвітка) і «Бінди» (гарячі клавіші системи і програм)
++        self.kb_stack = QStackedWidget()
+### replace base 4314-4314 pub 5144-5144
+-            SettingRow("", "", "Яскравість екрана", "Fn + F2 / Fn + F3", None),
++            SettingRow("", "", "Яскравість екрана", "Fn + F2 / Fn + F3 · на будь-якій клавіатурі — Super + F2 / Super + F3", None),
+### insert base 4330-4329 pub 5160-5162
++        lay.addStretch()
++        self.binds_section(blay)
++        blay.addStretch()
+### insert base 4331-4330 pub 5164-5356
++
++    def kb_tab_switch(self, idx):
++        # прихована вкладка не задає висоту (інакше «Клавіатура» мала б порожнечу на висоту довгого списку біндів)
+### insert base 4394-4393 pub 5420-5421
++            R("Вікно-заглушка при запуску", "Запуск з доку чи runner: одразу з'являється прозоре вікно з іконкою програми і спінером, а коли програма готова — вона заповнює це вікно",
++              self.sw("launch_splash", True), "minimize"),
+### replace base 4862-4862 pub 5890-5890
+-        self.hero(lay, "dashboard", "Віджети на робочому столі 1: годинник, система, мережа, погода, музика, нотатки, швидкі дії, календар.")
++        self.hero(lay, "dashboard", "Віджети на робочому столі 1: продуктивність, ігри Steam, погода, тривога, курс НБУ, музика, оновлення, календар та інше.")
+### replace base 4867-4867 pub 5895-5895
+-    # --- Батарея ---
++    # --- Продуктивність (колишня «Батарея») ---
+### insert base 4870-4869 pub 5898-5899
++        fs = fan_status()
++        laptop = fs.get("laptop") == "1"
+### replace base 4877-4877 pub 5907-5933
+-        self.hero(lay, "power", bat or "Режим енергоспоживання процесора.")
++        self.hero(lay, "power", bat or "Температури, кулери та режим живлення.")
++        self.page_words[self._building] += ["батарея", "температура", "кулер", "вентилятор", "історія", "графік", "продуктивність", "сенсори"]
++
+### replace base 4879-4879 pub 5935-5935
+-            SettingRow("", "", "Режим живлення", "Економ — довше від батареї, Макс — для ігор",
++            SettingRow("", "", "Режим живлення", "Економ — тихіше й холодніше, Макс — для ігор і збирання",
+### replace base 4881-4881 pub 5937-5937
+-            SettingRow("", "", "Споживання енергії", "Що з'їдає батарею (btop)", on_click=lambda: self.launch_app("kitty -e btop")),
++            SettingRow("", "", "Що навантажує систему", "Процеси, памʼять і диск (btop)", on_click=lambda: self.launch_app("kitty -e btop")),
+### insert base 4883-4882 pub 5939-6002
++
++        # кулери
++        self.section(lay, "Кулери")
+### replace base 4894-4919 pub 6014-6016
+-        self.section(lay, "Кулер")
+-        self.fan_selector = SegmentedSelector("fan_mode", [("auto", "Авто"), ("quiet", "Тихий"), ("balanced", "Баланс"),
+-                                                           ("performance", "Макс"), ("curve", "Крива")],
+-                                              fan_status().get("mode", "auto"), self.save_setting)
++        self._fan_once = False
++        self._hist_tick = 0
++        self.refresh_history()
+### insert base 4927-4926 pub 6024-6047
++    def refresh_history(self):
++        tc = getattr(self, "temp_chart", None)
++        if tc is None: return
+### replace base 4930-4931 pub 6051-6054
+-        # оновлюємо лише видиму сторінку «Батарея» і лише коли вікно не згорнуте
+-        if getattr(self, "_fan_once", False) and not (row.isVisible() and self.isVisible()): return
++        # оновлюємо лише видиму сторінку і лише коли вікно не згорнуте
++        try:
++            if self._fan_once and not (row.isVisible() and self.isVisible()): return
+### replace base 4937-4937 pub 6060-6063
+-        txt = f"Зараз: {spin} · CPU {st.get('temp', '?')}°C · крива прошивки «{names.get(st.get('profile', ''), st.get('profile', '?'))}»"
++        if st.get("laptop") == "1":
++            txt = f"Зараз: {spin} · крива прошивки «{names.get(st.get('profile', ''), st.get('profile', '?'))}»"
++        else:
+### insert base 4940-4939 pub 6066-6066
++        cpu = int(st.get("temp", "0") or 0)
+### replace base 4942-4942 pub 6069-6069
+-            try: fc.set_live(int(st.get("temp", "0") or 0), rpm)
++            try: fc.set_live(cpu, rpm)
+### insert base 4944-4943 pub 6071-6134
++        # плитки
++        self._hist_tick = (self._hist_tick + 1) % 8
++        if self._hist_tick == 0: self.refresh_history()   # раз на ~16 с — нові точки з mgos-sensors
+### insert base 4967-4966 pub 6158-6176
++        self.section(lay, "Місцезнаходження")
++        self.page_words[self._building] += ["геолокація", "місто", "місцезнаходження", "погода", "location", "розташування"]
++        loc = QLineEdit(self.settings.get("location", "")); loc.setPlaceholderText("Автоматично (за IP)"); loc.setFixedWidth(240)
+### replace base 4969-4969 pub 6179-6179
+-            SettingRow("", "", "Перезапустити Ignis", "Підняти оболонку після збою", on_click=lambda: self.launch_app("ignis quit; sleep 0.6; hyprctl dispatch exec 'ignis init'")),
++            SettingRow("", "", "Перезапустити Ignis", "Alt+Tab (перемикач вікон)", on_click=lambda: self.launch_app("ignis quit; sleep 0.6; hyprctl dispatch exec 'env GSK_RENDERER=cairo ignis init'")),
+### insert base 4980-4979 pub 6190-6210
++
++    def reset_weather_cache(self):
++        """Місто змінилось — старий кеш погоди (дашборд, «Хмари») більше не наш."""
+### insert base 5044-5043 pub 6275-6278
++        mctl = QWidget(); mh = QHBoxLayout(mctl); mh.setContentsMargins(0, 0, 0, 0); mh.setSpacing(8)
++        mh.addWidget(LinkButton("Оновити" if mod.exists() else "Завантажити", self.mfg_download))
++        mh.addWidget(LinkButton("Вибрати…", self.mfg_pick_dll))
+### replace base 5045-5046 pub 6280-6282
+-                                      (f"✓ {mod}" if mod.exists() else f"• Немає: {mod}. Завантажте MFGUnlocker.dll з GitHub Releases"),
+-                                      LinkButton("Вибрати…", self.mfg_pick_dll))
++                                      (f"✓ {ver + ' · ' if ver else ''}{mod}" if mod.exists()
++                                       else "• Ще не завантажено — «Завантажити» бере останній реліз з GitHub і звіряє SHA256"),
++                                      mctl)
+### insert base 5061-5060 pub 6297-6323
++        # GPU: DLSS MFG лише на RTX 20–50, XeMFG — будь-яка (docs/compatibility.md)
++        try:
++            gpu = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True, timeout=3).stdout.strip().splitlines()[0]
+### insert base 5062-5061 pub 6325-6325
++        mfg = mfg_runner()
+### insert base 5066-5065 pub 6330-6355
++            c = mfg.compat_for(name) if mfg else {"status": "unknown", "use": "version.dll", "also": [], "dont": {}}
++            st = c["status"]
++            dll = g.get("dll") or c["use"] or "version.dll"
+### replace base 5067-5071 pub 6357-6363
+-            pop = MacPopup(f"mfg_dll:{aid}", [(d, d) for d in MFG_DLL_NAMES], g.get("dll", "version.dll"),
+-                           lambda k, v, a=aid, n=name: self.mfg_game(a, n, dll=v), width=130)
+-            sw = MeguminSwitch(f"mfg_on:{aid}", bool(g.get("enabled")), lambda k, v, a=aid, n=name: self.mfg_game(a, n, enabled=bool(v)))
+-            h.addWidget(pop); h.addWidget(sw)
++            if st != "anticheat":
++                pop = MacPopup(f"mfg_dll:{aid}", items, dll, lambda k, v, a=aid, n=name: self.mfg_game(a, n, dll=v, tried=[], works=""), width=150)
++                h.addWidget(pop)
+### insert base 5076-5075 pub 6368-6424
++
++    # Увімкнути генерацію кадрів у грі одним перемикачем: DLL з таблиці, перевірка анти-чита в теці гри
++    # і обгортка в параметрах запуску Steam (сама, без копіювання рядка)
+### insert base 5307-5306 pub 6656-6656
++        subprocess.run(["hyprctl", "eval", "mgos_apply_wal()"], capture_output=True)   # рамки вікон наживо

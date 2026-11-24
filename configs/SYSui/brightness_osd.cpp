@@ -125,23 +125,8 @@ static bool write_bl(int v) {
     close(fd);
     return ok;
 }
-// Без /sys/class/backlight (ПК з монітором): ~/.local/bin/mgos-brightness сам вибирає DDC/CI монітора
-// або програмне затемнення (hyprsunset) і друкує «<відсотки> <спосіб>» одразу — плашку показуємо з цього числа.
-static void ext_brightness(const char* cmd) {
-    std::string tool = sysui::home() + "/.local/bin/mgos-brightness";
-    GSubprocess* sp = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE, nullptr, tool.c_str(), cmd, nullptr);
-    if (!sp) return;
-    g_subprocess_communicate_utf8_async(sp, nullptr, nullptr, [](GObject* o, GAsyncResult* r, gpointer) {
-        char* out = nullptr;
-        if (g_subprocess_communicate_utf8_finish(G_SUBPROCESS(o), r, &out, nullptr, nullptr) && out && *out)
-            show_screen(atoi(out) / 100.0);
-        g_free(out);
-        g_object_unref(o);
-    }, nullptr);
-}
-
 static void step_screen(int dir) {
-    if (bl_dir().empty()) { ext_brightness(dir > 0 ? "up" : "down"); return; }
+    if (bl_dir().empty()) return;
     int mx = std::max(1, read_int(bl_dir() + "/max_brightness", 100));
     int now = g_target >= 0 && g_fade ? g_target : read_int(bl_dir() + "/brightness", mx / 2);
     // крок 5%, а внизу — дрібніший (1%), щоб можна було зробити зовсім тьмяно, але не 0
@@ -220,8 +205,7 @@ static gboolean on_sock(GIOChannel* src, GIOCondition, gpointer) {
     if (cmd.rfind("up", 0) == 0) step_screen(+1);
     else if (cmd.rfind("down", 0) == 0) step_screen(-1);
     else if (cmd.rfind("kbd", 0) == 0) show_kbd(read_int(kbd_dir() + "/brightness", 0));
-    else if (cmd.rfind("show", 0) == 0 && bl_dir().empty()) ext_brightness("get");
-    else if (cmd.rfind("show", 0) == 0)
+    else if (cmd.rfind("show", 0) == 0 && !bl_dir().empty())
         show_screen(read_int(bl_dir() + "/brightness") / (double)std::max(1, read_int(bl_dir() + "/max_brightness", 1)));
     return G_SOURCE_CONTINUE;
 }
