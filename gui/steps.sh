@@ -992,6 +992,10 @@ _hw_write() {
         # Налаштування користувача з settings.py (тачпад, повтор клавіш, курсор) — завжди останніми, щоб перекривали все вище
         [ "$profile" = mgos ] && { echo; echo "source = ~/.config/hypr/touchpad-user.conf    # «Налаштування» → Трекпад / Клавіатура / Курсор"; }
     } > "$auto"
+    # mgos-auto.conf сам підключає touchpad-user.conf ПІСЛЯ touchpad.conf; зайвий source у hyprland.conf (його дописувала
+    # settings.py, поки mgos-auto.conf не було) іде раніше й дає «Can't remove a non-existent gesture»
+    [ "$profile" = mgos ] && [ -f "$dir/hyprland.conf" ] && grep -q 'mgos-auto.conf' "$dir/hyprland.conf" \
+        && sed -i '/^source = .*touchpad-user\.conf/d' "$dir/hyprland.conf"
     # source на неіснуючий файл — помилка конфігу Hyprland, тож файл має бути завжди (settings.py перепише його)
     if [ "$profile" = mgos ] && [ ! -f "$dir/touchpad-user.conf" ]; then
         echo "# mgOS: файл заповнюють «Налаштування» (settings.py). Поки порожній — діють значення з touchpad.conf / mgos-auto.conf." > "$dir/touchpad-user.conf"

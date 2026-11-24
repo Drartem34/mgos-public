@@ -594,7 +594,7 @@ PIXEL_STYLES_WP = PIXEL_STYLES + [
 
 # Тачпад: значення за замовчуванням = mgOS/kiosk (touchpad.conf + mgos-auto.conf)
 TP_DEFAULTS = {
-    "tp_speed": 62, "tp_accel": "adaptive", "tp_tap": True, "tp_secondary": "fingers", "tp_tap_drag": True,
+    "tp_speed": 62, "tp_accel": "adaptive", "tp_noaccel": False, "tp_tap": True, "tp_secondary": "fingers", "tp_tap_drag": True,
     "tp_drag_lock": False, "tp_dwt": False, "tp_middle": False, "tp_natural": False, "tp_scroll": 80,
     "tp_swipe_invert": False, "tp_swipe_dist": 300, "tp_swipe_new": True, "tp_swipe_forever": True,
     # Три пальці вниз: minimize — вікно в док з анімацією, що йде за пальцями (SYSui/dock_genie.h) | runner | off
@@ -1088,6 +1088,10 @@ class TouchpadBackend:
     def g(self, k):
         return self.s.get(k, TP_DEFAULTS[k])
 
+    def _tp_accel(self):
+        """«Однакова швидкість» → flat (без прискорення курсора), інакше обраний профіль."""
+        return "flat" if self.g("tp_noaccel") else self.g("tp_accel")
+
     @staticmethod
     def magic_mice():
         """Apple Magic Mouse (1/2/USB-C) — Hyprland називає її за Bluetooth-ім'ям, напр. «apple-magic-mouse»."""
@@ -1159,7 +1163,7 @@ class TouchpadBackend:
                   f"exec-once = hyprctl setcursor {ct} {int(cs)}"]
         for name in pads:
             s += ["device {", f"    name = {name}", f"    sensitivity = {tp_sensitivity(self.g('tp_speed'))}",
-                  f"    accel_profile = {self.g('tp_accel')}", "}"]
+                  f"    accel_profile = {self._tp_accel()}", "}"]
         for name in magic:
             s += ["device {", f"    name = {name}", f"    sensitivity = {tp_sensitivity(self.g('mm_speed'))}",
                   f"    accel_profile = {self.g('mm_accel')}", f"    natural_scroll = {self._b('mm_natural')}",
@@ -1190,7 +1194,8 @@ class TouchpadBackend:
         threading.Thread(target=run, daemon=True).start()
 
     def setup_gestures(self):
-        """Підготувати жести на цьому ПК: touchpad.conf (якщо нема) → mgos-auto.conf → touchpad-user.conf → перезавантаження."""
+        """Підготувати жести на цьому ПК: touchpad.conf → mgos-auto.conf (порядок: touchpad.conf, потім touchpad-user.conf)
+        → прибрати зайві/ранні source у hyprland.conf → перезавантаження → перевірка помилок конфігу."""
         h = Path.home() / ".config/hypr"
         try:
             tp = h / "touchpad.conf"
@@ -1199,25 +1204,43 @@ class TouchpadBackend:
                     t = d / "hypr-touchpad.conf"
                     if t.exists():
                         tp.write_text(t.read_text().replace("@HOME@", str(Path.home()))); break
-            auto = h / "mgos-auto.conf"
-            line = "source = ~/.config/hypr/touchpad.conf    # жести 3 пальцями, плавний скрол"
-            if tp.exists():
-                if auto.exists():
-                    txt = auto.read_text()
-                    if "touchpad.conf" not in txt:
-                        # має стояти ДО touchpad-user.conf
-                        if "touchpad-user.conf" in txt:
-                            txt = txt.replace("source = ~/.config/hypr/touchpad-user.conf", line + "\nsource = ~/.config/hypr/touchpad-user.conf", 1)
-                        else:
-                            txt += "\n" + line + "\n"
-                        auto.write_text(txt)
-                else:
-                    hc = h / "hyprland.conf"
-                    if hc.exists() and "touchpad.conf" not in hc.read_text():
-                        with open(hc, "a") as fh: fh.write("\n" + line + "\n")
+            if not tp.exists():
+                self._notify("Жести тачпада", "Немає шаблону touchpad.conf — запусти інсталятор"); return
+            line_tp = "source = ~/.config/hypr/touchpad.conf    # жести 3 пальцями, плавний скрол"
+            line_us = "source = ~/.config/hypr/touchpad-user.conf    # «Налаштування» → Трекпад / Клавіатура / Курсор"
+            auto, hc = h / "mgos-auto.conf", h / "hyprland.conf"
+            hctxt = hc.read_text() if hc.exists() else ""
+            if "mgos-auto.conf" in hctxt:
+                txt = auto.read_text() if auto.exists() else "# mgOS: автоналаштування\n"
+                if "touchpad.conf" not in txt:
+                    txt = txt.replace("source = ~/.config/hypr/touchpad-user.conf", line_tp + "\nsource = ~/.config/hypr/touchpad-user.conf", 1) \
+                        if "touchpad-user.conf" in txt else txt.rstrip("\n") + "\n" + line_tp + "\n"
+                if "touchpad-user.conf" not in txt:
+                    txt = txt.rstrip("\n") + "\n" + line_us + "\n"
+                auto.write_text(txt)
+                # ранній source у hyprland.conf (до touchpad.conf) дає «Can't remove a non-existent gesture»
+                new = re.sub(r"(?m)^source = .*touchpad-user\.conf.*\n?", "", hctxt)
+                if new != hctxt:
+                    hc.write_text(new)
+            elif hc.exists():
+                new = re.sub(r"(?m)^source = .*touchpad(-user)?\.conf.*\n?", "", hctxt).rstrip("\n") + "\n\n" + line_tp + "\n" + line_us + "\n"
+                hc.write_text(new)
+            # libinput-gestures + нативні жести Hyprland = подвійне спрацювання
+            if hc.exists():
+                t = hc.read_text()
+                t2 = re.sub(r"(?m)^(exec-once[ \t]*=[ \t]*libinput-gestures)", r"# [mgOS: жести — нативні Hyprland] \1", t)
+                if t2 != t:
+                    hc.write_text(t2)
+            TP_FILE.parent.mkdir(parents=True, exist_ok=True)
+            if not TP_FILE.exists():
+                TP_FILE.write_text(self.render(self.touchpads()))
             self.apply()
             subprocess.run(["hyprctl", "reload"], capture_output=True, timeout=5)
-            self._notify("Жести тачпада налаштовано", "Файли: touchpad.conf, touchpad-user.conf; конфіг Hyprland перезавантажено")
+            err = subprocess.run(["hyprctl", "configerrors"], capture_output=True, text=True, timeout=5).stdout.strip()
+            if err:
+                self._notify("Жести тачпада: помилка конфігу", err.splitlines()[0][:160])
+            else:
+                self._notify("Жести тачпада налаштовано", "3 пальці вбік — стільниці; вгору/вниз — вікно (док). Конфіг без помилок")
         except Exception as e:
             self._notify("Жести тачпада", "Помилка: " + str(e)[:160])
 
@@ -1236,7 +1259,12 @@ class TouchpadBackend:
             except Exception:
                 pass
         try:
-            with open(hypr / "hyprland.conf", "a") as fh:
+            hc = hypr / "hyprland.conf"
+            # hyprland.conf уже підключає mgos-auto.conf (він сам source-ить touchpad-user.conf ПІСЛЯ touchpad.conf);
+            # рядок раніше за touchpad.conf дає «Can't remove a non-existent gesture»
+            if hc.exists() and "mgos-auto.conf" in hc.read_text():
+                return
+            with open(hc, "a") as fh:
                 fh.write(f"\n{line}    # тачпад із Налаштувань\n")
         except Exception:
             pass
@@ -1289,7 +1317,7 @@ class TouchpadBackend:
                    f"keyword device[{name}]:left_handed {self._b('mm_left')}"]
         for name in pads:
             kw += [f"keyword device[{name}]:sensitivity {tp_sensitivity(self.g('tp_speed'))}",
-                   f"keyword device[{name}]:accel_profile {self.g('tp_accel')}"]
+                   f"keyword device[{name}]:accel_profile {self._tp_accel()}"]
         subprocess.Popen(["hyprctl", "--batch", " ; ".join(kw)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
@@ -4848,7 +4876,7 @@ class MeguminSettings(QWidget):
 
         point = self.create_card([
             R("Швидкість курсора", "", self.sl("tp_speed", 0, 100, labels=("Повільно", "Швидко"), ticks=10, width=240), "pointer"),
-            R("Прискорення", "Адаптивне — точніше на повільних рухах", self.seg("tp_accel", [("adaptive", "Адаптивне"), ("flat", "Рівне")]), "pointer"),
+            R("Без прискорення курсора", "Курсор завжди рухається з однією швидкістю, скільки б ви не прискорювали палець", self.sw("tp_noaccel"), "pointer"),
             R("Клік дотиком", "Торкання одним пальцем = клік", self.sw("tp_tap", True), "tap"),
             R("Додатковий клік", "Правий клік", self.seg("tp_secondary", [("fingers", "Двома пальцями"), ("corner", "У правому куті")]), "secondary"),
             R("Перетягування дотиком", "Подвійний дотик і рух — перетягнути вікно чи файл", self.sw("tp_tap_drag", True), "drag"),

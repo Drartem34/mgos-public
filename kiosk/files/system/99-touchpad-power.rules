@@ -3,4 +3,3 @@
 ACTION=="add|bind", SUBSYSTEM=="i2c", DRIVER=="i2c_hid_acpi", ATTR{power/control}="on"
 ACTION=="add|bind", SUBSYSTEM=="platform", DRIVER=="i2c_designware", ATTR{power/control}="on"
 ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x8086", ATTR{class}=="0x0c8000", ATTR{power/control}="on"
-ACTION=="add", SUBSYSTEM=="i2c", ATTRS{name}=="ELAN0B00:00*", ATTR{power/control}="on"

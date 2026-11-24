@@ -12,6 +12,7 @@
 // Режим «Налаштування → Трекпад → Три пальці вниз» (tp_swipe_down): minimize | runner | off.
 // У режимах runner/off libinput-пристрій закритий — док не прокидається від тачпада взагалі.
 
+#include <algorithm>
 #include <libinput.h>
 #include <set>
 #include <libudev.h>
@@ -461,7 +462,12 @@ static std::vector<std::string> li_scan_nodes() {
 // додає нові тачпади до вже відкритого контексту (хот-плаг); повертає, скільки додано
 static int li_add_new() {
     int added = 0;
-    for (auto& n : li_scan_nodes()) {
+    auto nodes = li_scan_nodes();
+    // Bluetooth-тачпад після перепідключення отримує той самий /dev/input/eventN: старий запис слід забути,
+    // інакше новий пристрій не додається і жести на ньому не працюють
+    for (auto it = li_added.begin(); it != li_added.end();)
+        it = std::find(nodes.begin(), nodes.end(), *it) == nodes.end() ? li_added.erase(it) : std::next(it);
+    for (auto& n : nodes) {
         if (li_added.count(n)) continue;
         if (libinput_path_add_device(li, n.c_str())) { li_added.insert(n); added++; }
     }
