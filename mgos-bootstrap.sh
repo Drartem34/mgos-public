@@ -23,6 +23,7 @@ die()  { printf '\n\033[1;31m✗ %s\033[0m\n' "$*"; exit 1; }
 command -v pacman >/dev/null || die "Це не Arch Linux (немає pacman)."
 
 say "Пакети для графічного інсталятора"
+sudo -v || die "Потрібні права sudo: запусти в терміналі й введи пароль (bash mgos-bootstrap.sh)."
 sudo pacman -Sy --needed --noconfirm \
     git python \
     hyprland xdg-desktop-portal-hyprland polkit mesa \
