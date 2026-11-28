@@ -1,0 +1,22 @@
+# Класи файлів знімка для gui/steps.sh → step_configs. Рядок: КЛАС модуль/glob [база для MERGE]
+#   CODE  — замінюється знімком (за замовчуванням: усе, чого тут немає)
+#   STATE — стан цієї машини: лишається файл користувача, зі знімка не береться ніколи
+#   SEED  — зі знімка лише якщо в користувача файлу ще немає
+#   MERGE — JSON: база * файл користувача (ключі користувача лишаються, нові з бази додаються)
+
+# Hyprland: машинні налаштування (екрани, масштаб, тачпад, розмиття з Налаштувань)
+STATE hypr/mgos-auto.conf
+STATE hypr/touchpad.conf
+STATE hypr/display.conf
+STATE hypr/monitors.conf
+SEED  hypr/*-user.conf
+
+# mgOS: налаштування й персональні дані
+MERGE megumin-os/settings.json megumin-os/defaults.json
+SEED  megumin-os/dashboard.json
+STATE megumin-os/dock_stash.json
+STATE megumin-os/dock_*.json
+SEED  megumin-os/sddm-pixel
+
+# токени хмар — лише свої
+STATE rclone/rclone.conf

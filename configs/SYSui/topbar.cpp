@@ -1380,6 +1380,7 @@ static void activate(GtkApplication* app, gpointer user_data) {
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(g_css_provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 
     topbar_window = gtk_application_window_new(app);
+    haptic::attach(topbar_window);
     gtk_layer_init_for_window(GTK_WINDOW(topbar_window));
     gtk_layer_set_namespace(GTK_WINDOW(topbar_window), "topbar");
     gtk_layer_set_layer(GTK_WINDOW(topbar_window), GTK_LAYER_SHELL_LAYER_TOP);

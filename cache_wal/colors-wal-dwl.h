@@ -4,7 +4,7 @@
                         ((hex >> 8) & 0xFF) / 255.0f, \
                         (hex & 0xFF) / 255.0f }
 
-static const float rootcolor[]             = COLOR(0x1f2024ff);
-static const float bordercolor[]           = COLOR(0x9C9CA6ff);
-static const float focuscolor[]            = COLOR(0x679CDEff);
-static const float urgentcolor[]           = COLOR(0x8A98B0ff);
+static const float rootcolor[]             = COLOR(0x242563ff);
+static const float bordercolor[]           = COLOR(0xA49AEAff);
+static const float focuscolor[]            = COLOR(0xC57AC4ff);
+static const float urgentcolor[]           = COLOR(0xCF8BD3ff);

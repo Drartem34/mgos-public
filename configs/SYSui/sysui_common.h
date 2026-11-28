@@ -885,3 +885,5 @@ inline void follow_osd_position(GtkWidget* win, bool notify) {
 }
 
 }  // namespace sysui
+
+#include "haptic.h"   // haptic::attach(window) — відгук трекпада на дії в UI (за "ui":true у haptic.json)

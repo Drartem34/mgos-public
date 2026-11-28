@@ -1,0 +1,10 @@
+[Unit]
+Description=mgOS: вібрація Magic Trackpad при русі пальця (не для kiosk)
+ConditionPathExists=%h/.config/mgos/haptic.json
+
+[Service]
+ExecStart=%h/.local/bin/mgos-haptic-touch
+Restart=no
+
+[Install]
+WantedBy=default.target

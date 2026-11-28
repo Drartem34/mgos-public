@@ -1,0 +1,353 @@
+#!/usr/bin/env python3
+"""mgos-haptic-touch — вібрація Magic Trackpad при русі пальця («як Steam Deck») + інерція курсора.
+Працює лише коли в ~/.config/mgos/haptic.json: "touch": true; сам завершується, коли чекбокс знято.
+"inertia": true (лише разом з touch) — після відриву пальця курсор котиться із затуханням + слабкі тики.
+У kiosk-сесії не стартує. Читає evdev (ABS_MT_POSITION), шле слабкий імпульс кожні STEP одиниць шляху."""
+import json, os, subprocess, sys, time, select
+
+CFG = os.path.expanduser("~/.config/mgos/haptic.json")
+STEP = 180            # одиниць осі між імпульсами (менше = частіше)
+STEP_SCROLL = 300     # крок шляху для скролу двома пальцями (рідше за курсор)
+MIN_GAP = 0.04       # тротлінг, с (<= 25 імп/с: менше пакетів по Bluetooth = без лагів курсора)
+MAX_PER_SEC = 25      # ліміт частоти (актуатор + канал Bluetooth)
+# дуже слабкий «тик»: SS CC DD (слабше за пресет weak = 15 04 04); множник сили з haptic.json
+TICK = (0x13, 2, 2)
+
+# --- інерція ---
+DECAY = 0.9           # множник швидкості за кадр на 120 Гц
+FPS = 120.0
+V_MIN = 40.0          # px/с — нижче зупиняємось
+V_START = 250.0       # px/с — мінімум на відриві для запуску
+WINDOW = 0.07         # с — вікно вимірювання швидкості перед відривом
+PX_PER_MM = 12.0      # пікселів курсора на мм руху пальця (множник inertia_gain у haptic.json)
+TICK_PER_PX = 1 / 45.0  # імпульсів на піксель шляху інерції
+
+# --- скрол двома пальцями ---
+TP_CONF = os.path.expanduser("~/.config/hypr/touchpad-user.conf")
+SC_WIN = 0.12         # с — вікно вимірювання швидкості скролу
+SC_V_LO, SC_V_HI = 15.0, 150.0   # мм/с на палець: 1.0x .. 1.6x сили тика
+SC_COAST_V = 50.0     # мм/с на палець на відриві — мінімум для «інерції скролу»
+SC_COAST_MAX = 0.6    # с — максимум інерційних тиків
+SC_COAST_MIN_RATE = 4.0  # тиків/с — нижче зупиняємось
+
+_CFG_C = [0.0, {}]
+def cfg():
+    """Конфіг з кешем 0.5 с: раніше файл читався на кожен тик (зайвий диск/CPU)."""
+    now = time.monotonic()
+    if now - _CFG_C[0] > 0.5:
+        _CFG_C[0] = now
+        try:
+            with open(CFG) as f:
+                _CFG_C[1] = json.load(f)
+        except Exception:
+            _CFG_C[1] = {}
+    return _CFG_C[1]
+
+def get_when(c):
+    """Коли вібрувати: підмножина {"move","scroll","any"}; за замовчуванням — рух курсора."""
+    w = c.get("when", ["move"])
+    if isinstance(w, str): w = [w]
+    if not isinstance(w, list): w = ["move"]
+    return set(x for x in w if x in ("move", "scroll", "any"))
+
+def kiosk():
+    s = (os.environ.get("XDG_SESSION_DESKTOP", "") + os.environ.get("XDG_CURRENT_DESKTOP", "") +
+         os.environ.get("DESKTOP_SESSION", "")).lower()
+    return "kiosk" in s
+
+def find_dev():
+    import evdev
+    for p in evdev.list_devices():
+        d = evdev.InputDevice(p)
+        if d.info.vendor == 0x4C and d.info.product == 0x265 and "touchpad" in d.name.lower() + "touchpad":
+            caps = d.capabilities().get(evdev.ecodes.EV_ABS, [])
+            if any(c[0] == evdev.ecodes.ABS_MT_POSITION_X for c in caps if isinstance(c, tuple)):
+                return d
+    return None
+
+def find_hidraw():
+    import glob
+    for d in sorted(glob.glob("/sys/class/hidraw/hidraw*")):
+        try:
+            if "HID_ID=0005:0000004C:00000265" in open(d + "/device/uevent").read().upper():
+                return "/dev/" + os.path.basename(d)
+        except OSError:
+            pass
+    return None
+
+def pkt(ss, cc, dd):
+    return bytes([0xF2, 0x53, 0x01, ss, 0x78, 0x02, cc, 0x24, 0x30, 0x06, 0x01, dd, 0x18, 0x48, 0x12])
+
+HFD = None
+def read_scroll_factor():
+    """scroll_factor з блоку touchpad у touchpad-user.conf (слайдер tp_scroll); 1.0 якщо немає."""
+    try:
+        depth = 0; in_tp = False
+        with open(TP_CONF) as f:
+            for line in f:
+                s = line.split("#", 1)[0].strip()
+                if not s: continue
+                if s.endswith("{"):
+                    depth += 1
+                    if s.split()[0] == "touchpad": in_tp = depth
+                    continue
+                if s == "}":
+                    if in_tp == depth: in_tp = False
+                    depth -= 1
+                    continue
+                if in_tp and s.replace(" ", "").startswith("scroll_factor="):
+                    return max(0.2, min(2.0, float(s.split("=", 1)[1])))
+    except Exception:
+        pass
+    return 1.0
+
+def tick(scale=1.0):
+    """Імпульс усередині процесу (без запуску підпроцесу), hidraw відкривається один раз.
+    scale 1.0..1.6 — трохи сильніше при швидкому скролі."""
+    global HFD
+    try:
+        if HFD is None:
+            path = find_hidraw()
+            if not path: return
+            HFD = os.open(path, os.O_WRONLY)
+        mult = max(0, min(100, int(cfg().get("strength", 50)))) / 50.0
+        if mult <= 0: return
+        mult *= max(1.0, min(1.6, scale))
+        ss, cc, dd = TICK
+        os.write(HFD, pkt(ss, min(0x20, max(1, round(cc * mult))), min(0x40, max(1, round(dd * mult)))))
+        os.write(HFD, pkt(0x14, 0, 0))
+    except OSError:
+        try:
+            if HFD is not None: os.close(HFD)
+        except OSError: pass
+        HFD = None
+
+def click_pulse(down):
+    """Haptic-клік: натиск = strong × (1+s/60), відпуск = легкий тик. Запис у hidraw одразу."""
+    global HFD
+    try:
+        if HFD is None:
+            path = find_hidraw()
+            if not path: return
+            HFD = os.open(path, os.O_WRONLY)
+        s = max(0, min(100, int(cfg().get("strength", 50))))
+        if s <= 0: return
+        mult = 1 + s / 60.0
+        if down:
+            os.write(HFD, pkt(0x1E, min(0x20, max(1, round(8 * mult))), min(0x40, max(1, round(8 * mult)))))
+            time.sleep(0.03)
+            os.write(HFD, pkt(0x14, 0, 0))
+        else:
+            ss, cc, dd = TICK
+            os.write(HFD, pkt(ss, min(0x20, max(1, round(cc * mult))), min(0x40, max(1, round(dd * mult)))))
+            time.sleep(0.03)
+            os.write(HFD, pkt(0x14, 0, 0))
+    except OSError:
+        try:
+            if HFD is not None: os.close(HFD)
+        except OSError: pass
+        HFD = None
+
+DEBUG = "--debug" in sys.argv
+UI = None
+UI_FAIL = False
+def mouse_out(dx, dy, st):
+    """Рух курсора: віртуальна миша uinput (REL_X/REL_Y); без доступу — hyprctl dispatch movecursor."""
+    global UI, UI_FAIL
+    from evdev import ecodes as E
+    if UI is None and not UI_FAIL:
+        try:
+            from evdev import UInput
+            UI = UInput({E.EV_REL: [E.REL_X, E.REL_Y], E.EV_KEY: [E.BTN_LEFT]}, name="mgos-inertia")
+        except Exception:
+            UI_FAIL = True
+    if UI is not None:
+        if dx: UI.write(E.EV_REL, E.REL_X, dx)
+        if dy: UI.write(E.EV_REL, E.REL_Y, dy)
+        UI.syn()
+        return
+    try:
+        if "pos" not in st:
+            o = subprocess.run(["hyprctl", "cursorpos"], capture_output=True, text=True, timeout=1).stdout
+            x, y = o.split(",")
+            st["pos"] = [float(x), float(y)]
+        st["pos"][0] += dx; st["pos"][1] += dy
+        subprocess.run(["hyprctl", "dispatch", "movecursor", str(int(st["pos"][0])), str(int(st["pos"][1]))],
+                       capture_output=True, timeout=1)
+    except Exception:
+        pass
+
+def close_ui():
+    global UI
+    try:
+        if UI is not None: UI.close()
+    except Exception: pass
+    UI = None
+
+def main():
+    if kiosk() or not (cfg().get("touch") or cfg().get("click")):
+        return 0
+    touch_on = bool(cfg().get("touch")); click_on = bool(cfg().get("click"))
+    from collections import deque
+    from evdev import ecodes as E
+    dev = None
+    last = {}          # slot -> (x, y)
+    acc = 0.0
+    acc_s = 0.0
+    when = get_when(cfg())
+    slot = 0
+    t_last = 0.0
+    stamps = []
+    last_check = time.monotonic()
+    use_inertia = touch_on and bool(cfg().get("inertia"))
+    samples = deque()  # (t, dx_px, dy_px) руху єдиного пальця
+    max_fingers = 0
+    kin = None         # стан інерції
+    k_px = PX_PER_MM / 90.0
+
+    sc_samples = deque()   # (t, units) шлях двох пальців
+    sc_factor = read_scroll_factor()
+    sc_coast = bool(cfg().get("scroll_coast", True))
+    res_mm = 90.0          # одиниць осі на мм
+    ks = None              # інерція скролу
+    last_sf = time.monotonic()
+
+    def tick_limited(scale=1.0):
+        nonlocal t_last, stamps
+        now = time.monotonic()
+        stamps = [t for t in stamps if now - t < 1.0]
+        if now - t_last >= MIN_GAP and len(stamps) < MAX_PER_SEC:
+            t_last = now; stamps.append(now)
+            tick(scale)
+
+    def sc_speed(now):
+        """Швидкість скролу, мм/с на палець (сума шляху двох пальців / 2)."""
+        while sc_samples and now - sc_samples[0][0] > SC_WIN: sc_samples.popleft()
+        return sum(s[1] for s in sc_samples) / SC_WIN / res_mm / 2.0
+
+    def sc_scale(v):
+        return 1.0 + 0.6 * max(0.0, min(1.0, (v - SC_V_LO) / (SC_V_HI - SC_V_LO)))
+
+    while True:
+        if dev is None:
+            if not (cfg().get("touch") or cfg().get("click")): return 0
+            try: dev = find_dev()
+            except Exception: dev = None
+            if dev is None:
+                time.sleep(3); continue
+            try:
+                res = dev.absinfo(E.ABS_MT_POSITION_X).resolution or 90
+                k_px = PX_PER_MM / res * float(cfg().get("inertia_gain", 1.0))
+                res_mm = float(res)
+            except Exception:
+                pass
+        r, _, _ = select.select([dev.fd], [], [], (1.0 / FPS) if (kin or ks) else 1.0)
+        now = time.monotonic()
+        if now - last_check > 1.0:
+            last_check = now
+            c = cfg()
+            touch_on = bool(c.get("touch")); click_on = bool(c.get("click"))
+            if not (touch_on or click_on):
+                close_ui(); return 0
+            use_inertia = touch_on and bool(c.get("inertia"))
+            when = get_when(c)
+            sc_factor = read_scroll_factor()
+            sc_coast = bool(c.get("scroll_coast", True))
+            if not use_inertia:
+                kin = None; close_ui()
+            if not (use_inertia and sc_coast and "scroll" in when):
+                ks = None
+        if ks and not r:
+            dt = min(0.05, now - ks["t"]); ks["t"] = now
+            ks["rate"] *= DECAY ** (dt * FPS)
+            if ks["rate"] < SC_COAST_MIN_RATE or now - ks["t0"] > SC_COAST_MAX:
+                ks = None; continue
+            ks["phase"] += ks["rate"] * dt
+            if ks["phase"] >= 1.0:
+                ks["phase"] = 0.0
+                tick_limited(1.0 + (ks["scale"] - 1.0) * min(1.0, ks["rate"] / ks["rate0"]))
+            continue
+        if kin and not r:
+            dt = min(0.05, now - kin["t"]); kin["t"] = now
+            f = DECAY ** (dt * FPS)
+            kin["vx"] *= f; kin["vy"] *= f
+            if (kin["vx"] ** 2 + kin["vy"] ** 2) ** 0.5 < V_MIN:
+                kin = None; continue
+            kin["rx"] += kin["vx"] * dt; kin["ry"] += kin["vy"] * dt
+            ix, iy = int(kin["rx"]), int(kin["ry"])
+            kin["rx"] -= ix; kin["ry"] -= iy
+            if ix or iy:
+                mouse_out(ix, iy, kin["st"])
+                kin["phase"] += (abs(ix) + abs(iy)) * TICK_PER_PX
+                if kin["phase"] >= 1.0:
+                    kin["phase"] = 0.0
+                    tick_limited()
+            continue
+        if not r: continue
+        try:
+            events = list(dev.read())
+        except OSError:
+            dev = None; last = {}; kin = None; continue
+        for ev in events:
+            if ev.type == E.EV_KEY and ev.code == E.BTN_LEFT and ev.value in (0, 1):
+                if click_on:
+                    click_pulse(ev.value == 1)
+                    if DEBUG: print("click", "down" if ev.value else "up", file=sys.stderr, flush=True)
+                continue
+            if ev.type != E.EV_ABS or not touch_on: continue
+            if ev.code == E.ABS_MT_SLOT:
+                slot = ev.value
+            elif ev.code == E.ABS_MT_TRACKING_ID and ev.value == -1:
+                last.pop(slot, None)
+                if not last:
+                    if use_inertia and sc_coast and "scroll" in when and max_fingers == 2 and sc_samples:
+                        t = time.monotonic()
+                        if t - sc_samples[-1][0] < 0.08:
+                            v = sc_speed(t)
+                            if v >= SC_COAST_V:
+                                step_s = STEP_SCROLL / sc_factor
+                                rate = min(MAX_PER_SEC, v * res_mm * 2.0 / step_s)
+                                ks = dict(rate=rate, rate0=rate, phase=0.0, t=t, t0=t, scale=sc_scale(v))
+                    sc_samples.clear()
+                    if use_inertia and max_fingers == 1:
+                        t = time.monotonic()
+                        while samples and t - samples[0][0] > WINDOW: samples.popleft()
+                        if samples and t - samples[-1][0] < 0.05:
+                            span = max(0.02, samples[-1][0] - samples[0][0])
+                            vx = sum(s[1] for s in samples) / span
+                            vy = sum(s[2] for s in samples) / span
+                            if (vx * vx + vy * vy) ** 0.5 >= V_START:
+                                kin = dict(vx=vx, vy=vy, rx=0.0, ry=0.0, phase=0.0, t=t, st={})
+                    samples.clear(); max_fingers = 0
+            elif ev.code == E.ABS_MT_TRACKING_ID:
+                kin = None            # новий дотик миттєво зупиняє інерцію
+                ks = None
+            elif ev.code in (E.ABS_MT_POSITION_X, E.ABS_MT_POSITION_Y):
+                kin = None
+                ks = None
+                p = last.get(slot)
+                # None = вісь ще не прийшла: інакше перший кадр дає стрибок від 0 (курсор «летить» вгору)
+                if ev.code == E.ABS_MT_POSITION_X:
+                    nxt = (ev.value, p[1] if p else None)
+                else:
+                    nxt = (p[0] if p else None, ev.value)
+                if p and None not in p and None not in nxt:
+                    d = abs(nxt[0] - p[0]) + abs(nxt[1] - p[1])
+                    if "any" in when or (len(last) == 1 and "move" in when):
+                        acc += d
+                    elif len(last) == 2 and "scroll" in when:   # скрол = рівно 2 пальці; 3+ — жести, не вібрують
+                        acc_s += d
+                        sc_samples.append((time.monotonic(), d))
+                    if use_inertia and len(last) == 1:
+                        samples.append((time.monotonic(), (nxt[0] - p[0]) * k_px, (nxt[1] - p[1]) * k_px))
+                last[slot] = nxt
+                max_fingers = max(max_fingers, len(last))
+        if acc >= STEP:
+            acc = 0.0
+            tick_limited()
+        if acc_s >= STEP_SCROLL / sc_factor:
+            acc_s = 0.0
+            tick_limited(sc_scale(sc_speed(time.monotonic())))
+
+if __name__ == "__main__":
+    sys.exit(main())

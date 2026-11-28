@@ -926,6 +926,7 @@ static void activate(GtkApplication* app, gpointer) {
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(g_css_provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 
     runner_window = gtk_application_window_new(app);
+    haptic::attach_panel(runner_window);
     sysui::exclusive_overlay(runner_window, "runner");   // показ → інші оверлеї згортаються
     sysui::release_on_hide(runner_window);
     sysui::pop_on_show(runner_window, nullptr, "sysui-pop-down");

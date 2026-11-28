@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""mgos-haptic <weak|medium|strong|double|trill> — разовий імпульс Magic Trackpad 2 (BT, hidraw).
+Протокол: F2 53 01 SS 78 02 CC 24 30 06 01 DD 18 48 12. Сила — ~/.config/mgos/haptic.json (strength 0..100, 0 = вимк.).
+Безпечні межі: CC<=0x20, DD<=0x40. Пристрій шукається за VID 004C / PID 0265 через /sys/class/hidraw."""
+import glob, json, os, sys, time
+
+CFG = os.path.expanduser("~/.config/mgos/haptic.json")
+CC_MAX, DD_MAX = 0x20, 0x40
+
+def load():
+    try:
+        with open(CFG) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def find_hidraw():
+    for d in sorted(glob.glob("/sys/class/hidraw/hidraw*")):
+        try:
+            u = open(d + "/device/uevent").read().upper()
+        except OSError:
+            continue
+        if "HID_ID=0005:0000004C:00000265" in u:
+            return "/dev/" + os.path.basename(d)
+    return None
+
+def pkt(ss, cc, dd):
+    return bytes([0xF2, 0x53, 0x01, ss, 0x78, 0x02, cc, 0x24, 0x30, 0x06, 0x01, dd, 0x18, 0x48, 0x12])
+
+# базові пресети (натиск): SS CC DD; множник сили масштабує CC/DD
+PRESETS = {"weak": (0x15, 4, 4), "medium": (0x17, 6, 6), "strong": (0x1E, 8, 8)}
+
+def press(fd, level, mult):
+    ss, cc, dd = PRESETS[level]
+    cc = min(CC_MAX, round(cc * mult)); dd = min(DD_MAX, round(dd * mult))
+    os.write(fd, pkt(ss, cc, dd))
+
+def release(fd):
+    os.write(fd, pkt(0x14, 0, 0))
+
+def mult_from(cfg):
+    s = max(0, min(100, int(cfg.get("strength", 50))))
+    return s / 50.0   # 50% = базові пресети, 100% = x2 (з обмеженням меж)
+
+def pulse(fd, level, mult):
+    press(fd, level, mult); time.sleep(0.03); release(fd)
+
+def feature(fd, ss, cc, dd, rid):
+    """Feature-звіт F2 <rid> (22 натиск / 23 відпуск): постійна сила апаратного кліку (HIDIOCSFEATURE)."""
+    import fcntl
+    b = bytearray(pkt(ss, cc, dd)); b[1] = rid; b[14] = 0x13
+    fcntl.ioctl(fd, (3 << 30) | (len(b) << 16) | (ord("H") << 8) | 0x06, bytes(b))
+
+def apply_click(on):
+    """Разово записує силу кліку в прошивку (без демона). on=False — повернути середній пресет macOS."""
+    cfg = load()
+    # клік «як на macOS»: база = strong (SS 0x1E, CC/DD 8), множник 1+s/60 (11% ≈ x1.2, 100% ≈ x2.7) — завжди помітно сильніше за заводський medium
+    s = max(0, min(100, int(cfg.get("strength", 50))))
+    mult = (0 if s <= 0 else 1 + s / 60.0) if on else 1.0
+    path = find_hidraw()
+    if not path:
+        print("Magic Trackpad не знайдено", file=sys.stderr); return 1
+    try:
+        fd = os.open(path, os.O_RDWR)
+    except OSError as e:
+        print(f"{path}: {e}", file=sys.stderr); return 1
+    try:
+        ss, cc, dd = PRESETS["strong" if on else "medium"]
+        if mult <= 0:
+            ss, cc, dd = 0x10, 0, 0           # «тихо»
+            feature(fd, ss, 0, 0, 0x22); feature(fd, 0x10, 0, 0, 0x23)
+        else:
+            cc = min(CC_MAX, max(1, round(cc * mult))); dd = min(DD_MAX, max(1, round(dd * mult)))
+            feature(fd, ss, cc, dd, 0x22); feature(fd, 0x14, 0, 0, 0x23)
+    except OSError as e:
+        print(f"feature: {e}", file=sys.stderr); return 1
+    finally:
+        os.close(fd)
+    return 0
+
+def main():
+    p = sys.argv[1] if len(sys.argv) > 1 else "medium"
+    if p in ("click-on", "click-off"):
+        return apply_click(p == "click-on")
+    if p not in ("weak", "medium", "strong", "double", "trill"):
+        print(__doc__); return 2
+    cfg = load()
+    mult = mult_from(cfg)
+    if mult <= 0:
+        return 0
+    path = find_hidraw()
+    if not path:
+        print("Magic Trackpad (BT 004C:0265) не знайдено", file=sys.stderr); return 1
+    try:
+        fd = os.open(path, os.O_WRONLY)
+    except OSError as e:
+        print(f"{path}: {e} (потрібне udev-правило 99-mgos-magictrackpad-haptic.rules)", file=sys.stderr); return 1
+    try:
+        if p == "double":
+            pulse(fd, "medium", mult); time.sleep(0.09); pulse(fd, "medium", mult)
+        elif p == "trill":
+            for _ in range(4):
+                pulse(fd, "weak", mult); time.sleep(0.07)
+        else:
+            pulse(fd, p, mult)
+    finally:
+        os.close(fd)
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())

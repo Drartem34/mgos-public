@@ -1,0 +1,7 @@
+[Unit]
+Description=mgOS: Runner по силі натиску трьома пальцями (не для kiosk)
+ConditionPathExists=%h/.config/mgos/tap3.json
+
+[Service]
+ExecStart=%h/.local/bin/mgos-tap3-force
+Restart=no

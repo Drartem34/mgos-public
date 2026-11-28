@@ -48,7 +48,7 @@ case "$ext" in
         opts="$opts input-ipc-server=/tmp/mpv-socket loop-file=inf hwdec=auto-safe no-audio panscan=1.0 cache=no demuxer-max-bytes=512KiB demuxer-max-back-bytes=128KiB"
         # mgos-power у режимі батареї тримає відео на паузі — стартуємо одразу на паузі
         [ -e "${XDG_RUNTIME_DIR:-/run/user/$UID}/mgos-power/battery" ] && opts="$opts pause"
-        nice -n 19 mpvpaper -o "$opts" '*' "$p" >/dev/null 2>&1 &
+        nice -n 19 mpvpaper -p -o "$opts" '*' "$p" >/dev/null 2>&1 &
         MPV=$!
         # чекаємо, поки mpv створить вихід і покаже перший кадр (до 15 с)
         for _ in $(seq 150); do

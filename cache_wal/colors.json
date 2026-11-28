@@ -1,29 +1,29 @@
 {
-    "checksum": "0edd8f7e38036a21ecb4d8459932bd7e",
+    "checksum": "82c3ea7f9a4ba319adf00777015f97c2",
     "wallpaper": "/home/doki/.cache/ignis/sddm_frame.png",
     "alpha": "100",
 
     "special": {
-        "background": "#1f2024",
-        "foreground": "#c7c7c8",
-        "cursor": "#c7c7c8"
+        "background": "#242563",
+        "foreground": "#c8c8d8",
+        "cursor": "#c8c8d8"
     },
     "colors": {
-        "color0": "#1f2024",
-        "color1": "#679CDE",
-        "color2": "#9C9CA6",
-        "color3": "#8A98B0",
-        "color4": "#94A3BA",
-        "color5": "#99AAC6",
-        "color6": "#AAB6CE",
-        "color7": "#c7c7c8",
-        "color8": "#636a79",
-        "color9": "#679CDE",
-        "color10": "#9C9CA6",
-        "color11": "#8A98B0",
-        "color12": "#94A3BA",
-        "color13": "#99AAC6",
-        "color14": "#AAB6CE",
-        "color15": "#c7c7c8"
+        "color0": "#242563",
+        "color1": "#C57AC4",
+        "color2": "#A49AEA",
+        "color3": "#CF8BD3",
+        "color4": "#DCA5E8",
+        "color5": "#ABC5EA",
+        "color6": "#D3D2FD",
+        "color7": "#c8c8d8",
+        "color8": "#787890",
+        "color9": "#C57AC4",
+        "color10": "#A49AEA",
+        "color11": "#CF8BD3",
+        "color12": "#DCA5E8",
+        "color13": "#ABC5EA",
+        "color14": "#D3D2FD",
+        "color15": "#c8c8d8"
     }
 }

@@ -1,0 +1,7 @@
+#!/bin/bash
+# Область екрана → буфер обміну. Без hyprpicker (він перехоплював курсор разом зі slurp і вішав сесію).
+exec 9>"${XDG_RUNTIME_DIR:-/tmp}/mgos-screenshot.lock"
+if ! flock -n 9; then pkill -x slurp; exit 0; fi   # повторне натискання — скасувати
+geom=$(timeout 60 slurp -d) || exit 0
+[ -n "$geom" ] || exit 0
+grim -g "$geom" - | wl-copy -t image/png && ~/.local/bin/mgos-sound screen-capture

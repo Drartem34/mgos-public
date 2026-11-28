@@ -1,0 +1,16 @@
+#!/bin/bash
+# mgOS: доступ до вібрації Magic Trackpad (hidraw 004C:0265) і до /dev/uinput (інерція). Запуск від root (pkexec/sudo).
+set -e
+[ "$(id -u)" = 0 ] || exec pkexec "$0" "$@"
+cat > /etc/udev/rules.d/99-mgos-magictrackpad-haptic.rules <<'R'
+# mgOS: доступ до hidraw Magic Trackpad 2 (BT 004C:0265) для вібрації (mgos-haptic)
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", SUBSYSTEMS=="hid", KERNELS=="0005:004C:0265.*", TAG+="uaccess", MODE="0660", GROUP="input"
+R
+cat > /etc/udev/rules.d/99-mgos-uinput.rules <<'R'
+# mgOS: доступ до /dev/uinput для інерції курсора (mgos-haptic-touch, віртуальна миша REL_X/REL_Y)
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", MODE="0660", GROUP="input", OPTIONS+="static_node=uinput"
+R
+udevadm control --reload
+udevadm trigger -s hidraw
+udevadm trigger -s misc
+echo "Готово: правила доступу до вібрації встановлено"

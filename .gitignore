@@ -23,3 +23,7 @@ __pycache__/
 /arch-installer/mgos-setup.new
 kiosk/files.new/
 kiosk/files.old/
+
+# pywal-кеш: у репозиторії лишаємо лише палітри colors*; schemes/, wal, sequences, last_used_theme — генеруються
+/cache_wal/*
+!/cache_wal/colors*

@@ -295,6 +295,7 @@ static void begin_minimize() {
     if (sw_ < 20 || sh < 20) { st = IGNORED; return; }
     win_addr = addr; win_cls = to_lower(aw.value("class", ""));
     st = ACTIVE; released = false; committed = false; shown = false; waiting_done = false; target_p = 0;
+    haptic::pattern("minimize");
     g_genie_force_dock = true;
     gen++;
     osd_spawn();
@@ -551,6 +552,7 @@ static void grow_begin(const std::string& addr, const std::string& c) {
     win_addr = addr; win_cls = c;
     set_real_opacity(false);   // одразу, до першого кадру «popin»
     st = GROW; waiting_done = true; released = true; committed = false; shown = false; target_p = 1;
+    haptic::pattern("restore");
     g_genie_force_dock = true;   // іконка має бути видно — з неї росте вікно
     gen++;
     osd_spawn();

@@ -1573,6 +1573,7 @@ static void bt_refresh() {
     sh_async("echo \"POWER $(timeout 3 bluetoothctl show | grep -c 'Powered: yes')\";"
              "timeout 3 bluetoothctl devices Connected | sed 's/^/CON:/';"
              "timeout 3 bluetoothctl devices Paired | sed 's/^/PAIR:/';"
+             "timeout 3 bluetoothctl devices Trusted | sed 's/^/TRUST:/';"
              "timeout 3 bluetoothctl devices | sed 's/^/ALL:/'",
         [](const std::string& out, bool) {
             bp.busy = false;
@@ -1580,7 +1581,7 @@ static void bt_refresh() {
             std::istringstream ss(out);
             std::string line;
             bool power = false;
-            std::set<std::string> con, pair;
+            std::set<std::string> con, pair, trust;
             std::vector<std::pair<std::string, std::string>> all;
             while (std::getline(ss, line)) {
                 if (line.rfind("POWER ", 0) == 0) { power = parse_num(line.substr(6)) > 0; continue; }
@@ -1591,6 +1592,7 @@ static void bt_refresh() {
                 std::string name = rest.size() > 25 ? rest.substr(25) : mac;
                 if (tag == "CON") con.insert(mac);
                 else if (tag == "PAIR") pair.insert(mac);
+                else if (tag == "TRUST") trust.insert(mac);
                 else if (tag == "ALL") all.push_back({mac, name});
             }
             bp.block_sw = true;
@@ -1618,6 +1620,22 @@ static void bt_refresh() {
                 gtk_box_append(GTK_BOX(t), nl);
                 gtk_box_append(GTK_BOX(t), mklabel(c ? "Підключено" : p ? "Сполучено" : "Доступний", "sub"));
                 gtk_box_append(GTK_BOX(r), t);
+                if (p || c) {
+                    GtkWidget* ck = gtk_check_button_new_with_label("Автопідключення");
+                    gtk_widget_set_valign(ck, GTK_ALIGN_CENTER);
+                    gtk_widget_set_tooltip_text(ck, "Довіряти пристрою й підключатися автоматично (BlueZ Trusted)");
+                    gtk_check_button_set_active(GTK_CHECK_BUTTON(ck), trust.count(mac) > 0);
+                    g_object_set_data_full(G_OBJECT(ck), "mac", g_strdup(mac.c_str()), g_free);
+                    g_signal_connect(ck, "toggled", G_CALLBACK(+[](GtkCheckButton* cb, gpointer) {
+                        std::string m = (const char*)g_object_get_data(G_OBJECT(cb), "mac");
+                        bool on = gtk_check_button_get_active(cb);
+                        sh_async("timeout 5 bluetoothctl " + std::string(on ? "trust " : "untrust ") + m,
+                            [on](const std::string&, bool ok) {
+                                show_toast(bp.toast, ok ? (on ? "Автопідключення увімкнено" : "Автопідключення вимкнено") : "Помилка зміни довіри", ok ? "ok" : "err");
+                            });
+                    }), nullptr);
+                    gtk_box_append(GTK_BOX(r), ck);
+                }
                 gtk_button_set_child(GTK_BUTTON(btn), r);
                 g_object_set_data_full(G_OBJECT(btn), "mac", g_strdup(mac.c_str()), g_free);
                 g_object_set_data_full(G_OBJECT(btn), "name", g_strdup(name.c_str()), g_free);
@@ -2342,6 +2360,7 @@ static void setup_socket() {
 // ============================================================================
 static void build_ui(GtkApplication* app) {
     cc.win = gtk_application_window_new(app);
+    haptic::attach_panel(cc.win);
     sysui::release_on_hide(cc.win);
     gtk_layer_init_for_window(GTK_WINDOW(cc.win));
     gtk_layer_set_namespace(GTK_WINDOW(cc.win), "control_center");

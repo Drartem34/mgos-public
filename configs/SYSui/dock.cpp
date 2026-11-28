@@ -2162,6 +2162,7 @@ static void stash_ensure() {
 // Hyprland повідомив, який спеціальний стіл тепер видно → показуємо / ховаємо ярлики
 static void stash_on_special(bool open) {
     g_stash_open = open;
+    haptic::pattern(open ? "panel_open" : "panel_close");
     cards_on_special(open);
 #if !STASH_SHORTCUTS
     return;   // без шару ярликів: лише «док завжди видно, поки простір відкритий»
@@ -2635,6 +2636,7 @@ static void activate(GtkApplication* app, gpointer) {
     );
 
     GtkWidget* window = gtk_application_window_new(app);
+    haptic::attach(window);
     g_window = window;
     gtk_widget_set_name(window, "dock");
 
@@ -2814,6 +2816,40 @@ static void activate(GtkApplication* app, gpointer) {
 
 // ===================== MAIN =====================
 
+// Haptic для drag/resize вікон: Hyprland не шле подій під час перетягування, тому після activewindow>>
+// на ≤1.2 с (поки нічого не змінилось) / доки вікно рухається опитуємо його at/size раз на 80 мс.
+// Не демон: таймер сам зупиняється; працює лише коли haptic ui:true.
+struct WinPoll { int x = 0, y = 0, w = 0, h = 0, idle = 0, polls = 0; bool moved = false; bool have = false; };
+static WinPoll* g_wpoll = nullptr;
+static gboolean win_poll_cb(gpointer) {
+    WinPoll* p = g_wpoll;
+    int x, y, w, h;
+    try {
+        json aw = json::parse(sysui::hypr_request("j/activewindow"));
+        if (!aw.contains("at") || !aw.contains("size") || aw.value("fullscreen", 0) != 0) throw 1;
+        x = aw["at"][0]; y = aw["at"][1]; w = aw["size"][0]; h = aw["size"][1];
+    } catch (...) { delete p; g_wpoll = nullptr; return G_SOURCE_REMOVE; }
+    ++p->polls;
+    if (!p->have) { p->x = x; p->y = y; p->w = w; p->h = h; p->have = true; return G_SOURCE_CONTINUE; }
+    if (x != p->x || y != p->y || w != p->w || h != p->h) {
+        bool resize = (w != p->w || h != p->h);
+        p->x = x; p->y = y; p->w = w; p->h = h; p->idle = 0; p->moved = true;
+        haptic::pattern(resize ? "resize_tick" : "drag_tick");
+    } else {
+        ++p->idle;
+        if ((p->moved && p->idle >= 4) || (!p->moved && p->polls > 15)) {
+            if (p->moved) haptic::pattern("drop");
+            delete p; g_wpoll = nullptr; return G_SOURCE_REMOVE;
+        }
+    }
+    return G_SOURCE_CONTINUE;
+}
+static void win_poll_start() {
+    if (g_wpoll || !haptic::enabled()) return;
+    g_wpoll = new WinPoll();
+    g_timeout_add(80, win_poll_cb, nullptr);
+}
+
 void listen_hyprland_ipc_dock() {
     std::string xdg = getenv("XDG_RUNTIME_DIR") ? getenv("XDG_RUNTIME_DIR") : "";
     std::string sig = getenv("HYPRLAND_INSTANCE_SIGNATURE") ? getenv("HYPRLAND_INSTANCE_SIGNATURE") : "";
@@ -2869,6 +2905,10 @@ void listen_hyprland_ipc_dock() {
                         g_idle_add([](gpointer d) -> gboolean { stash_compress_later(*(std::string*)d); delete (std::string*)d; return G_SOURCE_REMOVE; }, addr);
                     }
                 }
+                if (line.find("workspace>>") == 0)
+                    g_idle_add([](gpointer) -> gboolean { haptic::pattern("workspace"); return G_SOURCE_REMOVE; }, nullptr);
+                if (line.find("activewindow>>") == 0)
+                    g_idle_add([](gpointer) -> gboolean { win_poll_start(); return G_SOURCE_REMOVE; }, nullptr);
                 if (line.find("configreloaded>>") == 0)   // анімації могли змінитись — перечитаємо при наступній появі простору
                     g_idle_add([](gpointer) -> gboolean { g_anims_known = false; return G_SOURCE_REMOVE; }, nullptr);
                 if (line.find("closewindow>>") == 0) {   // закрили вікно з простору → картки зсуваються

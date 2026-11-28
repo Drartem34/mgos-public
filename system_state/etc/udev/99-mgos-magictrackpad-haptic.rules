@@ -1,0 +1,2 @@
+# mgOS: доступ до hidraw Magic Trackpad 2 (BT 004C:0265) для вібрації (mgos-haptic)
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", SUBSYSTEMS=="hid", KERNELS=="0005:004C:0265.*", TAG+="uaccess", MODE="0660", GROUP="input"

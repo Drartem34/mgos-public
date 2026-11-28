@@ -314,6 +314,7 @@ static void activate(GtkApplication* app, gpointer) {
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(g_css_provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 
     osd_window = gtk_application_window_new(app);
+    haptic::attach_panel(osd_window);
     sysui::exclusive_overlay(osd_window, "powermenu");   // показ → інші оверлеї згортаються
     sysui::release_on_hide(osd_window);
     sysui::live_css(".power-btn.btn-accent.selected { background-color: @ACCENT@; border-color: @ACCENT@; }");

@@ -698,6 +698,8 @@ static void activate(GtkApplication* app, gpointer) {
     load_cfg();
     if (!cfg_enabled() && !g_preview) { g_application_quit(G_APPLICATION(app)); return; }
     g_win = gtk_application_window_new(app);
+    haptic::attach(g_win);         // перетягування віджетів: тіки + «клац»
+    haptic::attach_panel(g_win);
     gtk_widget_add_css_class(g_win, g_preview ? "dash-preview" : "dash-win");
     GtkWidget* holder = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     g_object_set_data(G_OBJECT(g_win), "holder", holder);

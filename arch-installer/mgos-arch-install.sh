@@ -161,6 +161,16 @@ s_prepare() {
     fi
     pct 40
     [ "$NTP" = 1 ] && run timedatectl set-ntp true
+    # дзеркала: знімок archive.archlinux.org (повільний/застарілий) → живі дзеркала
+    if grep -qs 'archive\.archlinux\.org' /etc/pacman.d/mirrorlist || ! grep -qs '^Server' /etc/pacman.d/mirrorlist; then
+        say "Дзеркала pacman: замінюю архівний знімок на живі"
+        run cp -f /etc/pacman.d/mirrorlist /etc/pacman.d/mirrorlist.mgos-bak 2>/dev/null
+        if command -v reflector >/dev/null 2>&1 && run reflector --latest 20 --protocol https --sort rate --connection-timeout 5 --download-timeout 5 --save /etc/pacman.d/mirrorlist; then :; else
+            printf '%s\n' 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' \
+                'Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch' \
+                'Server = https://fastly.mirror.pkgbuild.com/$repo/os/$arch' > /etc/pacman.d/mirrorlist
+        fi
+    fi
     # живе середовище могло завантажитися давно — ключі та бази мають бути свіжими
     say "Оновлюю ключі пакетів"
     run retry pacman -Sy --noconfirm --needed archlinux-keyring 2>&1 | pkg_progress
