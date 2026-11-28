@@ -551,6 +551,11 @@ def set_gtk_ini(key, value):
             pass
 
 
+def sync_sddm_path():
+    p = "/usr/local/lib/mgos/sync_sddm.sh"
+    return p if os.access(p, os.X_OK) else str(Path.home() / ".config" / "megumin-os" / "sync_sddm.sh")
+
+
 # Набори іконок/курсорів для завантаження: (назва, опис, команда у терміналі)
 _VL = "git clone --depth 1 https://github.com/vinceliuice/{r}.git /tmp/mgos-{r} && cd /tmp/mgos-{r} && ./install.sh {a}; rm -rf /tmp/mgos-{r}; echo; read -p 'Готово — Enter'"
 ICON_PACKS = [
@@ -598,7 +603,7 @@ TP_DEFAULTS = {
     "tp_drag_lock": False, "tp_dwt": False, "tp_middle": False, "tp_natural": False, "tp_scroll": 80,
     "tp_swipe_invert": False, "tp_swipe_dist": 300, "tp_swipe_new": True, "tp_swipe_forever": True,
     # Три пальці вниз: minimize — вікно в док з анімацією, що йде за пальцями (SYSui/dock_genie.h) | runner | off
-    "tp_swipe_down": "minimize", "tp_min_dist": 300, "genie_squash": True, "genie_grow": True, "genie_speed": 100, "genie_anim": True, "tp_swipe_up": "fullscreen", "tp_tap3": "runner", "dock_stash_cards": True,
+    "tp_swipe_down": "minimize", "tp_min_dist": 300, "genie_squash": True, "genie_grow": True, "genie_speed": 100, "genie_anim": True, "tp_swipe_up": "fullscreen", "tp_tap3": "runner", "tp_tap3_force": 0, "dock_stash_cards": True,
     "kb_delay": 250, "kb_rate": 35,
     # Миша (усі звичайні миші): значення = старий input-блок hyprland.conf (flat, 0.3)
     "ms_speed": 65, "ms_accel": "flat", "ms_natural": False, "ms_scroll": 100, "ms_left": False,
@@ -1021,8 +1026,12 @@ SOUND_EVENTS = [
     ("power-unplug", "Зарядку відключено", ""),
     ("audio-volume-change", "Зміна гучності", "Тихий «тік» клавішами гучності"),
     ("screen-capture", "Знімок екрана", "Shift+Print, Alt+F12, Super+Shift+S"),
-    ("device-added", "Пристрій підключено", "USB, Bluetooth"),
-    ("device-removed", "Пристрій відключено", ""),
+    ("device-added", "Пристрій підключено", "USB"),
+    ("device-removed", "Пристрій відключено", "USB"),
+    ("bt-c2", "BT підключено: Краплі", ""),
+    ("bt-d2", "BT відключено: Краплі", ""),
+    ("bt-c4", "BT підключено: Дерево", ""),
+    ("bt-d4", "BT відключено: Дерево", ""),
     ("complete", "Готово", "Завершене завантаження, копіювання"),
     ("dialog-warning", "Попередження", ""),
     ("dialog-error", "Помилка", ""),
@@ -1084,6 +1093,19 @@ class TouchpadBackend:
     і застосовує зміни наживо через hyprctl --batch — без перезавантаження Hyprland."""
     def __init__(self, settings):
         self.s = settings
+
+    def _tap3_force_apply(self):
+        """Демон mgos-tap3-force живе лише коли Runner по тапу ввімкнено й сила > 0 (у kiosk не запускається)."""
+        import subprocess
+        f = int(self.g("tp_tap3_force") or 0) if self.g("tp_tap3") == "runner" else 0
+        p = Path.home() / ".config/mgos/tap3.json"
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps({"force": f}))
+            subprocess.Popen(["systemctl", "--user", "restart" if f else "stop", "mgos-tap3-force.service"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
 
     def g(self, k):
         return self.s.get(k, TP_DEFAULTS[k])
@@ -1154,7 +1176,7 @@ class TouchpadBackend:
         # «up» у touchpad.conf не визначено — знімати нічого (unset неіснуючого жесту = помилка конфігу)
         if up == "runner":
             s.append(f"gesture = 3, up, dispatcher, exec, echo toggle | socat - UNIX-CLIENT:{sock}")
-        if self.g("tp_tap3") != "runner":
+        if self.g("tp_tap3") != "runner" or int(self.g("tp_tap3_force") or 0) > 0:
             # у touchpad.conf тап трьома пальцями (= середній клік) відкриває Runner — повертаємо звичайний клік
             s += ["# Тап трьома пальцями: середній клік", "unbind = , mouse:274"]
         ct, cs = self.s.get("cursor_theme"), self.s.get("cursor_size")
@@ -1191,6 +1213,22 @@ class TouchpadBackend:
                              "Тепер увімкніть трекпад (перемикач збоку)" if ok else (r.stderr or r.stdout)[-160:])
             except Exception as e:
                 self._notify("Драйвер трекпада", str(e)[:160])
+        threading.Thread(target=run, daemon=True).start()
+
+    def install_haptic_access(self):
+        """Дозволити вібрацію Magic Trackpad: udev-правила hidraw + uinput (потрібен пароль — polkit). Один раз на ПК."""
+        script = Path.home() / ".local/bin/mgos-haptic-access"
+        if not script.exists():
+            self._notify("Вібрація трекпада", "Скрипт mgos-haptic-access не знайдено — оновіть mgOS")
+            return
+        def run():
+            try:
+                r = subprocess.run(["pkexec", str(script)], capture_output=True, text=True, timeout=120)
+                ok = r.returncode == 0
+                self._notify("Доступ до вібрації " + ("дозволено" if ok else "не дозволено"),
+                             "Перепідключіть трекпад, якщо вібрація не з'явилась" if ok else (r.stderr or r.stdout)[-160:])
+            except Exception as e:
+                self._notify("Вібрація трекпада", str(e)[:160])
         threading.Thread(target=run, daemon=True).start()
 
     def setup_gestures(self):
@@ -1308,7 +1346,8 @@ class TouchpadBackend:
         if self.g("tp_swipe_up") == "runner":
             kw.append(f"keyword gesture 3, up, dispatcher, exec, echo toggle | socat - UNIX-CLIENT:{sock}")
         kw.append("keyword unbind , mouse:274")
-        if self.g("tp_tap3") == "runner":
+        self._tap3_force_apply()
+        if self.g("tp_tap3") == "runner" and not int(self.g("tp_tap3_force") or 0):
             kw.append(f"keyword bind , mouse:274, exec, echo toggle | socat - UNIX-CLIENT:{sock}")
         for name in magic:
             kw += [f"keyword device[{name}]:sensitivity {tp_sensitivity(self.g('mm_speed'))}",
@@ -4022,9 +4061,9 @@ class MeguminSettings(QWidget):
                 img.save(str(theme_assets / "avatar.png"), "PNG")
         except Exception:
             pass
-        sync = Path.home() / ".config" / "megumin-os" / "sync_sddm.sh"
+        sync = Path(sync_sddm_path())
         if sync.exists():
-            subprocess.Popen(["sudo", "-n", str(sync)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(["sudo", "-n", str(sync)],stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def apply_ui_theme(self):
         ACCENT[0] = self.accent_color
@@ -4610,7 +4649,7 @@ class MeguminSettings(QWidget):
             if poster:   # палітра pywal (термінал, рамки вікон…) — з кадру піксельних шпалер
                 subprocess.run(["wal", "-q", "-t", "-i", poster], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 subprocess.run(["killall", "-SIGUSR2", "waybar"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run(["sudo", "-n", str(home / ".config/megumin-os/sync_sddm.sh")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["sudo", "-n", sync_sddm_path()], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         threading.Thread(target=work, daemon=True).start()
 
     def read_current_wallpaper(self):
@@ -4848,6 +4887,104 @@ class MeguminSettings(QWidget):
         names = ["Вимк.", "Слабка", "Середня", "Яскрава"] if mx == 3 else [str(i) for i in range(mx + 1)]
         return SegmentedSelector("kbd_light", [(i, names[i]) for i in range(mx + 1)], cur, self.save_setting)
 
+    # --- Вібрація Magic Trackpad (~/.config/mgos/haptic.json) ---
+    @staticmethod
+    def _haptic_cfg():
+        try:
+            return json.loads((Path.home() / ".config/mgos/haptic.json").read_text())
+        except Exception:
+            return {}
+
+    def _haptic_save(self, key, value):
+        c = self._haptic_cfg()
+        if key.startswith("when_"):
+            w = c.get("when", ["move"])
+            w = [w] if isinstance(w, str) else list(w) if isinstance(w, list) else ["move"]
+            k = key[5:]
+            w = [x for x in w if x != k]
+            if value: w.append(k)
+            c["when"] = w
+        else:
+            c[key] = value
+        if key == "touch":
+            if not value:
+                c["inertia"] = False   # інерція залежить від вібрації при русі
+            sw = getattr(self, "_inertia_sw", None)
+            try:
+                if sw is not None:
+                    if not value: sw.setChecked(False)
+                    sw.setEnabled(bool(value))
+                    sw.setGraphicsEffect(None if value else self._dim_effect())
+                for s in getattr(self, "_when_sws", []):
+                    s.setEnabled(bool(value))
+                    s.setGraphicsEffect(None if value else self._dim_effect())
+            except Exception:
+                pass
+        p = Path.home() / ".config/mgos/haptic.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(c))
+        if key == "click" or (key == "strength" and c.get("click")):
+            # разовий запис сили кліку в прошивку (без фонового процесу)
+            import subprocess
+            try:
+                subprocess.Popen([str(Path.home() / ".local/bin/mgos-haptic"), "click-on" if c.get("click") else "click-off"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+        if key in ("touch", "click"):
+            import subprocess
+            act = "start" if (c.get("touch") or c.get("click")) else "stop"
+            try:
+                subprocess.Popen(["systemctl", "--user", act, "mgos-haptic-touch.service"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _dim_effect():
+        from PyQt6.QtWidgets import QGraphicsOpacityEffect
+        e = QGraphicsOpacityEffect(); e.setOpacity(0.4)
+        return e
+
+    def _haptic_inertia_sw(self):
+        c = self._haptic_cfg()
+        on = bool(c.get("touch"))
+        sw = MeguminSwitch("inertia", on and bool(c.get("inertia")), self._haptic_save)
+        sw.setEnabled(on)
+        if not on:
+            sw.setGraphicsEffect(self._dim_effect())
+        self._inertia_sw = sw
+        return sw
+
+    def _haptic_when_sw(self, k):
+        c = self._haptic_cfg()
+        w = c.get("when", ["move"])
+        w = [w] if isinstance(w, str) else w if isinstance(w, list) else ["move"]
+        on = bool(c.get("touch"))
+        sw = MeguminSwitch("when_" + k, k in w, self._haptic_save)
+        sw.setEnabled(on)
+        if not on:
+            sw.setGraphicsEffect(self._dim_effect())
+        if not hasattr(self, "_when_sws"):
+            self._when_sws = []
+        self._when_sws.append(sw)
+        return sw
+
+    def _haptic_test(self):
+        import subprocess
+        try:
+            subprocess.Popen([str(Path.home() / ".local/bin/mgos-haptic"), "double"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
+    def _haptic_strength_ctl(self):
+        w = QWidget()
+        h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(12)
+        h.addWidget(MeguminSlider("strength", int(self._haptic_cfg().get("strength", 50)), 0, 100, "%", self._haptic_save, width=200))
+        h.addWidget(LinkButton("Тест", self._haptic_test))
+        return w
+
     # --- Трекпад ---
     def create_trackpad_page(self):
         page, lay = self.page_base("trackpad")
@@ -4856,21 +4993,39 @@ class MeguminSettings(QWidget):
         self.tp_preview = TrackpadPreview(self.tp)
         prev_card = GroupCard([self.tp_preview])
         lay.addWidget(prev_card)
-        tabs = SegmentedSelector("tp_tab", [("point", "Наведення і клік"), ("scroll", "Прокрутка"), ("gest", "Інші жести")], "point",
-                                 lambda k, v: (self.tp_stack.setCurrentIndex(["point", "scroll", "gest"].index(v)),
-                                               self.tp_preview.set_mode({"point": "pointer", "scroll": "scroll", "gest": "swipe"}[v])),
+        tabs = SegmentedSelector("tp_tab", [("point", "Наведення і клік"), ("scroll", "Прокрутка"), ("gest", "Інші жести"), ("apple", "Apple Trackpad")], "point",
+                                 lambda k, v: (self.tp_stack.setCurrentIndex(["point", "scroll", "gest", "apple"].index(v)),
+                                               self.tp_preview.set_mode({"point": "pointer", "scroll": "scroll", "gest": "swipe", "apple": "pointer"}[v])),
                                  seg_width=150)
         th = QHBoxLayout(); th.addStretch(); th.addWidget(tabs); th.addStretch()
         lay.addLayout(th)
         P = self.tp_preview
         R = lambda title, desc, ctl, mode: SettingRow("", "", title, desc, ctl, preview=P, preview_mode=mode)
         setup_card = self.create_card([
+            SettingRow("", "", "Налаштувати жести на цьому ПК", "Створює/виправляє файли жестів (3 пальці, док, Runner) і застосовує налаштування з цих вкладок",
+                       LinkButton("Налаштувати", self.tp.setup_gestures), is_last=True),
+        ])
+        apple = self.create_card([
             SettingRow("", "", "Драйвер Apple-трекпада", "Magic Trackpad / Magic Mouse по Bluetooth: завантажує драйвер ядра, дозволяє підключення, додає в автозапуск. Один раз на ПК, спитає пароль",
                        LinkButton("Встановити драйвер", self.tp.install_driver)),
-            SettingRow("", "", "Налаштувати жести на цьому ПК", "Створює/виправляє файли жестів (3 пальці, док, Runner) і застосовує налаштування з цих вкладок",
-                       LinkButton("Налаштувати", self.tp.setup_gestures)),
-            SettingRow("", "", "Вібровідгук (haptic)", "Magic Trackpad 2: клік відчувається апаратно, його сила й «вібрація» в Linux недоступні — драйвер ядра не дає ними керувати, тож перемикача тут немає",
-                       None, is_last=True),
+            SettingRow("", "", "Доступ до вібрації", "Один раз на ПК: дозволяє програмі писати в Magic Trackpad (hidraw) і керувати курсором (uinput). Спитає пароль",
+                       LinkButton("Дозволити", self.tp.install_haptic_access)),
+            SettingRow("", "", "Сила вібрації", "Magic Trackpad 2 (Bluetooth): 0 — вимкнено. Якщо не вібрує — спершу натисніть «Дозволити» вище",
+                       self._haptic_strength_ctl()),
+            SettingRow("", "", "Haptic-клік як у macOS", "Клік тачпада супроводжується коротким чітким імпульсом Force Touch, сила — зі слайдера вище. Одноразовий запис у тачпад, без фонового процесу; вібрація руху/скролу керується окремо нижче",
+                       MeguminSwitch("click", bool(self._haptic_cfg().get("click")), self._haptic_save)),
+            SettingRow("", "", "Вібрація інтерфейсу (як macOS)", "Унікальні візерунки для анімацій вікон (згортання/відновлення, тягнення, зміна розміру), доку, панелей і перемикання столів. Простий клік не вібрує, фонових процесів немає. Сила — зі слайдера вище",
+                       MeguminSwitch("ui", bool(self._haptic_cfg().get("ui")), self._haptic_save)),
+            SettingRow("", "", "Вібрація при русі пальця (як Steam Deck)", "Слабкі імпульси, поки палець ковзає по тачпаду. Фоновий процес працює лише поки увімкнено",
+                       MeguminSwitch("touch", bool(self._haptic_cfg().get("touch")), self._haptic_save)),
+            SettingRow("", "", "Вібрувати: рух курсора одним пальцем", "Звичайне водіння курсора (за замовчуванням). Потрібна вібрація при русі",
+                       self._haptic_when_sw("move")),
+            SettingRow("", "", "Вібрувати: скрол двома пальцями", "Прокрутка сторінок і списків, трохи рідші імпульси. Потрібна вібрація при русі",
+                       self._haptic_when_sw("scroll")),
+            SettingRow("", "", "Вібрувати: будь-який дотик/жест", "Завжди, поки палець рухається, за будь-якої кількості пальців. Потрібна вібрація при русі",
+                       self._haptic_when_sw("any")),
+            SettingRow("", "", "Інерція курсора (як Steam Deck)", "Після відриву пальця курсор ще котиться й слабко вібрує. Доступно лише з увімкненою вібрацією при русі",
+                       self._haptic_inertia_sw(), is_last=True),
         ])
         lay.addWidget(setup_card)
 
@@ -4899,6 +5054,9 @@ class MeguminSettings(QWidget):
               self.seg("tp_swipe_up", [("fullscreen", "Повний екран"), ("maximize", "Розгорнути"), ("runner", "Runner"), ("off", "Нічого")]), "fullscreen"),
             R("Тап трьома пальцями", "Відкрити / сховати пошук (Runner). Увага: середній клік мишею теж відкриватиме Runner",
               self.seg("tp_tap3", [("runner", "Runner"), ("middle", "Середній клік")]), "tap3"),
+            R("Сила натиску для Runner", "Magic Trackpad, три пальці. 0% — досить дотику (тап). 25% — звичайний клік. "
+              "50% — клік, а потім сильніший натиск («другий клік») відкриває Runner",
+              self.seg("tp_tap3_force", [(0, "0%"), (25, "25%"), (50, "50%")]), "tap3"),
             R("Три пальці вниз", "«Вікно в док» — як Super+Q, але вікно стікає в док за пальцями; на повноекранному вікні короткий змах лише виходить з повного екрана; "
               "не довели жест до кінця — вікно повертається на місце (захист від випадкового згортання)",
               self.seg("tp_swipe_down", [("minimize", "Вікно в док"), ("runner", "Сховати Runner"), ("off", "Нічого")]), "minimize"),
@@ -4914,7 +5072,7 @@ class MeguminSettings(QWidget):
               self.sl("genie_speed", 50, 200, "%", width=220), "minimize"),
         ])
         self.tp_stack = QStackedWidget()
-        for c in (point, scroll, gest):
+        for c in (point, scroll, gest, apple):
             w = QWidget(); l = QVBoxLayout(w); l.setContentsMargins(0, 0, 0, 0); l.addWidget(c); l.addStretch()
             self.tp_stack.addWidget(w)
         lay.addWidget(self.tp_stack)
@@ -5205,7 +5363,7 @@ class MeguminSettings(QWidget):
         if not hasattr(self, "_sddm_sync"):
             self._sddm_sync = QTimer(self); self._sddm_sync.setSingleShot(True)
             self._sddm_sync.timeout.connect(lambda: subprocess.Popen(
-                ["sudo", "-n", str(Path.home() / ".config/megumin-os/sync_sddm.sh")],
+                ["sudo", "-n", sync_sddm_path()],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         self._sddm_sync.start(900)
 
@@ -5513,6 +5671,11 @@ class MeguminSettings(QWidget):
             SettingRow("", "", "Гучність системних звуків", "Окремо від гучності музики й відео", self.snd_widgets["sounds_volume"]),
             SettingRow("", "", "Звукова тема", "Застосунки GTK і Firefox теж її використовують", self.snd_theme),
             SettingRow("", "", "Звук натискань у меню", "Клацання кнопок у застосунках GTK", self.sw("sounds_input", False)),
+            SettingRow("", "", "Звук підключення Bluetooth", "Коли Bluetooth-пристрій підключається чи відключається", self.sw("bt_sound", True)),
+            SettingRow("", "", "Звук підключення Bluetooth: вибір", "Що грати при підключенні",
+                       MacPopup("bt_sound_connect", [(e, t) for e, t, _ in SOUND_EVENTS], self.settings.get("bt_sound_connect", "bt-c2"), self.save_setting, width=220)),
+            SettingRow("", "", "Звук відключення Bluetooth: вибір", "Що грати при відключенні",
+                       MacPopup("bt_sound_disconnect", [(e, t) for e, t, _ in SOUND_EVENTS], self.settings.get("bt_sound_disconnect", "bt-d2"), self.save_setting, width=220)),
             SettingRow("", "", "Вібрація", "У цьому ноутбуці й у Magic Mouse немає вібромотора — вмикати нічого", None),
         ]))
         self.section(lay, "Звуки подій")
@@ -5825,7 +5988,7 @@ class MeguminSettings(QWidget):
         subprocess.run(f"wal -q -t -i '{wal_target}'", shell=True)
         subprocess.run("killall -SIGUSR2 waybar", shell=True)
         subprocess.run(f"{Path.home()}/.local/bin/mgos-wp-poster", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # постер для входу/SDDM
-        subprocess.Popen(f"sudo -n {Path.home()}/.config/megumin-os/sync_sddm.sh", shell=True)
+        subprocess.Popen(["sudo", "-n", sync_sddm_path()])
         subprocess.Popen("ignis reload", shell=True) # Перезапуск Ignis для підтягування кольорів    
 
 

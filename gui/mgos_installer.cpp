@@ -28,6 +28,7 @@ struct StepDef { const char* id; const char* title; const char* icon; double wei
 static const StepDef STEPS[] = {
     {"preflight",   "Перевірка системи",          "󰄬", 1,  true},
     {"snapshot",    "Точка відкату",              "󰁯", 1,  true},
+    {"btrfs_snapshot", "Знімок btrfs",            "󰁯", 1,  false},
     {"yay",         "Помічник AUR (yay)",         "󰏓", 2,  true},
     {"repos",       "Репозиторії (multilib)",     "󰆼", 1,  true},
     {"sysupdate",   "Оновлення системи",          "󰚰", 8,  true},
@@ -980,7 +981,9 @@ static void finish_all() {
     gtk_label_set_text(GTK_LABEL(g_done_title), warn ? "Майже готово — виріши, що робити з проблемами" : (R.mode == Mode::Update ? "Систему оновлено" : R.mode == Mode::Kiosk ? "kioskOS готова!" : "Megumin OS 6.5 готова!"));
     std::string sub = std::string(mode_title(R.mode)) + " за " + fmt_time(R.elapsed) +
         (R.mode == Mode::Kiosk ? ".  Вхід: у меню сесій SDDM обери «kiosk» (або «mgOS»), з TTY — команда kiosk" : "") +
-        ".  Не подобається результат — «Скасувати все» поверне систему як було.  Лог: " + R.log_path;
+        ".  Не подобається результат — «Скасувати все» поверне систему як було.  Лог: " + R.log_path +
+        (!R.cache.empty() && g_file_test((R.cache + "/btrfs-snap").c_str(), G_FILE_TEST_EXISTS)
+            ? ".  Якщо система не завантажується: відкат зі знімка btrfs — інструкція в /root/MGOS-ROLLBACK.txt" : "");
     gtk_label_set_text(GTK_LABEL(g_done_sub), sub.c_str());
     gtk_widget_set_visible(g_done_list, warn);
     gtk_widget_set_visible(g_done_items_title, warn);
@@ -1347,7 +1350,7 @@ static void start_with_options() {
         for (auto& [n, t] : g_cfg_toggles) { if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(t))) cfgs += n + " "; else all = false; }
         R.opt["OPT_APPS"] = trim(apps);
         R.opt["OPT_CONFIGS"] = all ? "" : (cfgs.empty() ? "-" : trim(cfgs));
-        S = {"preflight", "snapshot", "yay", "repos"};
+        S = {"preflight", "snapshot", "btrfs_snapshot", "yay", "repos"};
         if (on("OPT_UPDATE")) S.push_back("sysupdate");
         for (auto x : {"core", "stable", "aur", "utils"}) S.push_back(x);
         if (on("OPT_DRIVERS")) S.push_back("drivers");
@@ -1365,6 +1368,7 @@ static void start_with_options() {
     } else if (R.mode == Mode::Restore) {
         R.opt["OPT_WALL"] = "0";
         S = {"preflight", "snapshot"};
+        if (on("R_PKGS")) S.push_back("btrfs_snapshot");
         if (on("R_PKGS")) for (auto x : {"yay", "repos", "core", "stable", "aur", "utils", "drivers"}) S.push_back(x);
         S.push_back("dedupe");   // завжди: швидко, а дублі заважають і без перевстановлення пакетів
         if (on("R_CFG")) { S.push_back("configs"); S.push_back("home"); S.push_back("build"); S.push_back("cleanup"); S.push_back("hw"); }
@@ -1386,7 +1390,7 @@ static void start_with_options() {
         if (on("OPT_KIOSK_KERNEL")) S.push_back("kiosk_kernel");
         S.push_back("kiosk_verify");
     } else {
-        S = {"preflight", "snapshot", "yay", "repos", "upd_repo", "upd_aur", "upd_missing", "dedupe", "build", "verify"};
+        S = {"preflight", "snapshot", "btrfs_snapshot", "yay", "repos", "upd_repo", "upd_aur", "upd_missing", "dedupe", "build", "verify"};
     }
     begin_run();
 }

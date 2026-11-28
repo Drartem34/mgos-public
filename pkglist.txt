@@ -8,6 +8,7 @@ alsa-utils
 antigravity-cli
 antigravity-ide
 apple-fonts
+archiso
 arduino-ide
 aspell
 aspell-uk
@@ -72,6 +73,7 @@ fastfetch
 ffmpegthumbnailer
 file-roller
 firefox
+firefox-i18n-uk
 firewalld
 fish
 flameshot
@@ -105,6 +107,7 @@ hyprshot
 ignis-gvc-git
 inetutils
 intel-ucode
+inter-font
 inxi
 iptables-nft
 iwd

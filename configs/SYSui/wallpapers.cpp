@@ -148,7 +148,7 @@ void apply_wallpaper(const std::string& path) {
         // Якщо шпалери міняють саме зараз — стартуємо одразу на паузі.
         const char* rt = getenv("XDG_RUNTIME_DIR");
         if (rt && access((std::string(rt) + "/mgos-power/battery").c_str(), F_OK) == 0) mpv_opts += " pause";
-        exec_cmd("nohup nice -n 19 mpvpaper -o '" + mpv_opts + "' '*' '" + path + "' &");
+        exec_cmd("nohup nice -n 19 mpvpaper -p -o '" + mpv_opts + "' '*' '" + path + "' &");
     } else {
         exec_cmd("pgrep awww-daemon || (awww-daemon & sleep 0.5)");
         exec_cmd("awww img '" + path + "' --resize crop --transition-type fade --transition-angle 30 --transition-fps 60 --transition-duration 2");
@@ -167,7 +167,9 @@ void apply_wallpaper(const std::string& path) {
         exec_cmd(sysui::home() + "/.local/bin/mgos-wp-poster >/dev/null 2>&1");   // миттєвий постер для входу й SDDM
         exec_cmd("wal -q -t -i '" + target + "'");
         exec_cmd("killall -SIGUSR2 waybar");
-        exec_cmd("sudo -n " + sysui::home() + "/.config/megumin-os/sync_sddm.sh");
+        std::string sync_sddm = "/usr/local/lib/mgos/sync_sddm.sh";
+        if (access(sync_sddm.c_str(), X_OK) != 0) sync_sddm = sysui::home() + "/.config/megumin-os/sync_sddm.sh";
+        exec_cmd("sudo -n '" + sync_sddm + "'");
     }).detach();
 
     if (wp_window) gtk_widget_set_visible(wp_window, FALSE);
@@ -673,6 +675,7 @@ static void activate(GtkApplication* app, gpointer) {
     apply_css();
 
     wp_window = gtk_application_window_new(app);
+    haptic::attach_panel(wp_window);
     gtk_layer_init_for_window(GTK_WINDOW(wp_window));
     gtk_layer_set_namespace(GTK_WINDOW(wp_window), "wallpapers");
     gtk_layer_set_layer(GTK_WINDOW(wp_window), GTK_LAYER_SHELL_LAYER_OVERLAY);

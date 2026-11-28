@@ -411,12 +411,46 @@ def s_trash_w():          # кошик очищено: м'який шурхіт 
     return reverb(x, 0.12)
 
 
+def _bt(kind, up):
+    """Варіанти звуків Bluetooth: 1 «Дзвіночок», 2 «Краплі», 3 «Свист», 4 «Дерево», 5 «Акорд»."""
+    x = silence(1.4)
+    F = lambda m: 440 * 2 ** ((m - 69) / 12)
+    seq = (79, 86) if up else (86, 79)
+    if kind == 1:   # скляні дзвіночки, як AirPods/macOS
+        mix(x, bell(F(seq[0] + 12), dur=1.2, decay=3.2), 0.0, 0.7)
+        mix(x, bell(F(seq[1] + 12), dur=1.3, decay=3.0), 0.16, 0.8)
+        return reverb(x, wet=0.28)
+    if kind == 2:   # калімба-краплі, три ноти
+        for k, m in enumerate((seq[0], (seq[0] + seq[1]) // 2 + 1, seq[1]) if up else (seq[0], (seq[0] + seq[1]) // 2 - 1, seq[1])):
+            mix(x, kalimba(F(m + 12), dur=0.7, decay=6.0), 0.09 * k, 0.8)
+        return reverb(x, wet=0.25)
+    if kind == 3:   # м'який «свист» угору/вниз + тихий дзвін
+        mix(x, sweep(500, 1500, 0.22, decay=9.0) if up else sweep(1500, 500, 0.22, decay=9.0), 0.0, 0.5)
+        mix(x, bell(F(91 if up else 79), dur=1.0, decay=4.0), 0.16 if up else 0.12, 0.55)
+        return reverb(x, wet=0.2)
+    if kind == 4:   # дерев'яна маримба, два «токи»
+        mix(x, marimba(F(seq[0]), 0.5, decay=8.0), 0.0, 0.9)
+        mix(x, marimba(F(seq[1]), 0.6, decay=8.0), 0.11, 1.0)
+        return reverb(x, wet=0.15)
+    ch = (74, 79, 83) if up else (83, 79, 74)   # 5: арпеджіо мажорного тризвуку
+    for k, m in enumerate(ch):
+        mix(x, tine(F(m + 12), dur=0.9, decay=4.5, idx=0.7), 0.07 * k, 0.65)
+    return reverb(x, wet=0.22)
+
+
+def s_bt_c2(): return _bt(2, True)
+def s_bt_c4(): return _bt(4, True)
+def s_bt_d2(): return _bt(2, False)
+def s_bt_d4(): return _bt(4, False)
+
+
 SOUNDS = {
     # freedesktop-імена (їх шукають GTK, libcanberra, Firefox, dunst-скрипти тощо) → генератор, ширина стерео
     "message-new-instant": (s_message, 0.0004), "message": (s_message, 0.0004),
     "bell": (s_bell, 0.0003), "dialog-information": (s_bell, 0.0003),
     "dialog-warning": (s_warning_w, 0.0003), "dialog-error": (s_error_w, 0.0002),
     "complete": (s_complete_w, 0.0005), "power-plug": (s_plug, 0.0003), "power-unplug": (s_unplug, 0.0003),
+    "bt-c2": (s_bt_c2, 0.0004), "bt-d2": (s_bt_d2, 0.0004), "bt-c4": (s_bt_c4, 0.0004), "bt-d4": (s_bt_d4, 0.0004), 
     "device-added": (s_device_added, 0.0003), "device-removed": (s_device_removed, 0.0003),
     "audio-volume-change": (s_volume, 0.0), "screen-capture": (s_screenshot_w, 0.0002), "camera-shutter": (s_screenshot_w, 0.0002),
     "trash-empty": (s_trash_w, 0.0004), "desktop-login": (s_login_w, 0.0006), "desktop-logout": (s_logout_w, 0.0006),

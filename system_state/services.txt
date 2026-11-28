@@ -2,6 +2,7 @@ avahi-daemon.service
 bluetooth.service
 cleanup-on-boot.service
 firewalld.service
+kioskos-ppd-guard.service
 lm_sensors.service
 NetworkManager-dispatcher.service
 NetworkManager.service

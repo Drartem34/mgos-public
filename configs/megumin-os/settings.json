@@ -29,7 +29,7 @@
     "dock_whitelist": "nautilus, kitty, wezterm, ignis, code, modrinth-app, steam, spotify",
     "eco_effects": false,
     "eco_fs_blur": true,
-    "fan_mode": "auto",
+    "fan_mode": "curve",
     "genie_anim": true,
     "genie_squash": true,
     "hyprland_blur": true,
@@ -45,7 +45,7 @@
     "night_light": false,
     "notify_position": "top-right",
     "pixel_style": "lava",
-    "power_profile": "power-saver",
+    "power_profile": "balanced",
     "sddm_bg_mode": "wallpaper",
     "sddm_blur": false,
     "sddm_clock24": true,
@@ -59,6 +59,9 @@
     "sounds_enabled": true,
     "sounds_input": false,
     "sounds_off": [
+        "bt-c2",
+        "bt-d2",
+        "bt-d5",
         "complete",
         "desktop-login",
         "desktop-logout",
@@ -87,5 +90,8 @@
     "wp_pixel_style": "virus",
     "wp_pixel_theme": "auto",
     "ui_scale:eDP-1": "1",
-    "tp_speed": 82
+    "tp_speed": 84,
+    "tp_noaccel": false,
+    "tp_scroll": 111,
+    "tp_tap3_force": 50
 }

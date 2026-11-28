@@ -423,7 +423,9 @@ def set_user_avatar(src):
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError:
         pass
-    sync = os.path.join(home, ".config", "megumin-os", "sync_sddm.sh")
+    sync = "/usr/local/lib/mgos/sync_sddm.sh"
+    if not os.access(sync, os.X_OK):
+        sync = os.path.join(home, ".config", "megumin-os", "sync_sddm.sh")
     if os.path.exists(sync):
         subprocess.Popen(["sudo", "-n", sync], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 

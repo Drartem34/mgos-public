@@ -98,15 +98,21 @@ case "${1:-watch}" in
             dev=""
             dev_of() {   # «UDEV [t] add /devices/... (usb)» → add/remove для пристроїв; BT — лише з'єднання hciN:NNN
                 case "$1" in
-                    *" add "*"(usb)"|*" add "*hci[0-9]:[0-9]*"(bluetooth)") echo added ;;
-                    *" remove "*"(usb)"|*" remove "*hci[0-9]:[0-9]*"(bluetooth)") echo removed ;;
+                    *" add "*hci[0-9]:[0-9]*"(bluetooth)") echo bt-connected ;;
+                    *" remove "*hci[0-9]:[0-9]*"(bluetooth)") echo bt-disconnected ;;
+                    *" add "*"(usb)") echo device-added ;;
+                    *" remove "*"(usb)") echo device-removed ;;
                 esac
             }
             if [ $rc -eq 0 ]; then
                 dev=$(dev_of "$line")
                 sleep 1; while read -r -t 0.3 -u 3 line; do [ -z "$dev" ] && dev=$(dev_of "$line"); done
             fi
-            [ -n "$dev" ] && "$HOME/.local/bin/mgos-sound" "device-$dev" &
+            [ -n "$dev" ] && "$HOME/.local/bin/mgos-sound" "$dev" &
+            # Magic Trackpad: після (пере)підключення/сну прошивка скидає силу кліку — застосовуємо haptic click (разово, без демона)
+            if [ "$dev" = bt-connected ] && grep -q '"click": *true' "$HOME/.config/mgos/haptic.json" 2>/dev/null; then
+                ( sleep 3; "$HOME/.local/bin/mgos-haptic" click-on >/dev/null 2>&1 ) &
+            fi
             now=$(on_ac && echo ac || echo battery)
             if [ "$now" = battery ]; then
                 cap=$(cat /sys/class/power_supply/BAT*/capacity 2>/dev/null | head -1)

@@ -31,7 +31,7 @@ YAY=(yay --noconfirm --needed --answerdiff None --answerclean None --answeredit 
 PACKAGES_CORE=(
     hyprland xdg-desktop-portal-hyprland xdg-desktop-portal-gtk
     gtk4 gtk4-layer-shell base-devel pkgconf nlohmann-json
-    python python-pyqt6 socat curl libnotify
+    python python-pyqt6 socat curl libnotify jq rsync
     pipewire-pulse wireplumber networkmanager dunst sddm
 )
 PACKAGES_STABLE=(
@@ -183,9 +183,12 @@ refresh_keyring() {
     local k=(archlinux-keyring)
     grep -q '^\[endeavouros\]' /etc/pacman.conf && k+=(endeavouros-keyring)
     grep -q '^\[chaotic-aur\]' /etc/pacman.conf && k+=(chaotic-keyring)
-    # -Sy лише для keyring — офіційно рекомендований виняток із правила «без часткових оновлень»
+    # -Sy лише для keyring (офіційний виняток) і ОДРАЗУ повний -Su: база й система не розходяться —
+    # інакше наступний «yay -S pkg» = часткове оновлення (ламає бібліотеки)
     sudo pacman -Sy --needed --noconfirm "${k[@]}" || return 1
     sudo pacman-key --populate "${k[@]%-keyring}" >/dev/null 2>&1
+    msg "pacman -Su (повне оновлення після ключів)"
+    sudo pacman -Su --noconfirm || return 1
     return 0
 }
 
@@ -308,13 +311,38 @@ step_snapshot() {
     pacman -Q > "$CACHE/pkgs.before"
     pacman -Qqe > "$CACHE/explicit.before"
     date '+%Y-%m-%d %H:%M:%S' > "$CACHE/started"
-    # тримаємо лише одну точку відкату — останню
+    # старі точки відкату НЕ видаляємо тут: якщо цей запуск впаде на 2-му кроці, без них не буде вороття.
+    # Їх прибирає _prune_old_points наприкінці вдалого запуску (step_verify).
+    echo "Точка відкату створена: $(wc -l < "$CACHE/pkgs.before") пакетів. Кнопка «Скасувати» поверне систему до цього стану."
+}
+
+# тримаємо лише одну точку відкату — останню; викликається лише після вдалого запуску
+_prune_old_points() {
+    [ -n "$CACHE" ] && [ -s "$CACHE/pkgs.before" ] || return 0
     local d
     for d in "$(dirname "$CACHE")"/*/; do
+        [ -d "$d" ] || continue
         [ "$(readlink -m "$d")" = "$(readlink -m "$CACHE")" ] && continue
         rm -rf "$d" 2>/dev/null || sudo rm -rf "$d"
     done
-    echo "Точка відкату створена: $(wc -l < "$CACHE/pkgs.before") пакетів. Кнопка «Скасувати» поверне систему до цього стану."
+}
+
+# відкат запису E: розпакувати в тимчасову теку поруч, потім mv. Старе видаляється лише
+# коли нове на місці — битий архів чи повний диск не лишають без файлу.
+_rb_restore() {  # _rb_restore <шлях> <архів>
+    local a=$1 arc=$2 S=() up t
+    _in_home "$a" || S=(sudo)
+    up=$(dirname "$a"); "${S[@]}" mkdir -p "$up" || return 1
+    t=$("${S[@]}" mktemp -d "$up/.mgos-rb.XXXXXX") || return 1
+    if ! "${S[@]}" tar -xpf "$arc" -C "$t" || ! { [ -e "$t/${a#/}" ] || [ -L "$t/${a#/}" ]; }; then
+        "${S[@]}" rm -rf -- "$t"; return 1
+    fi
+    if [ -e "$a" ] || [ -L "$a" ]; then "${S[@]}" mv -T -- "$a" "$t/.old" || { "${S[@]}" rm -rf -- "$t"; return 1; }; fi
+    if ! "${S[@]}" mv -T -- "$t/${a#/}" "$a"; then
+        { [ -e "$t/.old" ] || [ -L "$t/.old" ]; } && "${S[@]}" mv -T -- "$t/.old" "$a"
+        "${S[@]}" rm -rf -- "$t"; return 1
+    fi
+    "${S[@]}" rm -rf -- "$t"
 }
 
 # пошук файлу пакета потрібної версії: кеш pacman → кеш yay → наш кеш → Arch Linux Archive
@@ -366,8 +394,8 @@ step_rollback() {
     local kind a b c rebuild=0
     while IFS=$'\t' read -r kind a b c; do
         case $kind in
-            E)  local S=(); _in_home "$a" || S=(sudo)
-                "${S[@]}" rm -rf -- "$a"; "${S[@]}" tar -xpf "$CACHE/files/$b" -C / && msg "повернуто $a" ;;
+            E)  if _rb_restore "$a" "$CACHE/files/$b"; then msg "повернуто $a"
+                else fail_pkg "$a (архів не розпакувався — лишаю поточний)"; fi ;;
             N)  if ! _safe_rm_path "$a"; then fail_pkg "$a (небезпечний шлях — не видаляю)"; continue; fi
                 if _in_home "$a"; then rm -rf -- "$a"; else sudo rm -rf -- "$a"; fi; msg "прибрано $a" ;;
             L)  [ -d "$a" ] && comm -13 <(sort "$CACHE/files/$b") <(find "$a" -mindepth 1 | sort) | sort -r | while read -r x; do rm -rf -- "$x"; done ;;
@@ -435,7 +463,66 @@ step_yay() {
     local r=$?; rm -rf "$d"; return $r
 }
 
-step_sysupdate() { msg "pacman -Syu"; sudo pacman -Syu --noconfirm; }
+# Знімок btrfs перед оновленням: лише якщо / = btrfs subvol=/@ і вільно ≥10 ГБ; тримаємо 2 останні.
+# Знімок лежить поряд з @ у корені файлової системи (subvolid=5): @mgos-snap-<дата>, read-only.
+step_btrfs_snapshot() {
+    local opts src free tmp dev stamp snap keep=2 ok=1
+    opts=$(findmnt -no FSTYPE,OPTIONS / 2>/dev/null)
+    case "$opts" in
+        btrfs*subvol=/@,*|btrfs*subvol=/@) ;;
+        *) msg "Знімок btrfs пропущено: / не btrfs з subvol=/@"; return 0 ;;
+    esac
+    command -v btrfs >/dev/null || { msg "Знімок btrfs пропущено: немає btrfs-progs"; return 0; }
+    free=$(df -B1 --output=avail / 2>/dev/null | tail -1 | tr -d ' ')
+    if [ -z "$free" ] || [ "$free" -lt 10737418240 ]; then
+        msg "Знімок btrfs пропущено: вільно менше 10 ГБ"; return 0
+    fi
+    src=$(findmnt -no SOURCE / 2>/dev/null); dev=${src%%\[*}
+    [ -b "$dev" ] || { msg "Знімок btrfs пропущено: не визначено пристрій ($src)"; return 0; }
+    tmp=$(mktemp -d) || return 0
+    stamp=$(date +%Y%m%d-%H%M%S); snap="@mgos-snap-$stamp"
+    msg "Знімок btrfs: $snap"
+    if sudo mount -o subvolid=5 "$dev" "$tmp" 2>/dev/null && [ -d "$tmp/@" ]; then
+        if sudo btrfs subvolume snapshot -r "$tmp/@" "$tmp/$snap" >/dev/null; then
+            # лишаємо keep останніх
+            local old
+            while read -r old; do [ -n "$old" ] && sudo btrfs subvolume delete "$tmp/$old" >/dev/null 2>&1
+            done < <(ls -1 "$tmp" 2>/dev/null | grep '^@mgos-snap-' | sort | head -n -"$keep")
+        else ok=0; fi
+    else ok=0; fi
+    sudo umount "$tmp" 2>/dev/null; rmdir "$tmp" 2>/dev/null
+    if [ "$ok" != 1 ]; then msg "Знімок btrfs не створено — продовжую без нього"; return 0; fi
+    local note="/root/MGOS-ROLLBACK.txt"
+    sudo tee "$note" >/dev/null <<EOF
+mgOS: відкат системи після невдалого оновлення ($(date '+%F %T'))
+Знімок: $snap (btrfs, поряд з @ у корені ФС), пристрій $dev.
+З live-USB або TTY (від root):
+  mount -o subvolid=5 $dev /mnt
+  mv /mnt/@ /mnt/@broken-$stamp
+  btrfs subvolume snapshot /mnt/$snap /mnt/@
+  umount /mnt && reboot
+Після перевірки старий @broken-* можна видалити: btrfs subvolume delete /mnt/@broken-$stamp
+УВАГА: це працює, якщо / монтується за ІМЕНЕМ (subvol=/@ у /etc/fstab і rootflags у завантажувачі).
+Якщо там subvolid=… або задано «btrfs subvolume set-default» — після snapshot зроби:
+  btrfs subvolume set-default /mnt/@   (і/або заміни subvolid= на subvol=/@ у fstab та rootflags)
+Окремі підтоми (@home, @log, @cache) знімок не охоплює — особисті файли не чіпаються.
+EOF
+    [ -n "${CACHE:-}" ] && printf '%s\n' "$snap" > "$CACHE/btrfs-snap" 2>/dev/null
+    echo "Знімок $snap створено. Відкат — інструкція в /root/MGOS-ROLLBACK.txt (mount -o subvolid=5 $dev /mnt; mv @ → @broken; snapshot $snap → @)"
+}
+
+step_sysupdate() {
+    msg "pacman -Syu"; sudo pacman -Syu --noconfirm || return 1
+    # після оновлення ядра мають лишитись vmlinuz і модулі — інакше система не завантажиться
+    local k bad=0
+    compgen -G '/boot/vmlinuz-*' >/dev/null || { msg "⚠ Немає /boot/vmlinuz-* — НЕ перезавантажуй систему!"; bad=1; }
+    for k in /boot/vmlinuz-*; do [ -e "$k" ] || continue
+        [ -s "$k" ] || { msg "⚠ Порожній $k — НЕ перезавантажуй!"; bad=1; }
+    done
+    compgen -G '/usr/lib/modules/*/modules.dep' >/dev/null || { msg "⚠ Немає /usr/lib/modules/*/modules.dep — НЕ перезавантажуй!"; bad=1; }
+    [ "$bad" = 0 ] || { echo "УВАГА: ядро виглядає пошкодженим після оновлення. Відкат: /root/MGOS-ROLLBACK.txt (якщо знімок створено)"; return 1; }
+    return 0
+}
 step_core()      { install_list 1 "${PACKAGES_CORE[@]}"; }
 step_stable()    { install_list 0 "${PACKAGES_STABLE[@]}"; }
 step_aur()       { install_list 0 "${PACKAGES_AUR[@]}"; }
@@ -461,10 +548,14 @@ step_repos() {
         bk /etc/pacman.conf
         sudo sed -i '/^#\[multilib\]/,/^#Include/ s/^#//' /etc/pacman.conf
     fi
-    msg "Синхронізую бази пакетів"
-    sudo pacman -Sy --noconfirm || { msg "Дзеркало не відповіло — повтор"; sleep 3; sudo pacman -Sy --noconfirm; }
-    # свіжі ключі ДО встановлення: інакше частина пакетів падає на «marginal trust»
-    refresh_keyring || true
+    # «-Sy» без «-Su» заборонено: далі ставляться пакети зі свіжої бази на старі бібліотеки
+    # (часткове оновлення). Тому завжди ключі + повний -Syu; не вдалось — крок фатальний.
+    msg "Ключі пакувальників + повне оновлення (pacman -Syu)"
+    refresh_keyring && return 0
+    msg "Дзеркало/ключі не відповіли — повтор повним pacman -Syu"; sleep 3
+    sudo pacman -Syu --noconfirm && return 0
+    echo "❌ pacman -Syu не вдався — пакети не ставлю (часткове оновлення ламає систему). Перевір мережу й «Повторити»."
+    return 1
 }
 
 # Немає шрифтів Apple SF (публічна версія інсталятора) — ставимо Inter і підміняємо SF на нього
@@ -551,23 +642,150 @@ _sysui_restart() {
     return 0
 }
 
+# ---- Конфіги: класи файлів (configs/.mgos-manifest, рядок «КЛАС модуль/glob [база]») ----
+#   CODE  — замінюється знімком (усе, чого немає в маніфесті)
+#   STATE — стан цієї машини: лишається файл користувача, зі знімка не береться ніколи
+#   SEED  — зі знімка лише якщо в користувача файлу немає
+#   MERGE — JSON: база (defaults) * файл користувача — ключі користувача лишаються, нові додаються
+_cfg_rules() {  # _cfg_rules <модуль> → «КЛАС glob-усередині-модуля [база]»
+    [ -f ./configs/.mgos-manifest ] || return 0
+    awk -v m="$1" '!/^[[:space:]]*(#|$)/ && index($2, m "/") == 1 {
+        b = $3; if (b != "" && index(b, m "/") == 1) b = substr(b, length(m) + 2)
+        print $1, substr($2, length(m) + 2), b }' ./configs/.mgos-manifest
+}
+_cfg_match() {  # _cfg_match <корінь> <glob> → наявні відносні шляхи
+    ( shopt -s nullglob dotglob; cd "$1" 2>/dev/null || exit 0; local f; for f in $2; do { [ -e "$f" ] || [ -L "$f" ]; } && printf '%s\n' "$f"; done; exit 0 )
+}
+_cfg_json_ok() { jq -e 'type == "object"' "$1" >/dev/null 2>&1; }
+_cfg_merge() {  # _cfg_merge <ціль у новій теці> <файл користувача> [база]
+    local d=$1 u=$2 b=${3:-$1} t
+    # без jq не можна ні перевірити, ні злити JSON — файл користувача лишаємо як є
+    command -v jq >/dev/null 2>&1 || { echo "⚠ jq не встановлено — $(basename "$u") лишаю без змін"; cp -af -- "$u" "$d"; return 0; }
+    if ! _cfg_json_ok "$u"; then
+        echo "⚠ $(basename "$u") пошкоджений — беру значення за замовчуванням (стара копія — у точці відкату)"
+        [ "$b" != "$d" ] && _cfg_json_ok "$b" && cp -f -- "$b" "$d"
+        return 0
+    fi
+    _cfg_json_ok "$b" || b=$d
+    _cfg_json_ok "$b" || { cp -af -- "$u" "$d"; return 0; }
+    t=$(mktemp) || { cp -af -- "$u" "$d"; return 0; }
+    if jq -s '.[0] * .[1]' "$b" "$u" > "$t" && _cfg_json_ok "$t"; then cat "$t" > "$d"; else cp -af -- "$u" "$d"; fi
+    rm -f "$t"
+}
+_cfg_apply() {  # _cfg_apply <модуль> <нова тека> <жива тека>
+    local st=$2 lv=$3 cls g b f live=0   # живої теки може не бути (чиста система)
+    [ -d "$lv" ] && live=1
+    while read -r cls g b; do
+        case $cls in
+            STATE) while IFS= read -r f; do rm -rf -- "${st:?}/$f"; done < <(_cfg_match "$st" "$g")
+                   if [ $live = 1 ]; then
+                       while IFS= read -r f; do mkdir -p "$(dirname "$st/$f")"; cp -a -- "$lv/$f" "$st/$f"; done < <(_cfg_match "$lv" "$g")
+                   fi ;;
+            SEED)  if [ $live = 1 ]; then
+                       while IFS= read -r f; do rm -rf -- "${st:?}/$f"; mkdir -p "$(dirname "$st/$f")"; cp -a -- "$lv/$f" "$st/$f"; done < <(_cfg_match "$lv" "$g")
+                   fi ;;
+            MERGE) if [ $live = 1 ]; then
+                       while IFS= read -r f; do _cfg_merge "$st/$f" "$lv/$f" "${b:+$st/$b}"; done < <(_cfg_match "$lv" "$g")
+                   elif [ -n "$b" ] && [ -f "$st/$b" ]; then   # чиста система: персональний JSON зі знімка → defaults
+                       while IFS= read -r f; do [ "$st/$f" != "$st/$b" ] && cp -f -- "$st/$b" "$st/$f"; done < <(_cfg_match "$st" "$g")
+                   fi ;;
+        esac
+    done < <(_cfg_rules "$1")
+    return 0
+}
+
+# O2: конфіги знімка під новіший Hyprland (новий синтаксис windowrule …) на старішому = помилки сесії
+_pkg_ver() { local v; v=$(pacman -Q "$1" 2>/dev/null || pacman -Q "$1-git" 2>/dev/null) || return 1; v=${v##* }; echo "${v%-*}"; }
+_cfg_version_gate() {
+    local want have
+    want=$(awk '$1 == "hyprland" {print $2}' ./system_state/versions.txt 2>/dev/null)
+    [ -n "$want" ] || return 0
+    have=$(_pkg_ver hyprland) || { echo "⚠ Hyprland не встановлено — версію конфігів не перевірено"; return 0; }
+    if [ "$(vercmp "$have" "$want")" -lt 0 ]; then
+        echo "❌ Hyprland тут $have, а конфіги знімка — під $want: новий синтаксис зламає сесію."
+        echo "   Спершу онови систему (pacman -Syu або «Оновлення»), потім «Повторити». Конфіги не змінено."
+        return 1
+    fi
+    want=$(awk '$1 == "gtk4" {print $2}' ./system_state/versions.txt 2>/dev/null)
+    have=$(_pkg_ver gtk4) && [ -n "$want" ] && [ "$(vercmp "$have" "$want")" -lt 0 ] \
+        && echo "⚠ gtk4 тут $have (знімок — $want): панелі SYSui буде перезібрано під цю версію"
+    return 0
+}
+
+_hypr_live() { command -v hyprctl &>/dev/null && [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]; }
+# source = ~/.config/hypr/<файл>, якого ще немає (mgos-auto.conf пише крок «Екран») — порожній файл,
+# інакше живий Hyprland показує помилку конфігу до кінця встановлення
+_hypr_seed_sources() {
+    local f=~/.config/hypr/hyprland.conf p
+    [ -f "$f" ] || return 0
+    while read -r p; do
+        p=${p/#\~/$HOME}
+        [[ "$p" == "$HOME/.config/hypr/"* && "$p" != *[*?]* ]] || continue
+        [ -e "$p" ] || { mkdir -p "$(dirname "$p")"; : > "$p"; }
+    done < <(sed -nE 's/^[[:space:]]*source[[:space:]]*=[[:space:]]*([^#[:space:]]+).*/\1/p' "$f")
+}
+_hypr_verify() {
+    local f=~/.config/hypr/hyprland.conf out bad
+    [ -f "$f" ] && command -v Hyprland &>/dev/null || return 0
+    _hypr_seed_sources
+    out=$(Hyprland --verify-config -c "$f" 2>&1) && return 0
+    # кольори wal і т.п. з'являються пізніше (крок «Тема») — відсутнє джерело не вважаємо помилкою знімка,
+    # як і змінні ($color0…), які воно мало б визначити
+    bad=$(sed -n '/Config parsing result/,$p' <<< "$out" | grep -i 'error' | grep -v 'globbing error: found no match')
+    grep -q 'globbing error: found no match' <<< "$out" && bad=$(grep -v '\$[A-Za-z_]' <<< "$bad")
+    [ -z "$bad" ] && return 0
+    head -5 <<< "$bad"; return 1
+}
+
 step_configs() {
     [ -d ./configs ] || { echo "У інсталяторі немає ./configs"; return 1; }
     local list
     if [ -n "${OPT_CONFIGS:-}" ]; then read -ra list <<< "$OPT_CONFIGS"
     else mapfile -t list < <(find ./configs -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort); fi
-    local i=0 c
+    _cfg_version_gate || return 1
+    mkdir -p ~/.config
+    local d n
+    # залишки перерваного запуску: модуль між двома mv — повертаємо стару теку на місце
+    for d in ~/.config/.mgos-new.*/; do
+        [ -d "$d" ] || continue
+        n=$(cat "$d/.name" 2>/dev/null)
+        if [ -n "$n" ] && [ ! -e ~/.config/"$n" ] && [ ! -L ~/.config/"$n" ] && { [ -e "$d/.old" ] || [ -L "$d/.old" ]; }; then
+            # стару теку не вдалося повернути — залишок не чіпаємо (там єдина копія)
+            mv -T -- "$d/.old" ~/.config/"$n" || { echo "⚠ не вдалося повернути $n з $d — лишаю"; continue; }
+        fi
+        rm -rf -- "$d"
+    done
+    # O3: autoreload під живим Hyprland підхопив би напівготовий конфіг
+    local live=0; _hypr_live && { hyprctl keyword misc:disable_autoreload 1 >/dev/null 2>&1; live=1; }
+    local i=0 c st lv rc=0
     for c in "${list[@]}"; do
         i=$((i + 1)); sub "$i/${#list[@]}"; msg "$c"
         [ -d "./configs/$c" ] || continue
-        bk ~/.config/"$c"                       # стара версія — у точці відкату
-        rm -rf ~/.config/"$c"
-        cp -r "./configs/$c" ~/.config/
-        # знімок зроблено з домашньої теки автора — підміняємо шляхи у текстових файлах
+        lv=$HOME/.config/$c
+        bk "$lv"                       # стара версія — у точці відкату
+        st=$(mktemp -d ~/.config/.mgos-new.XXXXXX) || { rc=1; break; }
+        printf '%s\n' "$c" > "$st/.name"
+        if ! cp -a "./configs/$c" "$st/$c"; then echo "❌ $c не скопійовано (місце на диску?) — лишаю старий"; rm -rf -- "$st"; rc=1; continue; fi
+        # знімок зроблено з домашньої теки автора — підміняємо шляхи (до злиття: файли користувача не чіпаємо)
         if [ "$SRC_HOME" != "$HOME" ]; then
-            grep -rlI --null -F "$SRC_HOME" ~/.config/"$c" 2>/dev/null | xargs -0 -r sed -i "s|$SRC_HOME|$HOME|g"
+            grep -rlI --null -F "$SRC_HOME" "$st/$c" 2>/dev/null | xargs -0 -r sed -i "s|$SRC_HOME|$HOME|g"
         fi
+        _cfg_apply "$c" "$st/$c" "$lv"
+        # атомарна заміна: стара тека → .old, нова → на місце; збій — повертаємо стару
+        if [ -e "$lv" ] || [ -L "$lv" ]; then mv -T -- "$lv" "$st/.old" || { rm -rf -- "$st"; rc=1; continue; }; fi
+        if ! mv -T -- "$st/$c" "$lv"; then
+            { [ -e "$st/.old" ] || [ -L "$st/.old" ]; } && mv -T -- "$st/.old" "$lv"
+            rm -rf -- "$st"; rc=1; continue
+        fi
+        if [ "$c" = hypr ] && ! _hypr_verify; then
+            echo "❌ hyprland.conf з помилками (знімок або ваші mgos-auto/*-user.conf, див. вище) — повертаю попередню теку hypr"
+            if [ -e "$st/.old" ] || [ -L "$st/.old" ]; then mv -T -- "$lv" "$st/.bad" && mv -T -- "$st/.old" "$lv"; fi
+            rc=1
+        fi
+        rm -rf -- "$st"
     done
+    [ $live = 1 ] && hyprctl reload >/dev/null 2>&1   # reload повертає autoreload зі свіжого конфігу
+    [ $rc = 0 ] || { echo "Конфіги встановлено не всі — див. вище. Старі — у точці відкату: $CACHE"; return 1; }
     echo "Старі конфіги збережено в точці відкату: $CACHE"
     if [ -d ~/.config/SYSui ]; then
         chmod +x ~/.config/SYSui/*_osd ~/.config/SYSui/dock ~/.config/SYSui/topbar ~/.config/SYSui/wallpapers \
@@ -786,6 +1004,18 @@ _mgos_sessions_menu() {
     echo "У меню сесій: $(cd "$MGOS_SESS_DIR" && grep -h '^Name=' *.desktop | cut -d= -f2 | paste -sd, | sed 's/,/, /g')"
 }
 
+# sync_sddm.sh виконується від root → копія, якою володіє root (користувач не може її підмінити)
+MGOS_LIB=/usr/local/lib/mgos
+MGOS_SDDM_SYNC=$MGOS_LIB/sync_sddm.sh
+_sddm_helper() {
+    local src=~/.config/megumin-os/sync_sddm.sh
+    [ -f "$src" ] || { [ -f "$MGOS_SDDM_SYNC" ]; return; }
+    cmp -s "$src" "$MGOS_SDDM_SYNC" 2>/dev/null && return 0
+    bk "$MGOS_SDDM_SYNC"
+    sudo install -d -m 755 -o root -g root "$MGOS_LIB" \
+        && sudo install -m 755 -o root -g root "$src" "$MGOS_SDDM_SYNC"
+}
+
 step_services() {
     local s list=(power-profiles-daemon bluetooth NetworkManager)
     [ -f ./system_state/services.txt ] && mapfile -t -O ${#list[@]} list < ./system_state/services.txt
@@ -808,9 +1038,9 @@ step_services() {
     for s in ./system_state/etc/sddm.conf.d/*.conf; do [ -f "$s" ] && sudo install -m 644 "$s" /etc/sddm.conf.d/; done
     # тема входу mgOS Pixel (піксельний годинник і кнопки) + шпалери/акцент/«Налаштування → Екран входу»;
     # той самий скрипт, що й у системі. Без нього theme.conf зі знімка вказав би на ще не встановлену тему.
-    if [ -f ~/.config/megumin-os/sync_sddm.sh ]; then
+    if _sddm_helper; then
         msg "Тема входу mgOS + перехід із заставки"; bk /usr/share/sddm/themes/mgos-pixel; bk /etc/systemd/system/sddm.service.d/10-mgos-plymouth.conf
-        sudo bash ~/.config/megumin-os/sync_sddm.sh >/dev/null 2>&1 \
+        sudo bash "$MGOS_SDDM_SYNC" >/dev/null 2>&1 \
             || printf "[Theme]\nCurrent=sddm-astronaut-theme\n" | sudo tee /etc/sddm.conf.d/theme.conf >/dev/null
     fi
     # тема зі знімка (mgos-pixel) не встановилась (крок «Конфіги» пропущено) — лишаємо класичну, щоб вхід не зламався
@@ -870,11 +1100,12 @@ step_look() {
         done < ./system_state/gsettings.txt
     fi
     sub 2/3
-    # Wallpapers/Settings викликають "sudo -n sync_sddm.sh"
-    if [ -f ~/.config/megumin-os/sync_sddm.sh ]; then
+    # Wallpapers/Settings викликають "sudo -n sync_sddm.sh". Правило — лише на копію root:root 755
+    # у /usr/local/lib/mgos: правило на файл у ~ давало root будь-якому процесу користувача.
+    if _sddm_helper; then
         msg "sudoers для sync_sddm"
         local t; t=$(mktemp)
-        printf '%s ALL=(ALL) NOPASSWD: %s\n' "$USER" "$HOME/.config/megumin-os/sync_sddm.sh" > "$t"
+        printf '%s ALL=(root) NOPASSWD: %s\n' "$USER" "$MGOS_SDDM_SYNC" > "$t"
         bk /etc/sudoers.d/mgos-sddm-sync
         sudo visudo -cf "$t" >/dev/null 2>&1 && sudo install -m 440 -o root -g root "$t" /etc/sudoers.d/mgos-sddm-sync
         rm -f "$t"
@@ -1059,6 +1290,12 @@ _hw_apple_trackpad() {
     msg "Apple Magic Trackpad/Mouse: hid_magicmouse + BlueZ"
     # інсталер уже працює з sudo; НЕ pkexec — без polkit-агента він висить назавжди (так інсталер застряг на 90%)
     timeout 90 sudo -n bash ./scripts/mgos-apple-trackpad </dev/null || timeout 90 sudo bash ./scripts/mgos-apple-trackpad </dev/null || echo "⚠ mgos-apple-trackpad не вдалося (можна пізніше: Налаштування → Трекпад)"
+    # вібрація Magic Trackpad: доступ до hidraw/uinput (Налаштування → Трекпад → Вібрація)
+    local r
+    for r in 99-mgos-magictrackpad-haptic.rules 99-mgos-uinput.rules; do
+        [ -f "./$r" ] && { timeout 20 sudo -n install -m 644 "./$r" "/etc/udev/rules.d/$r" </dev/null 2>/dev/null || true; }
+    done
+    timeout 20 sudo -n udevadm control --reload </dev/null 2>/dev/null || true
     return 0
 }
 
@@ -1332,6 +1569,7 @@ step_verify() {
     [ -n "$(_hw_touchpads)" ] && [ -f ~/.config/hypr/hyprland.conf ] && chk "жести тачпада (touchpad.conf)" grep -q '^gesture = 3, horizontal, workspace' ~/.config/hypr/touchpad.conf
     [ -f ~/.config/hypr/mgos-auto.conf ] && grep -q 'touchpad-user.conf' ~/.config/hypr/mgos-auto.conf && chk "touchpad-user.conf (Налаштування)" test -f ~/.config/hypr/touchpad-user.conf
     echo "Перевірок: $total, з помилками: $fail"
+    _prune_old_points   # запуск дійшов до кінця — старі точки відкату вже не потрібні
     return 0
 }
 

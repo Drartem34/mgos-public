@@ -669,31 +669,21 @@ if [ -d "./fonts" ]; then
 fi
 
 if [ -n "$SELECTED_CONFIGS" ]; then
-    BACKUP_DIR=~/.config/mgOS_backup_$(date +%Y%m%d_%H%M%S)
+    # Ті самі безпечні кроки, що й у GUI (gui/steps.sh): точка відкату + step_configs
+    # (маніфест STATE/SEED/MERGE, атомарна заміна, перевірка hyprland.conf, заміна шляхів SRC_HOME → $HOME).
     mapfile -t SELECTED_ARRAY <<< "$SELECTED_CONFIGS"
-    for conf in "${SELECTED_ARRAY[@]}"; do
-        if [ -n "$conf" ] && [ -d "./configs/$conf" ]; then
-            if [ -d ~/.config/"$conf" ]; then
-                mkdir -p "$BACKUP_DIR"
-                gum spin --spinner line --title "$(t spin_backup) $conf..." -- mv ~/.config/"$conf" "$BACKUP_DIR/"
-            fi
-            gum spin --spinner line --title "$(t spin_install) $conf..." -- cp -r "./configs/$conf" ~/.config/
+    CFG_CACHE="${XDG_STATE_HOME:-$HOME/.local/state}/mgos-installer/cache/text_$(date +%Y%m%d_%H%M%S)"
+    for _s in snapshot configs; do
+        MGOS_DIR="$SRC_DIR" MGOS_CACHE="$CFG_CACHE" OPT_CONFIGS="${SELECTED_ARRAY[*]}" \
+            bash -c 'source "$MGOS_DIR/gui/steps.sh" && step_'"$_s" 2>&1 \
+            | sed -u -e '/^@@SUB /d' -e 's/^@@MSG /  › /' -e 's/^@@FAILPKG /  ⚠ пакет: /'
+        if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+            echo "⚠️ крок «$_s» завершився з помилкою — частину конфігів не змінено (старі — у $CFG_CACHE)"
+            [ "$_s" = snapshot ] && break
         fi
     done
-    # Шляхи: знімок зроблено з домашньої теки автора (/home/doki) — замінюємо на $HOME
-    # нового користувача в усіх ТЕКСТОВИХ файлах (бінарники не чіпаємо: вони вже без шляхів).
-    SRC_HOME=$(cat ./system_state/source_home.txt 2>/dev/null || echo /home/doki)
-    if [ "$SRC_HOME" != "$HOME" ]; then
-        gum spin --spinner line --title "$(t spin_paths) ($SRC_HOME → $HOME)..." -- bash -c '
-            for conf in "$@"; do
-                [ -d "$HOME/.config/$conf" ] || continue
-                grep -rlI --null -F "'"$SRC_HOME"'" "$HOME/.config/$conf" 2>/dev/null | xargs -0 -r sed -i "s|'"$SRC_HOME"'|$HOME|g"
-            done' _ "${SELECTED_ARRAY[@]}"
-    fi
     if [ -d ~/.config/SYSui ]; then
         find ~/.config/SYSui/ -type s -delete 2>/dev/null||true
-        chmod +x ~/.config/SYSui/*_osd ~/.config/SYSui/dock ~/.config/SYSui/topbar ~/.config/SYSui/wallpapers \
-                 ~/.config/SYSui/controller_addon ~/.config/SYSui/*.sh 2>/dev/null||true
         # Збираємо з сирців під бібліотеки ЦІЄЇ системи. build.sh не чіпає готові
         # бінарники, якщо збірка впала, — тоді лишаються ті, що в установщику.
         if [ -x ~/.config/SYSui/build.sh ]; then
@@ -786,10 +776,14 @@ else
     echo "$(t font_missing)"
 fi
 
-# Wallpapers/Settings викликають "sudo -n sync_sddm.sh" — без цього правила синхронізація теми SDDM не працює
-if [ -f ~/.config/megumin-os/sync_sddm.sh ]; then
+# Wallpapers/Settings викликають "sudo -n sync_sddm.sh" — без цього правила синхронізація теми SDDM не працює.
+# Правило — лише на копію root:root 755 у /usr/local/lib/mgos (правило на файл у ~ = root для будь-якого процесу користувача)
+MGOS_SDDM_SYNC=/usr/local/lib/mgos/sync_sddm.sh
+if [ -f ~/.config/megumin-os/sync_sddm.sh ] \
+   && sudo install -d -m 755 -o root -g root /usr/local/lib/mgos \
+   && sudo install -m 755 -o root -g root ~/.config/megumin-os/sync_sddm.sh "$MGOS_SDDM_SYNC"; then
     SUDOERS_TMP=$(mktemp)
-    printf '%s ALL=(ALL) NOPASSWD: %s\n' "$USER" "$HOME/.config/megumin-os/sync_sddm.sh" > "$SUDOERS_TMP"
+    printf '%s ALL=(root) NOPASSWD: %s\n' "$USER" "$MGOS_SDDM_SYNC" > "$SUDOERS_TMP"
     if sudo visudo -cf "$SUDOERS_TMP" >/dev/null 2>&1; then
         sudo install -m 440 -o root -g root "$SUDOERS_TMP" /etc/sudoers.d/mgos-sddm-sync
         echo "  $(t spin_sudoers) OK"
@@ -798,8 +792,8 @@ if [ -f ~/.config/megumin-os/sync_sddm.sh ]; then
 fi
 
 # Тема входу mgOS Pixel + шпалери/акцент/налаштування екрана входу (той самий скрипт, що й у системі)
-if [ -f ~/.config/megumin-os/sync_sddm.sh ]; then
-    gum spin --spinner line --title "🌟 Тема входу mgOS Pixel..." -- bash -c 'sudo bash ~/.config/megumin-os/sync_sddm.sh >/dev/null 2>&1' || true
+if [ -f "$MGOS_SDDM_SYNC" ]; then
+    gum spin --spinner line --title "🌟 Тема входу mgOS Pixel..." -- bash -c 'sudo bash /usr/local/lib/mgos/sync_sddm.sh >/dev/null 2>&1' || true
 fi
 # zram: стиснена пам'ять у RAM; сховані в доці програми стискаються туди
 if [ -x ~/.local/bin/mgos-zram ]; then
@@ -855,7 +849,7 @@ fi
 CUR_THEME=$(awk '$2=="cursor-theme"{gsub("\x27","",$3); print $3}' ./system_state/gsettings.txt 2>/dev/null)
 [ -n "$CUR_THEME" ] && vcheck "курсор $CUR_THEME" bash -c "[ -d /usr/share/icons/$CUR_THEME ] || [ -d ~/.local/share/icons/$CUR_THEME ]"
 # питаємо sudo, чи дозволено без пароля (правило може лежати будь-де в sudoers)
-[ -f ~/.config/megumin-os/sync_sddm.sh ] && vcheck "sudoers sync_sddm" sudo -n -l "$HOME/.config/megumin-os/sync_sddm.sh"
+[ -f "$MGOS_SDDM_SYNC" ] && vcheck "sudoers sync_sddm" sudo -n -l "$MGOS_SDDM_SYNC"
 vcheck "SDDM увімкнено" systemctl is-enabled sddm
 echo
 if [ "$VERIFY_FAIL" -eq 0 ]; then echo "  ✅ $(t verify_all_ok)"; else echo "  ⚠️  $(t verify_bad)"; fi

@@ -1,7 +1,6 @@
+code|visual-studio-code|"/home/doki/.local/bin/claude"
 mgos-recovery|kitty|mgos-recovery
 com.megumin.installer|com.megumin.installer|"/home/doki/.local/share/mgos/recovery/install-gui.sh"
-org.gnome.nautilus|org.gnome.Nautilus|nautilus
-code|visual-studio-code|"/home/doki/.local/bin/claude"
 mpv|mpv|mpv
 com.obsproject.studio|com.obsproject.Studio|obs
 hyprland-share-picker|application-x-executable|hyprland-share-picker

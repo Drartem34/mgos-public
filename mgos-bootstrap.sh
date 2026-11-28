@@ -24,8 +24,8 @@ command -v pacman >/dev/null || die "Це не Arch Linux (немає pacman)."
 
 say "Пакети для графічного інсталятора"
 sudo -v || die "Потрібні права sudo: запусти в терміналі й введи пароль (bash mgos-bootstrap.sh)."
-sudo pacman -Sy --needed --noconfirm \
-    git python \
+sudo pacman -Syu --needed --noconfirm \
+    git python jq rsync \
     hyprland xdg-desktop-portal-hyprland polkit mesa \
     gtk4 base-devel pkgconf kitty \
     ttf-jetbrains-mono-nerd noto-fonts \
@@ -35,15 +35,24 @@ sudo pacman -Sy --needed --noconfirm \
 if [ -x "$SELF/install-gui.sh" ] && [ -d "$SELF/gui" ]; then
     DIR=$SELF
 elif [ -d "$DIR/.git" ]; then
-    say "Оновлюю $DIR"
-    git -C "$DIR" pull --ff-only --autostash || echo "  (не вдалося оновити — беру те, що є)"
+    say "Оновлюю $DIR (канал stable)"
+    CH=${MGOS_CHANNEL_BRANCH:-stable}
+    if [ "$(git -C "$DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)" != "$CH" ]; then
+        echo "  оновлення вимкнено: гілка не «$CH» — беру те, що є"
+    elif [ -n "$(git -C "$DIR" status --porcelain --untracked-files=no)" ]; then
+        echo "  є локальні зміни — оновлення скасовано, беру те, що є:"; git -C "$DIR" status --short --untracked-files=no | head -10
+    else
+        { git -C "$DIR" fetch --quiet origin "$CH" && git -C "$DIR" merge --ff-only --quiet "origin/$CH"; } \
+            || echo "  (не вдалося оновити — беру те, що є)"
+    fi
 else
     say "Завантажую інсталятор у $DIR"
     for t in 1 2 3; do
-        GIT_TERMINAL_PROMPT=0 git clone --depth 1 "https://github.com/$REPO.git" "$DIR" && break
+        { GIT_TERMINAL_PROMPT=0 git clone --depth 1 --branch "${MGOS_CHANNEL_BRANCH:-stable}" "https://github.com/$REPO.git" "$DIR" \
+          || GIT_TERMINAL_PROMPT=0 git clone --depth 1 "https://github.com/$REPO.git" "$DIR"; } && break
         rm -rf "$DIR"; echo "  не вдалося, повтор ($t/3)…"; sleep 5
     done
-    [ -d "$DIR/.git" ] || die "Не вдалося завантажити github.com/$REPO (перевір інтернет)"
+    [ -d "$DIR/.git" ] || die "Не вдалося завантажити github.com/$REPO (перевір інтернет; для приватного репо спершу виконай «gh auth login && gh auth setup-git», а потім повтори)"
 fi
 chmod +x "$DIR"/install-gui.sh "$DIR"/install.sh "$DIR"/gui/*.sh "$DIR"/scripts/* 2>/dev/null
 
@@ -95,9 +104,19 @@ windowrule = fullscreen on, match:class ^(com\.megumin\.installer)$
 bind = SUPER, Return, exec, kitty
 bind = CTRL ALT, Delete, exit
 # інсталятор закрили без перезавантаження — повертаємось у TTY; впав — термінал з поясненням
-exec-once = sh -c 'MGOS_FULLSCREEN=1 "$DIR/install-gui.sh" || kitty --hold sh -c "echo Інсталятор завершився з помилкою. Текстовий режим: $DIR/install.sh"; hyprctl dispatch exit'
+exec-once = bash $(printf '%q' "$C/run.sh")
 EOF
 } > "$C/hyprland.conf"
+# запуск через окремий скрипт — шлях з пробілами/лапками не ламає конфіг Hyprland
+{
+    echo '#!/usr/bin/env bash'
+    printf 'D=%q\n' "$DIR"
+    cat <<'EOF'
+MGOS_FULLSCREEN=1 "$D/install-gui.sh" || kitty --hold sh -c 'echo "Інсталятор завершився з помилкою. Текстовий режим: $1/install.sh"' _ "$D"
+hyprctl dispatch exit
+EOF
+} > "$C/run.sh"
+chmod +x "$C/run.sh"
 
 if command -v start-hyprland >/dev/null; then exec start-hyprland -- -c "$C/hyprland.conf"; fi
 exec Hyprland -c "$C/hyprland.conf"

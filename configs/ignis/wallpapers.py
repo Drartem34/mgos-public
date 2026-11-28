@@ -161,7 +161,10 @@ def apply_actual_wallpaper(path):
         subprocess.run("killall -SIGUSR2 waybar", shell=True)
         
         # ФІКС 2: Popen замість run, щоб sudo не блокував скрипт, якщо попросить пароль
-        subprocess.Popen("sudo /home/doki/.config/megumin-os/sync_sddm.sh", shell=True)
+        sync_sddm = "/usr/local/lib/mgos/sync_sddm.sh"
+        if not os.access(sync_sddm, os.X_OK):
+            sync_sddm = os.path.expanduser("~/.config/megumin-os/sync_sddm.sh")
+        subprocess.Popen(["sudo", "-n", sync_sddm], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
         def reload_css():
             from gi.repository import Gtk, Gdk

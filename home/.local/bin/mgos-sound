@@ -13,15 +13,20 @@ if [ "$ev" = audio-volume-change ] && [ "$2" != --force ]; then
     exec 8>"$st.lock"; flock -n 8 || exit 0                    # попередній «ток» ще грає — не перебиваємо
 fi
 CFG="$HOME/.config/megumin-os/settings.json"
-read -r on theme vol off < <(python3 -I - "$CFG" "$ev" <<'PY' 2>/dev/null
+read -r on theme vol off ev2 < <(python3 -I - "$CFG" "$ev" <<'PY' 2>/dev/null
 import json, sys
 try: s = json.load(open(sys.argv[1]))
 except Exception: s = {}
 ev = sys.argv[2]
+btoff = False
+# Bluetooth: bt-connected / bt-disconnected → звук з налаштувань (за замовчуванням device-added / device-removed)
+if ev == "bt-connected": ev, btoff = s.get("bt_sound_connect", "bt-c2") or "bt-c2", not s.get("bt_sound", True)
+elif ev == "bt-disconnected": ev, btoff = s.get("bt_sound_disconnect", "bt-d2") or "bt-d2", not s.get("bt_sound", True)
 print("1" if s.get("sounds_enabled", True) else "0", s.get("sound_theme", "mgos") or "mgos",
-      int(s.get("sounds_volume", 70)), "1" if ev in s.get("sounds_off", []) else "0")
+      int(s.get("sounds_volume", 70)), "1" if (btoff or ev in s.get("sounds_off", [])) else "0", ev)
 PY
 )
+[ -n "$ev2" ] && ev="$ev2"
 [ "$2" = --force ] || { [ "${on:-1}" = 1 ] && [ "${off:-0}" = 0 ] || exit 0; }
 pgrep -f 'Hyprland -c .*hyprland/kiosk\.conf' >/dev/null 2>&1 && [ "$2" != --force ] && exit 0   # kiosk — тиша
 find_snd() {  # $1 тема → шлях (з урахуванням Inherits)

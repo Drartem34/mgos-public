@@ -3,6 +3,7 @@
 # Запускається з mgos-auto.conf: exec-once = …/gui/update-notify.sh --loop
 #   перша перевірка через 3 хв після входу, далі кожні 6 год; про ту саму версію — лише раз.
 #   Кнопка в сповіщенні відкриває інсталятор (там банер «Оновити інсталятор»).
+#   Канал — гілка origin/stable; на dev-гілці (mgos/*) selfupdate.sh видає @@UPDOFF і сповіщень немає.
 #   Вимкнути: touch ~/.config/mgos/no-update-notify
 DIR=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 ST=${XDG_STATE_HOME:-$HOME/.local/state}/mgos-installer
@@ -15,7 +16,7 @@ check_once() {
     [[ "$out" == "@@UPD "* ]] || return 0
     read -r _ n subj <<< "$out"
     [ "${n:-0}" -gt 0 ] || return 0
-    sha=$(git -C "$DIR" rev-parse '@{u}' 2>/dev/null)
+    sha=$(git -C "$DIR" rev-parse "origin/${MGOS_CHANNEL_BRANCH:-stable}" 2>/dev/null)
     [ -n "$sha" ] && [ "$(cat "$ST/notified" 2>/dev/null)" = "$sha" ] && return 0
     echo "$sha" > "$ST/notified"
     act=$(notify-send -a "mgOS" -i com.megumin.installer -u normal \
